@@ -84,6 +84,7 @@ private:
     // IHeadMountedDisplay
     static bool is_hmd_connected(sdk::IHeadMountedDisplay*);
     static int32_t* get_ideal_debug_canvas_render_target_size(sdk::IHeadMountedDisplay*, int32_t* out);
+    static int32_t* get_gears_debug_canvas_render_target_size(sdk::IHeadMountedDisplay*, int32_t* out);
     static SharedPtr* get_view_extension(sdk::IHeadMountedDisplay*, SharedPtr* out);
 
     // IXRCamera

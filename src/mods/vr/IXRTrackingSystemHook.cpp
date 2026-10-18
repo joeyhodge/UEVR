@@ -38,8 +38,12 @@
 #include <sdk/structures/FXRHMDData.hpp>
 #include <sdk/UHeadMountedDisplayFunctionLibrary.hpp>
 #include <sdk/UFunction.hpp>
+#include <sdk/UGameViewportClient.hpp>
+#include <sdk/GearsEDayDiscovery.hpp>
+#include <sdk/DiscoveryMemory.hpp>
 
 #include "IXRTrackingSystemHook.hpp"
+#include "GearsEDayAim.hpp"
 
 namespace {
 bool is_deadzone_ue56_executable() {
@@ -2070,6 +2074,27 @@ void IXRTrackingSystemHook::initialize() {
     const auto& trackvt = get_tracking_system_vtable(m_overridden_version);
     const auto& hmdvt = get_hmd_vtable(m_overridden_version);
 
+    std::optional<uevr::gears_aim::DebugCanvasQuery> gears_debug_canvas;
+    if (sdk::gears_eday::current_game()) {
+        const auto draw = sdk::UGameViewportClient::get_draw_function();
+        DWORD64 image_base{};
+        const auto function = draw ? RtlLookupFunctionEntry(*draw, &image_base, nullptr) : nullptr;
+        if (draw && function && image_base + function->BeginAddress == *draw &&
+            function->EndAddress > function->BeginAddress && trackvt.GetHMDDevice_index()) {
+            gears_debug_canvas = uevr::gears_aim::debug_canvas_query(sdk::discovery::process_memory(),
+                *draw, function->EndAddress - function->BeginAddress,
+                reinterpret_cast<uintptr_t>(sdk::UGameEngine::get()), m_offset_in_engine,
+                *trackvt.GetHMDDevice_index());
+        }
+        if (!gears_debug_canvas || !hmdvt.implemented()) {
+            SPDLOG_ERROR("[GoWEDay][Aim] Debug-canvas HMD return ABI did not validate; leaving the game's XRSystem unchanged");
+            return;
+        }
+        SPDLOG_INFO("[GoWEDay][Aim] Validated debug-canvas FIntPoint sret at {:x}, HMD slot {} (stock {})",
+            gears_debug_canvas->return_address, gears_debug_canvas->slot,
+            hmdvt.GetIdealDebugCanvasRenderTargetSize_index().value_or(0));
+    }
+
     if (trackvt.implemented()) {
         if (trackvt.GetXRCamera_index().has_value()) {
             m_xrtracking_vtable[trackvt.GetXRCamera_index().value()] = (uintptr_t)&get_xr_camera;
@@ -2209,6 +2234,12 @@ void IXRTrackingSystemHook::initialize() {
                 }
             } else {
                 SPDLOG_ERROR("IXRTrackingSystemHook::IXRTrackingSystemHook: get_ideal_debug_canvas_render_target_size_index not implemented");
+            }
+
+            if (gears_debug_canvas) {
+                // E-Day's Draw uses a different debug-canvas slot. Do not
+                // shift stock UE5.6 tables or rely on null-dereference patching.
+                m_hmd_vtable[gears_debug_canvas->slot] = (uintptr_t)&get_gears_debug_canvas_render_target_size;
             }
 
             if (hmdvt.ResetOrientation_index().has_value()) {
@@ -3341,6 +3372,12 @@ bool IXRTrackingSystemHook::is_hmd_connected(sdk::IHeadMountedDisplay*) {
     SPDLOG_INFO_ONCE("is_hmd_connected {:x}", (uintptr_t)_ReturnAddress());
 
     return VR::get()->is_hmd_active();
+}
+
+int32_t* IXRTrackingSystemHook::get_gears_debug_canvas_render_target_size(sdk::IHeadMountedDisplay* device, int32_t* out) {
+    if (!g_hook || device != reinterpret_cast<sdk::IHeadMountedDisplay*>(&g_hook->m_hmd_device) ||
+        !detail::is_writable_process_range(reinterpret_cast<uintptr_t>(out), 2 * sizeof(*out))) { return nullptr; }
+    return uevr::gears_aim::write_debug_canvas_size(out);
 }
 
 int32_t* IXRTrackingSystemHook::get_ideal_debug_canvas_render_target_size(sdk::IHeadMountedDisplay*, int32_t* out) {
