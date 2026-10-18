@@ -191,6 +191,7 @@ private:
     bool m_relative_transform_corrected{false}; // For UpdatePlayerCamera, causes player to become a midget if not corrected
 
     size_t m_offset_in_engine{0};
+    uintptr_t m_gears_debug_canvas_return_address{};
 
     union {
         Rotator<float> m_last_view_rotation;
