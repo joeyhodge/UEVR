@@ -29,6 +29,21 @@ void test_swgr_bink_seek() {
     };
     mutations(f.seek, b::seek_mask); mutations(f.tick, b::tick_mask); mutations(f.process, b::process_mask);
     mutations(info, b::info_mask); mutations(go, b::goto_mask);
+    m = good; m.put(f.process, b::process_code_382801);
+    expect(contract(), "updated SWGR image-relative SDK tables retain the complete decode/continuation contract");
+    const auto updated = m;
+    for (size_t offset = 0; offset < b::process_mask.size(); ++offset) {
+        if (!b::process_mask[offset]) { continue; }
+        m = updated; m.bytes[f.process - base + offset] ^= 1;
+        expect(!contract(), "updated decoder still validates every non-relocation instruction/operand byte");
+    }
+    for (const size_t offset : {0x9eu, 0xb5u, 0xd6u, 0x311u, 0x7b3u}) {
+        m = good;
+        std::array<uint8_t, 4> operand{};
+        std::copy_n(b::process_code_382801.data() + offset, operand.size(), operand.data());
+        m.put(f.process + offset, operand);
+        expect(!contract(), "mixed old/new SDK table operands are not an accepted image contract");
+    }
     m = good; rel32(f.tick + 0x26b, go);
     expect(!contract(), "Tick cannot borrow an unrelated Info consumer");
     m = good; rel32(go + 0x17, initialize + 8);
