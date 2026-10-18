@@ -134,6 +134,18 @@ void test_typed_return() {
     const auto original_table = table;
     Fixture f;
     const auto query = f.discover();
+    if (query) {
+        using uevr::gears_aim::accepts_debug_canvas_call;
+        expect(accepts_debug_canvas_call(query->return_address, query->return_address, &f, &f),
+            "only the validated consumer and UEVR-owned fake device authorize a result write");
+        expect(!accepts_debug_canvas_call(0, 0, &f, &f), "uninitialized consumer is not authorized");
+        expect(!accepts_debug_canvas_call(query->return_address, query->return_address + 1, &f, &f),
+            "an unvalidated neighboring or plugin caller cannot reinterpret this slot as an sret method");
+        expect(!accepts_debug_canvas_call(query->return_address, query->return_address, &f, &table),
+            "foreign device receiver cannot authorize a write");
+        expect(!accepts_debug_canvas_call(query->return_address, query->return_address, nullptr, nullptr),
+            "null device receiver rejects");
+    }
     std::array<int32_t, 4> guarded{11, 0, 0, 22};
     expect(table[28](nullptr, guarded.data() + 1) == nullptr,
         "old stock-slot-only table reproduces the null return despite a valid hidden output");

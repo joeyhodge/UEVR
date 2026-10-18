@@ -90,6 +90,12 @@ inline std::optional<DebugCanvasQuery> debug_canvas_query(const sdk::discovery::
     return result;
 }
 
+inline bool accepts_debug_canvas_call(uintptr_t validated_return, uintptr_t actual_return,
+    const void* expected_device, const void* actual_device) {
+    return validated_return != 0 && validated_return == actual_return &&
+        expected_device != nullptr && expected_device == actual_device;
+}
+
 inline int32_t* write_debug_canvas_size(int32_t* out) {
     if (!out) { return nullptr; }
     out[0] = 1024;

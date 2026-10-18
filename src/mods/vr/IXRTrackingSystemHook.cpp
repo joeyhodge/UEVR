@@ -2239,6 +2239,7 @@ void IXRTrackingSystemHook::initialize() {
             if (gears_debug_canvas) {
                 // E-Day's Draw uses a different debug-canvas slot. Do not
                 // shift stock UE5.6 tables or rely on null-dereference patching.
+                m_gears_debug_canvas_return_address = gears_debug_canvas->return_address;
                 m_hmd_vtable[gears_debug_canvas->slot] = (uintptr_t)&get_gears_debug_canvas_render_target_size;
             }
 
@@ -3375,7 +3376,8 @@ bool IXRTrackingSystemHook::is_hmd_connected(sdk::IHeadMountedDisplay*) {
 }
 
 int32_t* IXRTrackingSystemHook::get_gears_debug_canvas_render_target_size(sdk::IHeadMountedDisplay* device, int32_t* out) {
-    if (!g_hook || device != reinterpret_cast<sdk::IHeadMountedDisplay*>(&g_hook->m_hmd_device) ||
+    if (!g_hook || !uevr::gears_aim::accepts_debug_canvas_call(g_hook->m_gears_debug_canvas_return_address,
+        reinterpret_cast<uintptr_t>(_ReturnAddress()), &g_hook->m_hmd_device, device) ||
         !detail::is_writable_process_range(reinterpret_cast<uintptr_t>(out), 2 * sizeof(*out))) { return nullptr; }
     return uevr::gears_aim::write_debug_canvas_size(out);
 }
