@@ -329,6 +329,18 @@ add_test(NAME stalker2-native-d3d12-tests COMMAND stalker2-native-d3d12-tests)
 set_tests_properties(stalker2-native-d3d12-tests PROPERTIES TIMEOUT 30)
 """
 
+[target.galactic-racer-letterboxing-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/GalacticRacerLetterboxingTests.cpp"]
+include-directories = ["src/"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["safetyhook"]
+cmake-after = """
+add_test(NAME galactic-racer-letterboxing-tests COMMAND galactic-racer-letterboxing-tests)
+set_tests_properties(galactic-racer-letterboxing-tests PROPERTIES TIMEOUT 30)
+"""
+
 [target.vr-plugin-nullifier]
 type = "shared"
 sources = ["vr-plugin-nullifier/**.cpp", "vr-plugin-nullifier/**.c"]
