@@ -1055,6 +1055,52 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	unset(CMKR_SOURCES)
 endif()
 
+# Target galactic-racer-letterboxing-tests
+if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
+	set(CMKR_TARGET galactic-racer-letterboxing-tests)
+	set(galactic-racer-letterboxing-tests_SOURCES "")
+
+	list(APPEND galactic-racer-letterboxing-tests_SOURCES
+		"tests/GalacticRacerLetterboxingTests.cpp"
+	)
+
+	list(APPEND galactic-racer-letterboxing-tests_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${galactic-racer-letterboxing-tests_SOURCES})
+	add_executable(galactic-racer-letterboxing-tests)
+
+	if(galactic-racer-letterboxing-tests_SOURCES)
+		target_sources(galactic-racer-letterboxing-tests PRIVATE ${galactic-racer-letterboxing-tests_SOURCES})
+	endif()
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT galactic-racer-letterboxing-tests)
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${galactic-racer-letterboxing-tests_SOURCES})
+
+	target_compile_features(galactic-racer-letterboxing-tests PRIVATE
+		cxx_std_23
+	)
+
+	target_include_directories(galactic-racer-letterboxing-tests PRIVATE
+		"src/"
+	)
+
+	target_link_libraries(galactic-racer-letterboxing-tests PRIVATE
+		safetyhook
+	)
+
+	add_test(NAME galactic-racer-letterboxing-tests COMMAND galactic-racer-letterboxing-tests)
+	set_tests_properties(galactic-racer-letterboxing-tests PROPERTIES TIMEOUT 30)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
 # Target vr-plugin-nullifier
 set(CMKR_TARGET vr-plugin-nullifier)
 set(vr-plugin-nullifier_SOURCES "")
@@ -1465,6 +1511,7 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/D3D11Component.cpp"
 	"src/mods/vr/D3D12Component.cpp"
 	"src/mods/vr/FFakeStereoRenderingHook.cpp"
+	"src/mods/vr/GalacticRacerLetterboxing.cpp"
 	"src/mods/vr/GalacticRacerPanini.cpp"
 	"src/mods/vr/IXRTrackingSystemHook.cpp"
 	"src/mods/vr/KtjLOpenXRFactory.cpp"
@@ -1538,6 +1585,9 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/GalacticRacerBinkCode.hpp"
 	"src/mods/vr/GalacticRacerBinkSeek.hpp"
 	"src/mods/vr/GalacticRacerBinkSeekCode.hpp"
+	"src/mods/vr/GalacticRacerLetterboxing.hpp"
+	"src/mods/vr/GalacticRacerLetterboxingCode.hpp"
+	"src/mods/vr/GalacticRacerLetterboxingPolicy.hpp"
 	"src/mods/vr/GalacticRacerNativeFix.hpp"
 	"src/mods/vr/GalacticRacerNativeFixCode.hpp"
 	"src/mods/vr/GalacticRacerOwnedTexture.hpp"
