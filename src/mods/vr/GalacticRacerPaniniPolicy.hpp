@@ -28,17 +28,24 @@ struct ConsoleValue {
     bool valid() const { return object && !(flags & 0xcu) && (value == 0 || value == 1); }
 };
 
-// Do not steal priority, rewrite flags, or restore over another console owner.
+// Re-acquire only the live-traced game-code reset. Never raise the current
+// priority, rewrite flags, or restore over another console owner.
 class ConsoleLease {
 public:
     bool pending() const { return m_original.has_value(); }
+    bool reset_attempted() const { return m_reset_attempted; }
 
-    template<class Read, class Write> Status apply(Read&& read, Write&& write) {
+    template<class Read, class Write> Status apply(Read&& read, Write&& write, bool allow_game_reset = false) {
+        m_reset_attempted = false;
         const auto current = read();
         if (!current || !current->valid()) { return Status::unavailable; }
         if (m_original) {
-            if (!owned(*current)) { m_original.reset(); return Status::external_change; }
-            return Status::active;
+            if (owned(*current)) { return Status::active; }
+            if (!allow_game_reset || !game_code_reset(*current)) {
+                m_original.reset(); return Status::external_change;
+            }
+            m_reset_attempted = true;
+            m_original.reset();
         }
         if (!current->value) { return Status::already_off; }
         m_original = current;
@@ -72,10 +79,38 @@ public:
     }
 
 private:
+    bool game_code_reset(const ConsoleValue& current) const {
+        constexpr uint32_t priority_mask = 0xff000000u, set_by_code = 0x0e000000u;
+        const auto previous_priority = m_original->flags & priority_mask;
+        return current.object == m_original->object && current.value == 1 &&
+            (current.flags & priority_mask) == set_by_code &&
+            (previous_priority == 0 || previous_priority == set_by_code) &&
+            (current.flags & ~priority_mask) == (m_original->flags & ~priority_mask);
+    }
     bool owned(const ConsoleValue& value) const {
         return m_original && value.object == m_original->object && value.flags == m_original->flags && value.value == 0;
     }
     std::optional<ConsoleValue> m_original{};
+    bool m_reset_attempted{};
+};
+
+// Health polls are two seconds apart. Repeated resets exhaust this allowance;
+// only ten seconds of successful ownership replenishes it, not each write.
+class GameResetBudget {
+public:
+    static constexpr uint32_t limit = 3, stable_polls = 5;
+    bool allowed() const { return m_attempts < limit; }
+    uint32_t attempts() const { return m_attempts; }
+    void observe(bool reset_attempted, Status status) {
+        if (reset_attempted) {
+            if (m_attempts < limit) { ++m_attempts; }
+            m_stable_polls = 0;
+        } else if (status == Status::active && m_attempts) {
+            if (++m_stable_polls >= stable_polls) { m_attempts = m_stable_polls = 0; }
+        } else { m_stable_polls = 0; }
+    }
+private:
+    uint32_t m_attempts{}, m_stable_polls{};
 };
 
 inline constexpr size_t temporary_camera_flag = 0xd8;
