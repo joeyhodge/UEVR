@@ -4848,10 +4848,11 @@ bool VR::should_defer_stalker2_openxr_frame_for_transition(const char* reason) {
 void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     ZoneScopedN(__FUNCTION__);
 
+    // Exact Native selection excludes optional Mono/DIBR modes on every branch.
     const auto letterbox_runtime = get_runtime();
     uevr::swgr_letterbox::update(m_compatibility_swgr_letterboxing->value(),
         letterbox_runtime && letterbox_runtime->loaded && is_hmd_active() && !m_disable_vr &&
-        is_using_native_stereo() && !is_using_mono() && !is_using_2d_screen() && !is_splitscreen_compatibility_enabled());
+        is_using_native_stereo() && !is_using_2d_screen() && !is_splitscreen_compatibility_enabled());
 
     const auto now = std::chrono::steady_clock::now();
     const auto previous_engine_tick = m_last_engine_tick.load(std::memory_order_relaxed);
