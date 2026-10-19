@@ -58,6 +58,7 @@
 
 #include "VR.hpp"
 #include "vr/GalacticRacerPanini.hpp"
+#include "vr/GalacticRacerLetterboxing.hpp"
 #include "vr/Stalker2NativePolicy.hpp"
 #include "UObjectHook.hpp"
 #include "GameSpecific.hpp"
@@ -75,6 +76,7 @@ std::shared_ptr<VR>& VR::get() {
 
 VR::~VR() {
     uevr::swgr_panini::shutdown();
+    uevr::swgr_letterbox::shutdown();
     stop_native_openxr_async_wait_worker();
     restore_prospi_frame_pace_override();
     restore_1666amsterdam_native_postprocess_cvars();
@@ -7610,6 +7612,11 @@ void VR::update_prospi_frame_pace_override(sdk::UGameEngine* engine) {
 void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     service_mono_transition_game_thread();
     ZoneScopedN(__FUNCTION__);
+
+    const auto letterbox_runtime = get_runtime();
+    uevr::swgr_letterbox::update(m_compatibility_swgr_letterboxing->value(),
+        letterbox_runtime && letterbox_runtime->loaded && is_hmd_active() && !m_disable_vr &&
+        is_using_native_stereo() && !is_using_mono() && !is_using_2d_screen() && !is_splitscreen_compatibility_enabled());
 
     const auto now = std::chrono::steady_clock::now();
     const auto previous_engine_tick = m_last_engine_tick.load(std::memory_order_relaxed);
@@ -16782,6 +16789,10 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             m_compatibility_ui_layer_pose_telemetry->draw("UI Layer Pose Telemetry");
             m_compatibility_ui_layer_pose_stabilizer->draw("UI Layer Pose Stabilizer");
             if (sdk::galactic_racer::current_dx12_game()) {
+                m_compatibility_swgr_letterboxing->draw("Galactic Racer Cinematic Letterboxing Fix (Experimental)");
+                if (!m_compatibility_swgr_letterboxing->value()) { uevr::swgr_letterbox::update(false, false); }
+                ImGui::TextWrapped("%s", uevr::swgr_letterbox::status_text(uevr::swgr_letterbox::status()));
+                ImGui::TextWrapped("Opt-in DX12 Native / Native Fix only. Removes only M_PP_CameraLetterboxing, which can black out the right eye during collision cameras. Other post-process materials, UI, alpha, FOV and temporal states are unchanged. Fresh chains handle game re-enables and replacement material instances; no CVar freeze/re-arm. Unsupported code/storage keeps the original path.");
                 m_compatibility_swgr_disable_panini->draw("Galactic Racer Disable Panini - CVar (Experimental)");
                 ImGui::TextWrapped("%s", uevr::swgr_panini::status_text(uevr::swgr_panini::cvar_status()));
                 m_compatibility_swgr_panini_component->draw("Galactic Racer Panini Component Fallback (Experimental)");
