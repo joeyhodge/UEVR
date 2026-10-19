@@ -13,10 +13,23 @@ VR_Compatibility_SWGRPaniniComponentFallback=false
 The preferred test sets the game's boolean `Gfn.Panini.Enable` to zero through
 the validated console interface. It preserves priority, checks readback, and
 restores its saved value when disabled/VR becomes inactive if the object,
-flags and value still match its ownership. External changes are not fought.
-Unavailable or read-only variables fail closed. Retries are limited to eight,
+flags and value still match its ownership. Console/other external changes are
+not fought. Unavailable or read-only variables fail closed. Retries are limited to eight,
 two seconds apart; toggle off/on to retry. Shutdown does not call Unreal console
 functions from an arbitrary destructor thread.
+
+A read-only menu -> level trace confirmed that the game re-enables the same
+variable at `SetByCode` priority. While this option remains enabled, that specific
+reset can be re-armed at the variable's current priority, without raising it.
+The object and non-priority flags must match; only constructor/code -> code
+priority is accepted. Console priority, other priority changes, replaced objects
+and read-only/unregistered variables retain the original fail-closed behavior.
+There are at most three automatic re-arms before the path stops. Ten seconds of
+successful two-second health polls replenishes this allowance for later level
+changes; repeated resets do not. Each re-arm saves the game's latest enabled
+value and flags as the restoration baseline. A rejected re-arm stops recovery
+rather than retrying as an unowned initial write. Disabling the option never
+re-acquires or restores over a value changed by the game or another owner.
 
 UE5.7's console interface adds SetHelp ahead of GetFlags. This test decodes
 the original slot-3 scalar flags getter rather than invoking an older SDK slot;

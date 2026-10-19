@@ -68,13 +68,22 @@ public:
             m_failures = 0;
             m_blocked = false;
             m_next = {};
+            m_reset_budget = {};
         }
         const auto now = std::chrono::steady_clock::now();
         if (now >= m_next && !m_blocked) {
             m_next = now + std::chrono::seconds(2);
-            const auto result = want_cvar ? m_lease.apply(read_console, write_console) : m_lease.restore(read_console, write_console);
+            const auto result = want_cvar ? m_lease.apply(read_console, write_console, m_reset_budget.allowed()) : m_lease.restore(read_console, write_console);
+            if (want_cvar) {
+                m_reset_budget.observe(m_lease.reset_attempted(), result);
+                if (m_lease.reset_attempted()) {
+                    SPDLOG_INFO("[SWGR][Panini][CVar] Game-code reset; bounded re-arm {}/{} at the current priority: {}",
+                        m_reset_budget.attempts(), GameResetBudget::limit, status_text(result));
+                }
+            }
             set_status(m_cvar_status, conflict && !m_lease.pending() ? Status::conflicting_options : result, "CVar");
-            if (result == Status::external_change) { m_blocked = true; }
+            if (result == Status::external_change ||
+                (want_cvar && m_lease.reset_attempted() && result == Status::unavailable)) { m_blocked = true; }
             else if (result == Status::unavailable || result == Status::restore_pending) { m_blocked = ++m_failures >= 8; }
             else { m_failures = 0; }
         }
@@ -153,6 +162,7 @@ private:
     }
 
     ConsoleLease m_lease{};
+    GameResetBudget m_reset_budget{};
     bool m_cvar_requested{}, m_blocked{}, m_component_attempted{};
     uint32_t m_failures{};
     std::chrono::steady_clock::time_point m_next{};
