@@ -77,6 +77,141 @@ void test_swgr_panini() {
     console.lose_readback = false; console.value = p::ConsoleValue{0x10000,0,0};
     expect(lease.restore(read, write) == p::Status::off, "lost-readback lease remains restorable");
 
+    for (uint32_t starting_flags : {0u, 0x0e000000u}) {
+        Console reset_console;
+        reset_console.value = p::ConsoleValue{0x10000, starting_flags, 1};
+        p::ConsoleLease reset_lease;
+        const auto read_reset = [&] { return reset_console.read(); };
+        const auto write_reset = [&](const auto& before, int desired) { reset_console.write(before, desired); };
+        expect(reset_lease.apply(read_reset, write_reset, true) == p::Status::active,
+            "game-reset fixture initially owns a disabled CVar");
+        reset_console.value->flags = 0x0e000000;
+        reset_console.value->value = 1;
+        expect(reset_lease.apply(read_reset, write_reset, true) == p::Status::active &&
+            reset_lease.reset_attempted() && reset_console.writes == 2 && reset_console.value->value == 0,
+            "the live-traced same-object game-code reset re-arms without raising its current priority");
+        expect(reset_lease.restore(read_reset, write_reset) == p::Status::off &&
+            reset_console.value->value == 1 && reset_console.value->flags == 0x0e000000,
+            "disable restores the latest game value, not the pre-level priority baseline");
+    }
+    for (const auto external : {p::ConsoleValue{0x10008,0x0e000000,1},
+            p::ConsoleValue{0x10000,0x0f000000,1}, p::ConsoleValue{0x10000,0x09000000,1},
+            p::ConsoleValue{0x10000,0x0e000020,1}, p::ConsoleValue{0x10000,0x0e000004,1},
+            p::ConsoleValue{0x10000,0x0e000008,1}, p::ConsoleValue{0x10000,0x0e000000,2}}) {
+        Console guarded;
+        guarded.value = p::ConsoleValue{0x10000,0x0e000000,1};
+        p::ConsoleLease guard;
+        const auto r = [&] { return guarded.read(); };
+        const auto w = [&](const auto& before, int desired) { guarded.write(before, desired); };
+        expect(guard.apply(r,w,true) == p::Status::active, "protected-change fixture owns its initial disable");
+        guarded.value = external;
+        const auto result = guard.apply(r,w,true);
+        expect((result == p::Status::external_change || result == p::Status::unavailable) &&
+            !guard.reset_attempted() && guarded.writes == 1 && guarded.value->value == external.value,
+            "game-reset recovery cannot override replacement, console priority, other flags or invalid values");
+    }
+    for (uint32_t starting_priority : {0x02000000u,0x08000000u,0x0f000000u}) {
+        Console guarded;
+        guarded.value = p::ConsoleValue{0x10000,starting_priority,1};
+        p::ConsoleLease guard;
+        const auto r = [&] { return guarded.read(); };
+        const auto w = [&](const auto& before, int desired) { guarded.write(before, desired); };
+        expect(guard.apply(r,w,true) == p::Status::active, "other-priority fixture owns the initial disable");
+        guarded.value = p::ConsoleValue{0x10000,0x0e000000,1};
+        expect(guard.apply(r,w,true) == p::Status::external_change && guarded.writes == 1,
+            "code-reset recovery cannot inherit another owner's scalability, plugin or console priority");
+    }
+    {
+        Console repeated;
+        repeated.value = p::ConsoleValue{0x10000,0x0e000000,1};
+        p::ConsoleLease owned;
+        p::GameResetBudget budget;
+        const auto r = [&] { return repeated.read(); };
+        const auto w = [&](const auto& before, int desired) { repeated.write(before, desired); };
+        expect(owned.apply(r,w,budget.allowed()) == p::Status::active, "bounded-reset fixture owns the CVar");
+        for (uint32_t attempt = 0; attempt < p::GameResetBudget::limit + 1; ++attempt) {
+            repeated.value->value = 1;
+            const auto result = owned.apply(r,w,budget.allowed());
+            budget.observe(owned.reset_attempted(),result);
+            expect(attempt < p::GameResetBudget::limit ? result == p::Status::active : result == p::Status::external_change,
+                "only the first three repeated code resets may be automatically re-armed");
+        }
+        expect(!budget.allowed() && repeated.writes == 4 && repeated.value->value == 1 && !owned.pending(),
+            "a repeatedly reset game CVar stops instead of issuing unbounded writes");
+        for (uint32_t poll = 1; poll < p::GameResetBudget::stable_polls; ++poll) {
+            budget.observe(false,p::Status::active);
+            expect(!budget.allowed(), "a short successful interval does not replenish game-reset retries");
+        }
+        budget.observe(false,p::Status::unavailable);
+        for (uint32_t poll = 1; poll < p::GameResetBudget::stable_polls; ++poll) {
+            budget.observe(false,p::Status::active);
+            expect(!budget.allowed(), "a failed health poll restarts the full stable interval");
+        }
+        budget.observe(false,p::Status::active);
+        expect(budget.allowed() && budget.attempts() == 0,
+            "five consecutive healthy polls replenish recovery for later level transitions");
+    }
+    {
+        Console pending;
+        pending.value = p::ConsoleValue{0x10000,0x0e000000,1};
+        p::ConsoleLease owned;
+        const auto r = [&] { return pending.read(); };
+        const auto w = [&](const auto& before, int desired) { pending.write(before, desired); };
+        expect(owned.apply(r,w,true) == p::Status::active, "re-arm readback fixture initially disables the CVar");
+        pending.value->value = 1;
+        pending.lose_readback = true;
+        expect(owned.apply(r,w,true) == p::Status::restore_pending && owned.reset_attempted() && owned.pending(),
+            "a re-arm with lost readback retains the latest restoration baseline");
+        pending.lose_readback = false;
+        pending.value = p::ConsoleValue{0x10000,0x0e000000,0};
+        expect(owned.restore(r,w) == p::Status::off && pending.value->value == 1,
+            "a later disable can restore a re-arm whose initial readback was unavailable");
+        expect(owned.apply(r,w,true) == p::Status::active, "strict-mode fixture owns the CVar again");
+        pending.value->value = 1;
+        const auto writes_before = pending.writes;
+        expect(owned.apply(r,w) == p::Status::external_change && !owned.reset_attempted() && pending.writes == writes_before,
+            "game-reset recovery remains explicit; default lease semantics never re-acquire an external write");
+        expect(owned.apply(r,w,true) == p::Status::active, "disable-path fixture initially owns the CVar");
+        pending.value->value = 1;
+        const auto writes_before_disable = pending.writes;
+        expect(owned.restore(r,w) == p::Status::external_change && pending.writes == writes_before_disable,
+            "turning the option off must never re-acquire even an otherwise eligible game-code reset");
+        expect(owned.apply(r,w,true) == p::Status::active, "rejected re-arm fixture initially owns the CVar");
+        pending.value->value = 1;
+        pending.reject = true;
+        expect(owned.apply(r,w,true) == p::Status::unavailable && owned.reset_attempted() && !owned.pending(),
+            "a rejected game-reset write loses ownership and signals the runtime to stop automatic recovery");
+    }
+    {
+        Console stable;
+        stable.value = p::ConsoleValue{0x10000,0x0e000000,1};
+        p::ConsoleLease owned;
+        p::GameResetBudget budget;
+        const auto r = [&] { return stable.read(); };
+        const auto w = [&](const auto& before, int desired) { stable.write(before, desired); };
+        expect(owned.apply(r,w,true) == p::Status::active, "stable-level fixture initially disables Panini");
+        for (uint32_t attempt = 0; attempt < p::GameResetBudget::limit; ++attempt) {
+            stable.value->value = 1;
+            const auto result = owned.apply(r,w,budget.allowed());
+            budget.observe(owned.reset_attempted(),result);
+        }
+        expect(!budget.allowed(), "three recent game-code resets consume the current allowance");
+        const auto write_count = stable.writes;
+        for (uint32_t poll = 0; poll < p::GameResetBudget::stable_polls; ++poll) {
+            const auto result = owned.apply(r,w,budget.allowed());
+            expect(result == p::Status::active && !owned.reset_attempted(),
+                "ownership remains active without writes while the game stops resetting Panini");
+            budget.observe(owned.reset_attempted(),result);
+        }
+        expect(budget.allowed() && stable.writes == write_count,
+            "ten seconds of real owned health polls restores allowance without further CVar writes");
+        stable.value->value = 1;
+        const auto result = owned.apply(r,w,budget.allowed());
+        budget.observe(owned.reset_attempted(),result);
+        expect(result == p::Status::active && budget.attempts() == 1,
+            "a later level can recover after the preceding level established stable ownership");
+    }
+
     uint8_t flag{};
     { p::TickSuppression guard{flag, false}; expect(flag == 0, "inactive fallback leaves component unchanged"); }
     {
