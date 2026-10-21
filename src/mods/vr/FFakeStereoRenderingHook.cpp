@@ -6455,6 +6455,21 @@ bool supports_minecraft_dungeons_ue561_dedicated_ui_target() {
     return result;
 }
 
+bool stupid_never_dies_dx12_runtime() {
+    static const bool title = [] {
+        const auto path = utility::get_module_pathw(utility::get_executable());
+        return path && uevr::stupid_never_dies_ui::target(*path, true);
+    }();
+    return title && g_framework != nullptr && g_framework->is_dx12();
+}
+
+struct StupidNeverDiesSlateScope {
+    uintptr_t graph{};
+    uint32_t width{}, height{};
+    uintptr_t validated_original{}, validated_ui{};
+};
+thread_local StupidNeverDiesSlateScope g_stupid_never_dies_slate_scope{};
+
 bool supports_ue55_dedicated_ui_target_for_current_game() {
     // Halloween uses the same RegisterExternalTexture ABI, but its UE5.7
     // input structure is parsed separately before the legacy Slate path.
@@ -13697,6 +13712,8 @@ std::string FFakeStereoRenderingHook::build_hook_provenance_json() {
         }
         add_safety_hook("UGameEngine::Tick", "inline", m_tick_hook);
         add_safety_hook("Slate DrawWindow render thread", "inline", m_slate_thread_hook);
+        add_safety_hook("Stupid Never Dies Slate UI creation", "mid", m_stupid_never_dies_ui_hook);
+        add_safety_hook("Stupid Never Dies Slate UI lookup", "mid", m_stupid_never_dies_ui_lookup_hook);
         add_safety_hook("GoWEDay Slate RegisterExternalTexture", "inline", m_goweday_slate_output_texture_register_hook);
         add_safety_hook("SWGR inlined Slate output", "mid", m_swgr_slate_output_hook);
         add_safety_hook("SWGR original Slate output restoration", "mid", m_swgr_slate_output_restore_hook);
@@ -15087,6 +15104,10 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
         return;
     }
 
+    if (stupid_never_dies_dx12_runtime()) {
+        attempt_hook_stupid_never_dies_ui();
+    }
+
     if (auto enable_result = m_slate_thread_hook.enable(); !enable_result.has_value()) {
         SPDLOG_ERROR("Failed to enable FSlateRHIRenderer::DrawWindow_RenderThread hook! {}", (int)enable_result.error().type);
         return;
@@ -15100,6 +15121,47 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
 
     // UE5.7 elements-pass inspection is a fallback only. Let the DrawWindow path
     // try the dedicated UI target first before probing extra callsites.
+}
+
+void FFakeStereoRenderingHook::attempt_hook_stupid_never_dies_ui() {
+    if (!stupid_never_dies_dx12_runtime() || m_stupid_never_dies_ui_hook) { return; }
+    const auto target = m_slate_thread_hook.target_address();
+    const auto module = utility::get_module_within(target);
+    const auto size = module ? utility::get_module_size(*module) : std::nullopt;
+    if (!target || !module || !size) { return; }
+    const auto base = reinterpret_cast<uintptr_t>(*module);
+    const auto code = uevr::post_init::module_window(target, base, base + *size, 0x1800, true);
+    using namespace uevr::stupid_never_dies_ui;
+    if (code.size() < entry_offset + entry_contract.size() ||
+        std::memcmp(code.data() + entry_offset, entry_contract.data(), entry_contract.size()) != 0) {
+        SPDLOG_WARN("[StupidNeverDies][SlateUI] DrawWindow graph/input ABI not proven; preserving original routing");
+        return;
+    }
+    const auto match = find(code, target, [](uintptr_t address, void* out, size_t bytes) {
+        return sdk::discovery::read_process(nullptr, address, out, bytes);
+    });
+    if (!match || uevr::post_init::module_window(match->create, base, base + *size, 1, true).empty() ||
+        uevr::post_init::module_window(match->registration, base, base + *size, 1, true).empty() ||
+        uevr::post_init::module_window(match->lookup_function, base, base + *size, 1, true).empty()) {
+        SPDLOG_WARN("[StupidNeverDies][SlateUI] No unique pooled UI registration contract; preserving original routing");
+        return;
+    }
+    auto hook = safetyhook::MidHook::create(reinterpret_cast<void*>(match->callsite),
+        +[](safetyhook::Context& ctx) { FFakeStereoRenderingHook::stupid_never_dies_ui_hook(ctx, false); });
+    if (!hook || hook->original_bytes().size() != 5) {
+        SPDLOG_WARN("[StupidNeverDies][SlateUI] UI callsite hook could not be safely installed");
+        return;
+    }
+    auto lookup = safetyhook::MidHook::create(reinterpret_cast<void*>(match->lookup),
+        +[](safetyhook::Context& ctx) { FFakeStereoRenderingHook::stupid_never_dies_ui_hook(ctx, true); });
+    if (!lookup || lookup->original_bytes().size() != 5) {
+        SPDLOG_WARN("[StupidNeverDies][SlateUI] UI lookup hook failed; rolling back creation hook");
+        return;
+    }
+    m_stupid_never_dies_ui_call = *match;
+    m_stupid_never_dies_ui_hook = std::move(*hook);
+    m_stupid_never_dies_ui_lookup_hook = std::move(*lookup);
+    SPDLOG_INFO("[StupidNeverDies][SlateUI] Validated renderer/graph/inputs ABI and UI creation call {:x}", match->callsite);
 }
 
 void FFakeStereoRenderingHook::attempt_hook_ue57_slate_elements_pass() {
@@ -32732,6 +32794,74 @@ void FFakeStereoRenderingHook::ue55_slate_output_texture_register_hook(safetyhoo
     slate_output_texture_register_hook_impl(ctx, false);
 }
 
+void FFakeStereoRenderingHook::stupid_never_dies_ui_hook(safetyhook::Context& ctx, bool lookup) {
+    auto& scope = g_stupid_never_dies_slate_scope;
+    if (!scope.graph || !stupid_never_dies_dx12_runtime() || !g_hook->m_stupid_never_dies_ui_call) { return; }
+    const auto& call = *g_hook->m_stupid_never_dies_ui_call;
+    if (ctx.r13 != scope.graph || ctx.rdx != ctx.rbx) { return; }
+    if (lookup ? ctx.rcx != scope.graph :
+        (ctx.r8 != call.name || !uevr::stupid_never_dies_ui::output_matches(call, ctx.rcx, ctx.rsp, ctx.rbp) ||
+         !is_writable_process_range(ctx.rcx, sizeof(uintptr_t)))) { return; }
+
+    auto* const rtm = g_hook->get_render_target_manager();
+    auto* const ui = rtm->get_buffered_rt_ui_target();
+    auto* const original = reinterpret_cast<FRHITexture2D*>(ctx.rdx);
+    if (!ui || ui != rtm->get_ui_target() || ui == rtm->get_render_target() || !original) { return; }
+    if (scope.validated_original == ctx.rdx && scope.validated_ui == reinterpret_cast<uintptr_t>(ui)) {
+        ctx.rdx = scope.validated_ui;
+        return;
+    }
+    const auto native = [](FRHITexture2D* texture) -> ID3D12Resource* {
+        if (!uevr::buffered_rt::readable_texture(reinterpret_cast<uintptr_t>(texture))) { return nullptr; }
+        try { return reinterpret_cast<ID3D12Resource*>(texture->get_native_resource()); }
+        catch (...) { return nullptr; }
+    };
+    auto* const ui_native = native(ui);
+    auto* const original_native = native(original);
+    D3D12_RESOURCE_DESC ui_desc{}, original_desc{};
+    Microsoft::WRL::ComPtr<ID3D12Device4> ui_device{}, original_device{};
+    const char* rejection = "unknown";
+    const auto valid_resource = [&](ID3D12Resource* resource, D3D12_RESOURCE_DESC& desc,
+                                    Microsoft::WRL::ComPtr<ID3D12Device4>& device) {
+        if (!is_probable_d3d_native_resource(resource)) { rejection = "native resource"; return false; }
+        if (!get_d3d12_resource_desc_guarded(resource, desc)) { rejection = "GetDesc"; return false; }
+        if (!uevr::stupid_never_dies_ui::color_target(desc)) { rejection = "color target layout"; return false; }
+        if (!get_d3d12_resource_device_guarded(resource, device.GetAddressOf())) { rejection = "GetDevice"; return false; }
+        return true;
+    };
+    const auto& d3d12 = g_framework->get_d3d12_hook();
+    const bool ui_valid = valid_resource(ui_native, ui_desc, ui_device);
+    const auto* const ui_rejection = rejection;
+    const bool original_valid = valid_resource(original_native, original_desc, original_device);
+    if (!ui_valid || !original_valid || ui_native == original_native || !d3d12 ||
+        ui_device.Get() != d3d12->get_device() || original_device.Get() != ui_device.Get() ||
+        !uevr::stupid_never_dies_ui::ui_target(ui_desc, scope.width, scope.height)) {
+        const auto* reason = !ui_valid ? ui_rejection : !original_valid ? rejection :
+            ui_native == original_native ? "same resource" : !d3d12 || ui_device.Get() != d3d12->get_device() ||
+            original_device.Get() != ui_device.Get() ? "device identity" : "UI extent/format";
+        SPDLOG_WARNING_EVERY_N_SEC(10,
+            "[StupidNeverDies][SlateUI] Rejected {}: UI={:x} [{}x{} fmt={} flags={:x} layers={} mips={} samples={}] "
+            "original={:x} [{}x{} fmt={}] expected={}x{}; original output preserved",
+            reason, reinterpret_cast<uintptr_t>(ui_native), ui_desc.Width, ui_desc.Height, uint32_t(ui_desc.Format),
+            uint32_t(ui_desc.Flags), ui_desc.DepthOrArraySize, ui_desc.MipLevels, ui_desc.SampleDesc.Count,
+            reinterpret_cast<uintptr_t>(original_native), original_desc.Width, original_desc.Height,
+            uint32_t(original_desc.Format), scope.width, scope.height);
+        return;
+    }
+    const auto vr = VR::get();
+    const bool scene = original == rtm->get_render_target() &&
+        original_desc.Width == uint64_t(vr->get_hmd_width()) * 2 && original_desc.Height == vr->get_hmd_height();
+    const bool window = original_desc.Width == scope.width && original_desc.Height == scope.height;
+    if (!scene && !window) { return; }
+    // Only the existing engine call consumes the replacement. RDG/pooled refs
+    // retain it normally; the scene target, input packet and present output stay intact.
+    scope.validated_original = ctx.rdx;
+    scope.validated_ui = reinterpret_cast<uintptr_t>(ui);
+    ctx.rdx = scope.validated_ui;
+    SPDLOG_INFO_ONCE("[StupidNeverDies][SlateUI] Routed Slate into retained {}x{} UI (fmt={}); scene and mouse coordinates unchanged",
+        scope.width, scope.height, uint32_t(ui_desc.Format));
+}
+
 struct Stalker2DedicatedUIResource {
     sdk::FTextureRenderTargetResource* resource{};
     FRHITexture2D* texture{};
@@ -36402,6 +36532,49 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     UE55SlateDrawWindowPassInputsHead ue55_inputs{};
     UE55SlateDrawWindowPassInputs ue55_inputs_full{};
 
+    if (stupid_never_dies_dx12_runtime()) {
+        // Never feed this title's RDG builder or input packet into the legacy
+        // viewport emulator. The exact code contract must be established first.
+        const auto prior_scope = g_stupid_never_dies_slate_scope;
+        const auto prior_inside = g_hook->m_inside_slate_draw_window;
+        const auto prior_thread = g_hook->m_slate_draw_window_thread_id;
+        g_stupid_never_dies_slate_scope = {};
+        g_hook->m_inside_slate_draw_window = false;
+        utility::ScopeGuard restore{[&] {
+            g_stupid_never_dies_slate_scope = prior_scope;
+            g_hook->m_inside_slate_draw_window = prior_inside;
+            g_hook->m_slate_draw_window_thread_id = prior_thread;
+        }};
+        auto* const rtm = g_hook->get_render_target_manager();
+        const auto allocator = rtm->get_buffered_rt_call();
+        const auto in = g_hook->m_stupid_never_dies_ui_call ? uevr::stupid_never_dies_ui::inputs(
+            reinterpret_cast<uintptr_t>(renderer), reinterpret_cast<uintptr_t>(a3),
+            [](uintptr_t address, void* out, size_t bytes) { return sdk::discovery::read_process(nullptr, address, out, bytes); },
+            [](uintptr_t object) { return looks_like_vtable_object(reinterpret_cast<void*>(object)); }) : std::nullopt;
+        uintptr_t commands{};
+        if (!in || !allocator ||
+            !safe_read_value(reinterpret_cast<uintptr_t>(a2) + uevr::stupid_never_dies_ui::command_list_offset, commands) ||
+            commands != allocator->command_list || !is_readable_process_range(commands, 0x100)) {
+            SPDLOG_INFO_EVERY_N_SEC(10, "[StupidNeverDies][SlateUI] Waiting for validated inputs and matching immediate command list");
+            return g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
+        }
+        g_hook->get_slate_thread_worker()->execute(reinterpret_cast<FRHICommandListImmediate*>(commands));
+        const auto vr = VR::get();
+        const auto extent = g_framework->get_d3d12_rt_size();
+        if (vr && vr->is_hmd_active() && !vr->is_stereo_emulation_enabled() && !vr->is_extreme_compatibility_mode_enabled() &&
+            extent.x > 0 && extent.x <= 16384 && extent.y > 0 && extent.y <= 16384) {
+            g_hook->note_stable_slate_draw();
+            g_stupid_never_dies_slate_scope = {reinterpret_cast<uintptr_t>(a2), uint32_t(extent.x), uint32_t(extent.y)};
+            g_hook->m_inside_slate_draw_window = true;
+            g_hook->m_slate_draw_window_thread_id = GetCurrentThreadId();
+        }
+        const auto& mods = g_framework->get_mods()->get_mods();
+        for (auto& mod : mods) { mod->on_pre_slate_draw_window(renderer, reinterpret_cast<void*>(commands), reinterpret_cast<sdk::FViewportInfo*>(in->viewport_info)); }
+        const auto ret = g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
+        for (auto& mod : mods) { mod->on_post_slate_draw_window(renderer, reinterpret_cast<void*>(commands), reinterpret_cast<sdk::FViewportInfo*>(in->viewport_info)); }
+        return ret;
+    }
+
     if (halloween_ue574_dx12_runtime()) {
         const auto previous_inside = g_hook->m_inside_slate_draw_window;
         const auto previous_thread = g_hook->m_slate_draw_window_thread_id;
@@ -38211,6 +38384,75 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
     }
 
     if (rtm->legacy_texture_replay_failed_closed.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    if (const auto recovered = rtm->buffered_rt_texture_call.load(std::memory_order_acquire); recovered && !from_second) {
+        using namespace uevr::buffered_rt;
+        const auto& proof = *recovered;
+        const auto reject = [&] {
+            rtm->legacy_texture_replay_failed_closed.store(true, std::memory_order_release);
+            SPDLOG_WARN_ONCE("[BufferedRT] Recovered allocator validation failed; original engine allocation is unchanged");
+        };
+        const auto module_readable = [](uintptr_t address, size_t size, bool executable) {
+            const auto module = utility::get_module_within(address);
+            const auto length = module ? utility::get_module_size(*module) : std::nullopt;
+            return module && length &&
+                uevr::post_init::module_window(address, reinterpret_cast<uintptr_t>(*module),
+                    reinterpret_cast<uintptr_t>(*module) + *length, size, executable).size() == size;
+        };
+        if (rtm->is_pre_texture_call_e8 || !rtm->allocate_texture_called ||
+            static_cast<uint32_t>(ctx.rsi) != UINT32_MAX || !proof.destroy ||
+            !module_readable(proof.destroy, destroy_entry.size(), true) ||
+            std::memcmp(reinterpret_cast<const void*>(proof.destroy), destroy_entry.data(), destroy_entry.size()) != 0 ||
+            rtm->texture_create_insn_bytes.size() != proof.length ||
+            std::memcmp(rtm->texture_create_insn_bytes.data(), proof.bytes.data(), proof.length) != 0 ||
+            !module_readable(proof.receiver_cell, sizeof(uintptr_t), false) ||
+            !module_readable(proof.command_list, sizeof(uintptr_t), false)) { reject(); return; }
+        uintptr_t receiver{};
+        std::memcpy(&receiver, reinterpret_cast<const void*>(proof.receiver_cell), sizeof(receiver));
+        const Arguments args{ctx.rcx, ctx.rdx, ctx.r8, ctx.r9, ctx.rax, ctx.rsp, ctx.rbp};
+        if (!matches_arguments(proof, args, reinterpret_cast<uintptr_t>(sdk::FDynamicRHI::get()), receiver) ||
+            !readable(receiver, sizeof(uintptr_t)) || !readable(ctx.rdx, sizeof(FTexture2DRHIRef)) ||
+            !readable(ctx.r9, 0x100)) { reject(); return; }
+        uintptr_t vtable{};
+        std::memcpy(&vtable, reinterpret_cast<const void*>(receiver), sizeof(vtable));
+        if (vtable != ctx.rax || !module_readable(vtable, proof.vtable_offset + sizeof(uintptr_t), false)) {
+            reject(); return;
+        }
+        uintptr_t target{};
+        std::memcpy(&target, reinterpret_cast<const void*>(vtable + proof.vtable_offset), sizeof(target));
+        if (!module_readable(target, 1, true)) { reject(); return; }
+
+        alignas(16) std::array<uint8_t, 0x100> descriptor{};
+        std::memcpy(descriptor.data(), reinterpret_cast<const void*>(ctx.r9), descriptor.size());
+        const auto size = g_framework->is_dx11() ? g_framework->get_d3d11_rt_size() : g_framework->get_d3d12_rt_size();
+        if (size.x <= 0 || size.y <= 0) {
+            rtm->texture_hook_ref = reinterpret_cast<FTexture2DRHIRef*>(ctx.rdx);
+            SPDLOG_WARN_ONCE("[BufferedRT] UI backbuffer extent is not ready; preserving original engine texture creation");
+            return;
+        }
+        if (!patch_descriptor(descriptor, VR::get()->get_hmd_width() * 2, VR::get()->get_hmd_height(),
+                              static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y))) { reject(); return; }
+        // Do not run an SDK ref destructor on an unvalidated callee output.
+        struct TextureResult { FRHITexture2D* texture{}; } ui;
+        static_assert(sizeof(TextureResult) == sizeof(FTexture2DRHIRef));
+        using CreateTexture = void(*)(void*, TextureResult*, void*, const void*);
+        reinterpret_cast<CreateTexture>(target)(reinterpret_cast<void*>(receiver), &ui,
+            reinterpret_cast<void*>(ctx.r8), descriptor.data());
+        uintptr_t texture_vtable{};
+        const auto texture = reinterpret_cast<uintptr_t>(ui.texture);
+        if (!readable_texture(texture) || !readable(texture, 12)) { reject(); return; }
+        std::memcpy(&texture_vtable, reinterpret_cast<const void*>(texture), sizeof(texture_vtable));
+        uint32_t flags{};
+        std::memcpy(&flags, reinterpret_cast<const void*>(texture + 8), sizeof(flags));
+        if (!module_readable(texture_vtable, sizeof(uintptr_t), false) ||
+            (flags & 0xc0000000) != 0 || (flags & 0x3fffffff) == 0) { reject(); return; }
+        std::unique_ptr<FRHITexture2D, ReleaseTexture> owner{ui.texture, {proof.destroy}};
+        rtm->texture_hook_ref = reinterpret_cast<FTexture2DRHIRef*>(ctx.rdx);
+        rtm->ui_target = ui.texture;
+        rtm->buffered_rt_ui_owner = std::move(owner);
+        SPDLOG_INFO("[BufferedRT] Created validated UI texture without replaying name/setup helpers [{}x{}]", size.x, size.y);
         return;
     }
 
@@ -42828,6 +43070,7 @@ bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return
         SPDLOG_INFO("Scanning for call instr...");
 
         bool next_call_is_not_the_right_one = false;
+        this->buffered_rt_texture_call.store(nullptr, std::memory_order_release);
 
         auto is_string_nearby = [](uintptr_t addr, std::wstring_view str) {
             const auto addr_module = utility::get_module_within(addr);
@@ -43124,7 +43367,76 @@ bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return
                         const auto fn = utility::calculate_absolute(ip + 1);
                         SPDLOG_INFO("Analyzing call at {:x} to {:x}", ip, fn);
 
-                        if (is_ue56_stack_scope_constructor_call(ip)) {
+                        const auto name_constructor = this->is_using_texture_desc && this->is_version_greq_5_1
+                            ? sdk::FName::get_constructor() : std::nullopt;
+                        if (name_constructor && uevr::buffered_rt::is_name_constructor(fn,
+                                reinterpret_cast<uintptr_t>(*name_constructor))) {
+                            const auto module = utility::get_module_within(ip);
+                            const auto module_size = module ? utility::get_module_size(*module) : std::nullopt;
+                            const auto start = static_cast<uintptr_t>(ip) + decoded->Length;
+                            const auto code = module && module_size
+                                ? uevr::post_init::module_window(start, reinterpret_cast<uintptr_t>(*module),
+                                    reinterpret_cast<uintptr_t>(*module) + *module_size, 0x300, true)
+                                : std::span<const uint8_t>{};
+                            auto recovered = !is_ue_5_7_or_newer()
+                                ? uevr::buffered_rt::find_after_name(code, start) : std::nullopt;
+                            if (recovered) {
+                                const auto after = recovered->callsite + recovered->length;
+                                const auto release_code = code.subspan(after - start);
+                                const auto destroy = uevr::buffered_rt::find_destroy(release_code, after);
+                                const auto entry = destroy
+                                    ? uevr::post_init::module_window(*destroy, reinterpret_cast<uintptr_t>(*module),
+                                        reinterpret_cast<uintptr_t>(*module) + *module_size,
+                                        uevr::buffered_rt::destroy_entry.size(), true)
+                                    : std::span<const uint8_t>{};
+                                if (!destroy || entry.size() != uevr::buffered_rt::destroy_entry.size() ||
+                                    std::memcmp(entry.data(), uevr::buffered_rt::destroy_entry.data(), entry.size()) != 0) {
+                                    recovered.reset();
+                                } else {
+                                    recovered->destroy = *destroy;
+                                }
+                            }
+                            if (!recovered) {
+                                this->legacy_texture_replay_failed_closed.store(true, std::memory_order_release);
+                                this->set_up_texture_hook = true;
+                                SPDLOG_WARN_ONCE("[BufferedRT] Rejected FName constructor; no validated legacy texture allocator follows");
+                                return false;
+                            }
+                            auto pre = safetyhook::MidHook::create(reinterpret_cast<void*>(recovered->callsite),
+                                +[](safetyhook::Context& context) {
+                                    if (g_hook->get_render_target_manager()->buffered_rt_texture_call.load(std::memory_order_acquire)) {
+                                        VRRenderTargetManager::pre_texture_hook_callback(context, false);
+                                    }
+                                });
+                            if (!pre || pre->original_bytes().size() != recovered->length) {
+                                this->legacy_texture_replay_failed_closed.store(true, std::memory_order_release);
+                                this->set_up_texture_hook = true;
+                                SPDLOG_WARN_ONCE("[BufferedRT] Recovered allocator pre-hook failed or overlapped its output hook");
+                                return false;
+                            }
+                            auto post = safetyhook::MidHook::create(reinterpret_cast<void*>(recovered->callsite + recovered->length),
+                                +[](safetyhook::Context& context) {
+                                    if (g_hook->get_render_target_manager()->buffered_rt_texture_call.load(std::memory_order_acquire)) {
+                                        VRRenderTargetManager::texture_hook_callback(context, false);
+                                    }
+                                });
+                            if (!post) {
+                                this->legacy_texture_replay_failed_closed.store(true, std::memory_order_release);
+                                this->set_up_texture_hook = true;
+                                SPDLOG_WARN_ONCE("[BufferedRT] Recovered allocator post-hook installation failed; rolling back pre-hook");
+                                return false;
+                            }
+                            this->texture_create_insn_bytes.assign(recovered->bytes.begin(), recovered->bytes.begin() + recovered->length);
+                            this->is_pre_texture_call_e8 = false;
+                            this->buffered_rt_texture_call.store(std::make_shared<const uevr::buffered_rt::TextureCall>(*recovered),
+                                std::memory_order_release);
+                            this->pre_texture_hook = std::move(*pre);
+                            this->texture_hook = std::move(*post);
+                            this->set_up_texture_hook = true;
+                            SPDLOG_INFO("[BufferedRT] Rejected FName constructor {:x}; validated RHI allocator call {:x} slot={:x}",
+                                fn, recovered->callsite, recovered->vtable_offset);
+                            return false;
+                        } else if (is_ue56_stack_scope_constructor_call(ip)) {
                             // This UE5.6 LLM/scope constructor sits immediately
                             // after AllocateRenderTargetTexture. Hooking it with
                             // the texture-create ABI corrupts the render thread.

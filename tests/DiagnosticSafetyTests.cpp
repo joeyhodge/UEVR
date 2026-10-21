@@ -37,6 +37,7 @@ int test_cadence_replay();
 int test_ue58_ui_initialization();
 int test_ktjl_openxr_factory();
 int test_uobject_browser_cost();
+int test_buffered_rt_texture_call();
 
 namespace {
 // Existing SDK tables must remain a byte-for-byte prefix for pre-2.40 plugins.
@@ -642,6 +643,7 @@ int main() {
     failures += test_ue58_ui_initialization();
     failures += test_ktjl_openxr_factory();
     failures += test_uobject_browser_cost();
+    failures += test_buffered_rt_texture_call();
     if (failures != 0) { return 1; }
     std::cout << "Diagnostic safety tests passed\n";
     return 0;
