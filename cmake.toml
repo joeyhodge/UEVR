@@ -231,7 +231,7 @@ set_tests_properties(gamepad-recovery-tests PROPERTIES TIMEOUT 30)
 [target.diagnostic-safety-tests]
 condition = "compatibility-policy-tests"
 type = "executable"
-sources = ["tests/DiagnosticSafetyTests.cpp", "tests/UObjectBrowserCostTests.cpp", "tests/CadenceReplayTests.cpp", "tests/LoggingDisabledTests.cpp", "tests/CachedCVarReadTests.cpp", "tests/ConsoleTextTests.cpp", "tests/UE58UIInitializationTests.cpp", "tests/KtjLOpenXRFactoryTests.cpp", "src/mods/vr/KtjLOpenXRFactory.cpp", "dependencies/submodules/UESDK/tests/DiscoveryValidationTests.cpp", "dependencies/submodules/UESDK/tests/LayoutSafetyTests.cpp"]
+sources = ["tests/DiagnosticSafetyTests.cpp", "tests/BufferedRTTextureCallTests.cpp", "tests/UObjectBrowserCostTests.cpp", "tests/CadenceReplayTests.cpp", "tests/LoggingDisabledTests.cpp", "tests/CachedCVarReadTests.cpp", "tests/ConsoleTextTests.cpp", "tests/UE58UIInitializationTests.cpp", "tests/KtjLOpenXRFactoryTests.cpp", "src/mods/vr/KtjLOpenXRFactory.cpp", "dependencies/submodules/UESDK/tests/DiscoveryValidationTests.cpp", "dependencies/submodules/UESDK/tests/LayoutSafetyTests.cpp"]
 include-directories = ["src/", "dependencies/submodules/UESDK/src"]
 compile-features = ["cxx_std_23"]
 link-libraries = ["nlohmann_json", "spdlog", "uesdk", "Version", "imgui"]
