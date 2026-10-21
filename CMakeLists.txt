@@ -654,6 +654,7 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 
 	list(APPEND diagnostic-safety-tests_SOURCES
 		"tests/DiagnosticSafetyTests.cpp"
+		"tests/BufferedRTTextureCallTests.cpp"
 		"tests/UObjectBrowserCostTests.cpp"
 		"tests/CadenceReplayTests.cpp"
 		"tests/LoggingDisabledTests.cpp"
@@ -1899,6 +1900,7 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/SteamFrameInput.hpp"
 	"src/mods/vr/StellarBladeRendererEntry.hpp"
 	"src/mods/vr/StockFrameBindingMigration.hpp"
+	"src/mods/vr/StupidNeverDiesUI.hpp"
 	"src/mods/vr/UE57SlateSymbols.hpp"
 	"src/mods/vr/UE58OwnedUITexture.hpp"
 	"src/mods/vr/UE58UIInitialization.hpp"
@@ -1928,6 +1930,7 @@ list(APPEND uevr_SOURCES
 	"src/uevr-imgui/font_robotomedium.hpp"
 	"src/uevr-imgui/uevr_imconfig.hpp"
 	"src/utility/BoundedTextureDiagnostics.hpp"
+	"src/utility/BufferedRTTextureCall.hpp"
 	"src/utility/BuildIdentity.hpp"
 	"src/utility/FrameworkInitialization.hpp"
 	"src/utility/GpuRetirement.hpp"
