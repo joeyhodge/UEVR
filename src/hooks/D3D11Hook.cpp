@@ -548,8 +548,8 @@ bool D3D11Hook::hook() {
         auto& resize_buffers_fn = (*(void***)swap_chain)[13];
         auto& create_vertex_shader_fn = (*(void***)device)[12];
         auto& create_pixel_shader_fn = (*(void***)device)[15];
-        auto& ps_set_shader_fn = (*(void***)context)[5];
-        auto& vs_set_shader_fn = (*(void***)context)[7];
+        auto& ps_set_shader_fn = (*(void***)context)[9];
+        auto& vs_set_shader_fn = (*(void***)context)[11];
 
         m_present_hook = std::make_unique<PointerHook>(&present_fn, (void*)&D3D11Hook::present);
         m_resize_buffers_hook = std::make_unique<PointerHook>(&resize_buffers_fn, (void*)&D3D11Hook::resize_buffers);
