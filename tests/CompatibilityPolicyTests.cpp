@@ -594,6 +594,38 @@ void test_minecraft_dungeons_dedicated_ui_gate() {
     }
 }
 
+void test_glory_to_the_heroes_dedicated_ui_gate() {
+    using uevr::games::should_use_glory_to_the_heroes_ue554_dedicated_ui_target;
+    for (const auto path : {L"GloryToTheHeroes-Win64-Shipping.exe",
+            L"D:\\Steam\\steamapps\\common\\Glory to the Heroes\\GloryToTheHeroes\\Binaries\\Win64\\GloryToTheHeroes-Win64-Shipping.exe",
+            L"D:/Games/GloryToTheHeroes/GloryToTheHeroes-Win64-Shipping.exe",
+            L"C:\\Games\\GLORYTOTHEHEROES-WIN64-SHIPPING.EXE"}) {
+        expect(should_use_glory_to_the_heroes_ue554_dedicated_ui_target(path, 0x00050005, 0x00040000, true),
+            "exact Glory UE5.5.4.0 DX12 executable enters the validated dedicated UI route");
+        expect(!should_use_glory_to_the_heroes_ue554_dedicated_ui_target(path, 0x00050005, 0x00040000, false),
+            "Glory DX11 retains its existing UI routing");
+        for (const auto version_ms : {0u, 0x0004001bu, 0x00050004u, 0x00050006u, 0x00050008u, 0x00060000u}) {
+            expect(!should_use_glory_to_the_heroes_ue554_dedicated_ui_target(path, version_ms, 0x00040000, true),
+                "missing or non-UE5.5 version evidence does not enable Glory dedicated UI");
+        }
+        for (const auto version_ls : {0u, 0x00030000u, 0x00040001u, 0x0004ffffu, 0x00050000u}) {
+            expect(!should_use_glory_to_the_heroes_ue554_dedicated_ui_target(path, 0x00050005, version_ls, true),
+                "unvalidated Glory patches and build revisions retain original routing");
+        }
+    }
+    for (const auto path : {L"", L"GloryToTheHeroes.exe", L"GloryToTheHeroes-Win64-Shipping",
+            L"NotGloryToTheHeroes-Win64-Shipping.exe", L"GloryToTheHeroes-Win64-Shipping.exe.bak",
+            L"D:/GloryToTheHeroes-Win64-Shipping.exe/Other.exe",
+            L"D:\\GloryToTheHeroes-Win64-Shipping.exe\\Other.exe",
+            L"D:/GloryToTheHeroes-Win64-Shipping.exe/", L"TheSinkingCity2.exe",
+            L"Borderlands4.exe", L"Stalker2-Win64-Shipping.exe", L"SWGR-Win64-Shipping.exe",
+            L"Dungeons-Win64-Shipping.exe", L"SWZeroCompany.exe", L"DaysGone.exe",
+            L"prospi-Win64-Shipping.exe", L"KINGDOM HEARTS III.exe"}) {
+        expect(!should_use_glory_to_the_heroes_ue554_dedicated_ui_target(path, 0x00050005, 0x00040000, true),
+            "other games, directory names and basename lookalikes keep their existing UI routing");
+    }
+}
+
 void test_borderlands4_dedicated_ui_gate() {
     using uevr::games::should_use_borderlands4_ue554_dedicated_ui_target;
     for (const auto path : {L"Borderlands4.exe", L"C:\\Games\\Borderlands4.exe",
@@ -2561,6 +2593,7 @@ int main(int argc, char** argv) {
     test_rendering_mode_matrix();
     test_version_gates();
     test_minecraft_dungeons_dedicated_ui_gate();
+    test_glory_to_the_heroes_dedicated_ui_gate();
     test_borderlands4_dedicated_ui_gate();
     test_borderlands4_slate_inputs();
     test_stalker2_lazy_ghost_bootstrap();
