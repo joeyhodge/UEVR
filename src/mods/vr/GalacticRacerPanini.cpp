@@ -134,11 +134,12 @@ private:
             return entry && owner == base && entry->BeginAddress == rva && entry->EndAddress > rva
                 ? entry->EndAddress - rva : 0;
         };
-        if (!component_contract(read, size)) {
+        const auto tick = component_tick_rva(read, size);
+        if (!tick) {
             set_status(m_component_status, Status::unsupported, "Component");
             return;
         }
-        auto hook = safetyhook::InlineHook::create(reinterpret_cast<void*>(base + component_witnesses[0].rva),
+        auto hook = safetyhook::InlineHook::create(reinterpret_cast<void*>(base + *tick),
             &component_tick, safetyhook::InlineHook::StartDisabled);
         if (!hook) { set_status(m_component_status, Status::hook_failed, "Component"); return; }
         m_hook = std::move(*hook);
