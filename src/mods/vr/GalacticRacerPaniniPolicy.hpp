@@ -133,8 +133,8 @@ inline uint64_t fingerprint(std::span<const uint8_t> bytes) {
 }
 
 struct CodeWitness { uint32_t rva, size; uint64_t hash; };
-// Exact current-image contracts, including all relative operands. A changed
-// build, detour or helper must reject the private-byte fallback, not guess.
+// Exact image contracts, including all relative operands. Never mix helpers
+// from different builds or use a matching Tick with unproven companion code.
 inline constexpr std::array<CodeWitness, 4> component_witnesses{{
     {0x2f5a5c, 854, 0x5d213115b07ec933ull},
     {0x2f5db2, 272, 0x4ee085cb9f78b351ull},
@@ -142,13 +142,36 @@ inline constexpr std::array<CodeWitness, 4> component_witnesses{{
     {0x2f5f6a, 272, 0xfddcbe7ae9de64feull},
 }};
 
-template<class Read, class Size> bool component_contract(Read&& read, Size&& size) {
+inline constexpr std::array<CodeWitness, 4> component_witnesses_386500{{
+    {0x2f1fc4, 854, 0xe1668e51551427d0ull},
+    {0x2f231a, 272, 0xad4d945dc50b2c5dull},
+    {0x2f242a, 168, 0x722a63f1a33b294cull},
+    {0x2f24d2, 272, 0xc368d6423e0f9476ull},
+}};
+inline constexpr std::array component_variants{component_witnesses, component_witnesses_386500};
+
+template<class Read, class Size> std::optional<uint32_t> component_tick_rva(Read&& read, Size&& size) {
     std::array<uint8_t, 854> bytes{};
-    for (const auto& witness : component_witnesses) {
-        const auto code = std::span{bytes}.first(witness.size);
-        if (size(witness.rva) != witness.size || !read(witness.rva, code) || fingerprint(code) != witness.hash) { return false; }
+    std::optional<uint32_t> selected{};
+    for (const auto& variant : component_variants) {
+        bool valid = true;
+        for (const auto& witness : variant) {
+            if (witness.size > bytes.size() || size(witness.rva) != witness.size) { valid = false; break; }
+            const auto code = std::span{bytes}.first(witness.size);
+            if (!read(witness.rva, code) || fingerprint(code) != witness.hash) {
+                valid = false; break;
+            }
+        }
+        if (valid) {
+            if (selected) { return {}; }
+            selected = variant.front().rva;
+        }
     }
-    return true;
+    return selected;
+}
+
+template<class Read, class Size> bool component_contract(Read&& read, Size&& size) {
+    return component_tick_rva(read, size).has_value();
 }
 
 inline bool exclusive_component(bool cvar, bool component) { return component && !cvar; }
