@@ -44,6 +44,7 @@
 #include <sdk/DiscoveryMemory.hpp>
 #include <sdk/GearsEDayDiscovery.hpp>
 #include <sdk/TheSinkingCity2Native.hpp>
+#include <sdk/FinalFantasyResonance.hpp>
 #include "GearsEDayAllocation.hpp"
 #include "GearsEDayNativeFix.hpp"
 #include "utility/HookDiagnostics.hpp"
@@ -20260,6 +20261,10 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         return;
     }
 
+    const bool ffrs_viewport_adoption = sdk::ffrs::current_game() && g_framework->is_dx12();
+    const bool is_ffrs_post_draw = ffrs_viewport_adoption && source != nullptr && sdk::ffrs::completed_game_draw(source);
+    if (ffrs_viewport_adoption && !is_ffrs_post_draw) { return; }
+
     if (halo_campaign_evolved_is_current_game() &&
         m_special_detected_5_54 &&
         g_framework->is_dx12())
@@ -20305,8 +20310,9 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         naruto_ue416_dx11_viewport_adoption || dead_island_2_ue425_dx12_viewport_adoption ||
         pokemon_emerald_ue56_dx12_viewport_adoption ||
         sw_zero_company_ue56_dx12_viewport_adoption ||
-        bodycam_ue554_dx12_viewport_adoption || goweday_viewport_adoption;
-    const auto log_prefix = goweday_viewport_adoption ? "[GoWEDay][UE5.6.1][RT]" : bodycam_ue554_dx12_viewport_adoption
+        bodycam_ue554_dx12_viewport_adoption || goweday_viewport_adoption || ffrs_viewport_adoption;
+    const auto log_prefix = ffrs_viewport_adoption ? "[FFRS][UE5.6.1][RT]" :
+        goweday_viewport_adoption ? "[GoWEDay][UE5.6.1][RT]" : bodycam_ue554_dx12_viewport_adoption
         ? "[Bodycam][UE5.5.4][RT]"
         : (dune_viewport_adoption
             ? "[Dune][RT]"
@@ -20445,6 +20451,7 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         !is_pokemon_emerald_viewport_refresh &&
         !is_sw_zero_company_viewport_refresh &&
         !is_goweday_post_draw &&
+        !is_ffrs_post_draw &&
         !is_bodycam_viewport_refresh &&
         !is_stalker2_viewport_refresh)
     {
@@ -20454,7 +20461,18 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
     std::optional<Everspace2ViewportTextureCandidate> everspace2_candidate{};
     auto candidate = (FRHITexture2D*)nullptr;
 
-    if (goweday_viewport_adoption) {
+    if (ffrs_viewport_adoption) {
+        uintptr_t original_getter{};
+        if (m_viewport_get_render_target_texture_hook != nullptr) {
+            original_getter = reinterpret_cast<uintptr_t>(m_viewport_get_render_target_texture_hook->
+                get_original<decltype(&viewport_get_render_target_texture_hook)>());
+        }
+        const auto texture = sdk::ffrs::completed_draw_texture(sdk::discovery::process_memory(),
+            reinterpret_cast<uintptr_t>(viewport), reinterpret_cast<uintptr_t>(&viewport_get_render_target_texture_hook),
+            original_getter);
+        candidate = texture ? reinterpret_cast<FRHITexture2D*>(*texture) : nullptr;
+        if (texture) { sdk::FRenderTarget::update_offsets(viewport); }
+    } else if (goweday_viewport_adoption) {
         uintptr_t original_getter{};
         if (m_viewport_get_render_target_texture_hook != nullptr) {
             original_getter = reinterpret_cast<uintptr_t>(m_viewport_get_render_target_texture_hook->
@@ -20688,6 +20706,33 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
                 "[Bodycam][UE5.5.4][RT] Exact FSceneViewport target has not produced a validated D3D12 scene resource yet");
             return;
         }
+    } else if (ffrs_viewport_adoption) {
+        const auto native = sdk::ffrs::native_resource(sdk::discovery::process_memory(), reinterpret_cast<uintptr_t>(candidate));
+        if (!native || !*native) {
+            SPDLOG_INFO_EVERY_N_SEC(2, "[FFRS][UE5.6.1][RT] Waiting for the validated Draw texture's native resource");
+            return;
+        }
+        native_resource = reinterpret_cast<ID3D12Resource*>(*native);
+        ID3D12Device4* resource_device_raw{};
+        if (!is_probable_d3d_native_resource(native_resource) || !get_d3d12_resource_desc_guarded(native_resource, desc) ||
+            !get_d3d12_resource_device_guarded(native_resource, &resource_device_raw)) { return; }
+        Microsoft::WRL::ComPtr<ID3D12Device4> resource_device;
+        resource_device.Attach(resource_device_raw);
+        const auto& d3d12_hook = g_framework->get_d3d12_hook();
+        const auto expected_device = d3d12_hook != nullptr ? d3d12_hook->get_device() : nullptr;
+        if (!expected_device || resource_device.Get() != expected_device ||
+            desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+            !desc.Width || desc.Width > 65536 || !desc.Height || desc.Height > 65536 ||
+            desc.DepthOrArraySize != 1 || desc.MipLevels != 1 || desc.SampleDesc.Count != 1 ||
+            desc.Format == DXGI_FORMAT_UNKNOWN || !(desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) ||
+            (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)) {
+            SPDLOG_WARNING_EVERY_N_SEC(2,
+                "[FFRS][UE5.6.1][RT] Rejected Draw resource: device_match={} dim={} size={}x{} array={} mips={} samples={} fmt={} flags=0x{:x}",
+                expected_device && resource_device.Get() == expected_device, static_cast<uint32_t>(desc.Dimension),
+                desc.Width, desc.Height, desc.DepthOrArraySize, desc.MipLevels, desc.SampleDesc.Count,
+                static_cast<uint32_t>(desc.Format), static_cast<uint32_t>(desc.Flags));
+            return;
+        }
     } else if (is_ue_5_6_dx12_backend()) {
         const bool is_known_viewport_source =
             source != nullptr && std::string_view{source} == "UGameViewportClient::Draw viewport";
@@ -20828,7 +20873,7 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         dead_island_2_ue425_dx12_viewport_adoption ||
         sw_zero_company_ue56_dx12_viewport_adoption ||
         bodycam_ue554_dx12_viewport_adoption ||
-        goweday_viewport_adoption ||
+        goweday_viewport_adoption || ffrs_viewport_adoption ||
         stalker2_ue55_synced_viewport_adoption)
     {
         // Dead Island keeps its engine-owned side-by-side target in Synced
@@ -20837,13 +20882,13 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
             ? static_cast<uint64_t>(vr->get_hmd_width())
             : static_cast<uint64_t>(vr->get_hmd_width()) *
                 (((naruto_ue416_dx11_viewport_adoption && vr->is_using_afr()) ||
-                  (goweday_viewport_adoption && vr->is_using_afr()) ||
+                  ((goweday_viewport_adoption || ffrs_viewport_adoption) && vr->is_using_afr()) ||
                   stalker2_ue55_synced_viewport_adoption)
                     ? 1ull
                     : 2ull);
         const auto alternate_expected_width =
             bodycam_ue554_dx12_viewport_adoption || stalker2_ue55_synced_viewport_adoption ||
-            (goweday_viewport_adoption && vr->is_using_afr())
+            ((goweday_viewport_adoption || ffrs_viewport_adoption) && vr->is_using_afr())
                 ? expected_width * 2ull
                 : expected_width;
         const auto expected_height = (uint64_t)vr->get_hmd_height();
@@ -21056,7 +21101,9 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         return;
     }
 
-    if (goweday_viewport_adoption) {
+    if (ffrs_viewport_adoption && candidate == rtm->get_dedicated_ui_target()) { return; }
+
+    if (goweday_viewport_adoption || ffrs_viewport_adoption) {
         // Capture/UI resource discovery must learn a real FD3D12Texture table,
         // never the legacy fallback's neighboring Slate-wrapper table.
         FRHITexture2D::set_vtable(*reinterpret_cast<void**>(candidate));
@@ -21306,7 +21353,8 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
         // ES2 can replace the viewport texture during a Draw when a cinematic
         // reallocates pooled targets. Observe the engine-owned pointer again
         // immediately after Draw rather than retaining the allocation-time ref.
-        if (goweday_ue561_dx12_runtime() || swgr_ue574_dx12_runtime() || everspace2_is_current_game() || is_ue_5_8() ||
+        if ((sdk::ffrs::current_game() && g_framework->is_dx12()) ||
+            goweday_ue561_dx12_runtime() || swgr_ue574_dx12_runtime() || everspace2_is_current_game() || is_ue_5_8() ||
             (dead_island_2_ue425_is_current_game() && g_framework->is_dx12()) ||
             (naruto_is_current_game() && is_ue_4_16_runtime() && g_framework->is_dx11()) ||
             stalker2_uses_ue55_draw_windows_array_layout()) {
