@@ -2,6 +2,7 @@
 
 #include <fstream>
 #include "mods/vr/GalacticRacerPaniniPolicy.hpp"
+#include "fixtures/SwgrPaniniCode.hpp"
 
 void test_swgr_panini() {
     namespace p = uevr::swgr_panini;
@@ -245,6 +246,70 @@ void test_swgr_panini() {
     const auto unavailable = [](uint32_t, std::span<uint8_t>) { return false; };
     const auto wrong_size = [](uint32_t) -> size_t { return 1; };
     expect(!p::component_contract(unavailable, wrong_size), "missing or wrong-sized native functions fail closed");
+
+    {
+        struct Function { uint32_t rva; size_t unwind; std::vector<uint8_t> code; bool readable{true}; };
+        std::vector<Function> functions;
+        const auto install = [&](const auto& fixture, bool clear = true) {
+            if (clear) { functions.clear(); }
+            for (const auto& fn : fixture) {
+                functions.push_back({fn.rva, fn.code.size(), {fn.code.begin(), fn.code.end()}});
+            }
+        };
+        const auto read = [&](uint32_t rva, std::span<uint8_t> bytes) {
+            for (const auto& fn : functions) {
+                if (fn.rva == rva && fn.readable && fn.code.size() == bytes.size()) {
+                    std::copy(fn.code.begin(), fn.code.end(), bytes.begin()); return true;
+                }
+            }
+            return false;
+        };
+        const auto size = [&](uint32_t rva) -> size_t {
+            for (const auto& fn : functions) { if (fn.rva == rva) { return fn.unwind; } }
+            return 0;
+        };
+        for (const auto* fixture : {&swgr_panini_fixture::old, &swgr_panini_fixture::new_}) {
+            install(*fixture);
+            expect(p::component_tick_rva(read, size) == fixture->front().rva && p::component_contract(read, size),
+                "each complete observed build selects its own validated Tick, never the other build's RVA");
+            for (auto& fn : functions) {
+                for (auto& byte : fn.code) {
+                    byte ^= 1;
+                    expect(!p::component_tick_rva(read, size), "every original or updated code byte rejects if changed");
+                    byte ^= 1;
+                }
+                ++fn.unwind;
+                expect(!p::component_tick_rva(read, size), "each companion requires its exact unwind boundary");
+                --fn.unwind;
+                fn.readable = false;
+                expect(!p::component_tick_rva(read, size), "each companion must be readable");
+                fn.readable = true;
+                ++fn.rva;
+                expect(!p::component_tick_rva(read, size), "a matching body at an unverified entry is rejected");
+                --fn.rva;
+                const auto last = fn.code.back(); fn.code.pop_back();
+                expect(!p::component_tick_rva(read, size), "truncated companion bodies are rejected");
+                fn.code.push_back(last);
+            }
+            const auto& other = fixture == &swgr_panini_fixture::old ? swgr_panini_fixture::new_ : swgr_panini_fixture::old;
+            for (size_t i = 0; i < functions.size(); ++i) {
+                const auto original = functions[i].code;
+                functions[i].code.assign(other[i].code.begin(), other[i].code.end());
+                expect(!p::component_tick_rva(read, size), "another build's bytes cannot satisfy an old RVA contract");
+                functions[i].code = original;
+            }
+        }
+        for (unsigned subset = 1; subset < 15; ++subset) {
+            functions.clear();
+            for (size_t i = 0; i < 4; ++i) {
+                const auto& fn = (subset & (1u << i)) ? swgr_panini_fixture::new_[i] : swgr_panini_fixture::old[i];
+                functions.push_back({fn.rva, fn.code.size(), {fn.code.begin(), fn.code.end()}});
+            }
+            expect(!p::component_tick_rva(read, size), "intact helpers from mixed builds never authorize a Tick");
+        }
+        install(swgr_panini_fixture::old); install(swgr_panini_fixture::new_, false);
+        expect(!p::component_tick_rva(read, size), "two complete matching variants are ambiguous, not an arbitrary hook choice");
+    }
 }
 
 // Optional local evidence check. Never maps executable code or calls the game.
@@ -290,7 +355,7 @@ void test_swgr_panini_image(const char* path) {
     if (!read_file(directory,entries.data(),directory_size)) { expect(false,"read SWGR unwind table"); return; }
     struct Function { uint32_t rva{}; size_t unwind{}; std::vector<uint8_t> code; };
     std::vector<Function> functions;
-    for (const auto& witness : p::component_witnesses) {
+    for (const auto& variant : p::component_variants) for (const auto& witness : variant) {
         const auto found=std::lower_bound(entries.begin(),entries.end(),witness.rva,
             [](const auto& entry,uint32_t rva){return entry[0]<rva;});
         Function fn{witness.rva,found!=entries.end()&&(*found)[0]==witness.rva&&(*found)[1]>witness.rva
@@ -305,10 +370,18 @@ void test_swgr_panini_image(const char* path) {
         return false;
     };
     const auto size = [&](uint32_t rva)->size_t { for(const auto& fn:functions)if(fn.rva==rva)return fn.unwind;return 0; };
-    expect(p::component_contract(read,size), "actual updated SWGR Tick, D/S writers and tagged setter prove the fallback");
-    for (auto& fn:functions) for (auto& byte:fn.code) {
-        byte^=1;
-        expect(!p::component_contract(read,size), "every changed native byte rejects private component suppression");
-        byte^=1;
+    const auto tick = p::component_tick_rva(read,size);
+    expect(tick.has_value(), "actual SWGR Tick, D/S writers and tagged setter prove the selected build");
+    if (!tick) { return; }
+    for (const auto& variant : p::component_variants) {
+        if (variant.front().rva != *tick) { continue; }
+        for (auto& fn : functions) {
+            if (std::none_of(variant.begin(), variant.end(), [&](const auto& witness) { return witness.rva == fn.rva; })) { continue; }
+            for (auto& byte : fn.code) {
+                byte ^= 1;
+                expect(!p::component_contract(read,size), "every changed native byte rejects private component suppression");
+                byte ^= 1;
+            }
+        }
     }
 }
