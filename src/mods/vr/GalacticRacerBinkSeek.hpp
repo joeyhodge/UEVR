@@ -15,7 +15,8 @@ struct SeekFunctions { uintptr_t seek{}, tick{}, process{}; };
 
 inline bool process_code_matches(const sdk::discovery::Memory& m, uintptr_t address) {
     return swgr::code_matches(m, address, process_code, process_mask) ||
-        swgr::code_matches(m, address, process_code_382801, process_mask);
+        swgr::code_matches(m, address, process_code_382801, process_mask) ||
+        swgr::code_matches(m, address, process_code_386500, process_mask);
 }
 
 template<class Size> inline bool seek_contract(const sdk::discovery::Memory& m,
