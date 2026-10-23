@@ -1080,6 +1080,10 @@ public:
         return (bool)m_slate_thread_hook || m_nascar_slate_getter.active() || (bool)m_swgr_slate_output_hook;
     }
 
+    uintptr_t get_scene_view_constructor_hook_target_address() const {
+        return reinterpret_cast<uintptr_t>(m_sceneview_data.constructor_hook.target());
+    }
+
     uintptr_t get_slate_hook_target_address() const {
         if (m_swgr_slate_output_hook) { return m_swgr_slate_output_hook.target_address(); }
         return m_slate_thread_hook.target_address();
