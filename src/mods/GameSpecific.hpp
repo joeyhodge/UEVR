@@ -281,6 +281,20 @@ inline bool should_use_borderlands4_ue554_dedicated_ui_target(
     return file_version_ms == 0x00050005 && (file_version_ls >> 16) == 4;
 }
 
+inline bool should_use_glory_to_the_heroes_ue554_dedicated_ui_target(
+    std::wstring_view path,
+    uint32_t file_version_ms,
+    uint32_t file_version_ls,
+    bool dx12) {
+    const auto lowered = lowercase_path(path);
+    const auto separator = lowered.find_last_of(L"/\\");
+    const auto filename = std::wstring_view{lowered}.substr(
+        separator == std::wstring::npos ? 0 : separator + 1);
+    // Only the inspected UE5.5.4.0 build enters the existing validated Slate route.
+    return dx12 && filename == L"glorytotheheroes-win64-shipping.exe" &&
+        file_version_ms == 0x00050005 && file_version_ls == 0x00040000;
+}
+
 inline bool is_daysgone_executable_path(std::wstring_view path) {
     const auto lowered = lowercase_path(path);
     return lowered.ends_with(L"\\daysgone.exe") ||
