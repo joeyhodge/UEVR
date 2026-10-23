@@ -363,4 +363,17 @@ inline constexpr auto process_code_382801 = [] {
     return code;
 }();
 
+// Auto-386500 keeps the decoder body but moves both SDK arrays. Accept only
+// this complete operand set; masks and hook boundaries remain unchanged.
+inline constexpr auto process_code_386500 = [] {
+    auto code = process_code;
+    constexpr std::array<std::pair<size_t, uint32_t>, 5> operands{{
+        {0x9e,0x0aa01e38}, {0xb5,0x0aaaec10}, {0xd6,0x0aaaec10},
+        {0x311,0x0aa01e20}, {0x7b3,0x0aa01e40}}};
+    for (const auto& [offset, value] : operands) {
+        for (size_t i = 0; i < sizeof(value); ++i) { code[offset + i] = static_cast<uint8_t>(value >> (8 * i)); }
+    }
+    return code;
+}();
+
 }
