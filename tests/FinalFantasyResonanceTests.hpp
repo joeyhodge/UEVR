@@ -2,6 +2,8 @@
 
 #include <fstream>
 #include <sdk/FinalFantasyResonance.hpp>
+#include <sdk/FinalFantasyResonanceVersion.hpp>
+#include <sdk/ShippingSceneViewLayout.hpp>
 
 namespace ffrs_tests {
 struct Memory {
@@ -156,10 +158,11 @@ void test_ffrs_texture_selection() {
 }
 
 // Optional read-only check against the exact shipping PE. No code is mapped or executed.
-void test_ffrs_image(const char* path) {
+void test_ffrs_image(const char* path, bool hotel188 = false) {
     struct Image {
         std::ifstream file;
         uint64_t size{}, base{};
+        uint32_t module_size{};
         struct Section { uint32_t rva, raw_size, raw, flags; };
         std::vector<Section> sections;
         std::optional<uint64_t> offset(uintptr_t address, size_t n, bool code) const {
@@ -192,6 +195,7 @@ void test_ffrs_image(const char* path) {
         expect(false, "validate FFRS section table"); return;
     }
     std::memcpy(&image.base, header.data() + nt + 24 + 24, sizeof(image.base));
+    image.module_size = u32(nt + 24 + 56);
     for (size_t i = 0; i < count; ++i) {
         const auto o = section_start + i * 40;
         image.sections.push_back({u32(o + 12), u32(o + 16), u32(o + 20), u32(o + 36)});
@@ -204,7 +208,18 @@ void test_ffrs_image(const char* path) {
         return static_cast<bool>(image.file.read(static_cast<char*>(out), n));
     }, [](void* context, uintptr_t p, size_t n) { return static_cast<Image*>(context)->offset(p, n, true).has_value(); }};
     namespace f = sdk::ffrs;
+    if (hotel188) {
+        expect(image.size == 138243584, "Hotel188 evidence matches the analyzed shipping image");
+        expect(sdk::shipping_view::constructor_layout(memory, L"Hotel188-Win64-Shipping.exe", 0x143ad3270) ==
+            sdk::detail::InitOptionsLayout{0x158, 0x160, 0x170, 0x1b0, 0x1b8}, "actual Hotel188 constructor proves its stock UE5.4 identity fields");
+        return;
+    }
     expect(image.base == 0x140000000 && image.size == 495708416, "FFRS evidence matches the analyzed shipping image");
+    expect(sdk::shipping_view::constructor_layout(memory, L"FFRS-Win64-Shipping.exe", 0x14416b380) ==
+        sdk::detail::InitOptionsLayout{0x158, 0x160, 0x180, 0x1c0, 0x1c8}, "actual FFRS constructor proves the UE5.6 fields independently of version strings");
+    const auto version = f::version_source(memory, {image.base, image.module_size}, 0x141324350);
+    expect(version && version->object == 0x149c96c50 && version->published == 0x149c96c90 && version->guard == 0x149c96c98,
+        "actual original FFRS Current getter decodes its native version object and publication guard");
     expect(f::viewport_accessor(memory, 0x14829bfe8) && f::gamma_accessor(memory, 0x14829bfe8), "actual FFRS viewport/gamma contract");
     expect(f::native_accessor(memory, 0x147c4bad0) && f::native_accessor(memory, 0x147c4f698), "actual texture and backbuffer-proxy tables are recognized");
     expect(!f::native_accessor(memory, 0x147e70b38), "the actual FBackgroundView table that caused the crash is rejected");

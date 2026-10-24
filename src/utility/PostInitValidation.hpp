@@ -98,8 +98,11 @@ bool validates_source_slot_body(uintptr_t entry, ReadCode&& read_code, ReadPoint
                 if (!saw_call || !bypassed) { return false; }
             } else if (ix.Instruction == ND_INS_RETN) {
                 for (size_t i = 0; i < ix.OperandsCount; ++i) {
-                    if (ix.Operands[i].Type == ND_OP_IMM) { return false; }
+                    if (ix.Operands[i].Type == ND_OP_IMM &&
+                        (ix.Length != 3 || code[0] != 0xC2 || code[1] != 0 || code[2] != 0)) { return false; }
                 }
+                // Hotel188 folds the inherited slot to C2 00 00. RET 0 has the
+                // same stack effect as C3; any nonzero cleanup remains rejected.
                 return true; // Includes a folded no-op at the verified slot.
             } else if (ix.Category == ND_CAT_UNCOND_BR) {
                 if (decoded_bytes <= 16 && target) {

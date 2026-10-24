@@ -126,6 +126,7 @@ void test_source_post_init_validation() {
         });
     };
     constexpr std::array<uint8_t, 1> noop{0xC3};
+    constexpr std::array<uint8_t, 3> noop_ret_zero{0xC2,0,0};
     constexpr std::array<uint8_t, 6> call_return{0xE8,0,0,0,0,0xC3};
     // A development check: CALL, TEST AL,AL, JE over NOP/INT3, RET.
     constexpr std::array<uint8_t, 12> guarded_assert{0xE8,0,0,0,0,0x84,0xC0,0x74,0x02,0x90,0xCC,0xC3};
@@ -134,6 +135,13 @@ void test_source_post_init_validation() {
     constexpr std::array<uint8_t, 2> cycle{0xEB,0xFE};
     constexpr std::array<uint8_t, 3> ret_with_pop{0xC2,8,0};
     expect(validate(noop), "folded no-op is callable only at the source-verified slot");
+    expect(validate(noop_ret_zero), "Hotel188 RET 0 is equivalent to a folded no-op at the verified slot");
+    expect(!validate(std::span{noop_ret_zero}.first(1)) && !validate(std::span{noop_ret_zero}.first(2)),
+        "truncated RET imm16 cannot validate a source slot");
+    for (uint32_t immediate = 1; immediate <= UINT16_MAX; ++immediate) {
+        const std::array<uint8_t, 3> nonzero_cleanup{0xC2, static_cast<uint8_t>(immediate), static_cast<uint8_t>(immediate >> 8)};
+        expect(!validate(nonzero_cleanup), "every nonzero RET imm16 remains unsafe for the modern void ABI");
+    }
     expect(validate(call_return), "ordinary PostInitProperties prefix remains accepted");
     expect(validate(guarded_assert), "a conditional assertion trap does not reject the verified function");
     expect(!validate(unguarded_trap), "unguarded INT3 still fails closed even after a call");
