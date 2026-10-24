@@ -9969,6 +9969,7 @@ bool dune_frame_handoff_enabled() {
             runtime->is_openxr(), vr->is_using_native_stereo(), vr->is_native_stereo_fix_enabled());
 }
 
+#if __has_include("MonoRenderingPolicy.hpp")
 bool dune_mono_frame_handoff_enabled() {
     auto& vr = VR::get();
     const auto* runtime = vr != nullptr ? vr->get_runtime() : nullptr;
@@ -9977,6 +9978,9 @@ bool dune_mono_frame_handoff_enabled() {
         uevr::dune_frame::mono_enabled(validated_dune_frame_handoff(), g_framework->is_dx12(),
             runtime->is_openxr(), vr->is_using_mono(), vr->is_mono_transition_pending());
 }
+#else
+bool dune_mono_frame_handoff_enabled() { return false; }
+#endif
 
 bool dune_native_transaction_runtime() {
     const auto& vr = VR::get();
@@ -10180,6 +10184,7 @@ struct DuneFrameCommands {
         // flush extra worker queues, synchronize XR, or dereference the command again.
         std::scoped_lock lock{publish_mutex};
         if (frame->mono) {
+#if __has_include("MonoRenderingPolicy.hpp")
             if (!dune_mono_frame_handoff_enabled()) { return; }
             const auto& vr = VR::get();
             const auto xr = vr->get_openxr_runtime();
@@ -10194,6 +10199,9 @@ struct DuneFrameCommands {
             g_hook->note_successful_command_list_hijack();
             SPDLOG_INFO_ONCE("[Dune][MonoFrameHandoff] Validated single-view RHI command executed; current Mono frame identity is advancing");
             return;
+#else
+            return;
+#endif
         }
         if (!dune_frame_handoff_enabled() || !uevr::dune_frame::should_publish(
                 g_hook->get_render_target_manager()->get_scene_capture_generation(),
@@ -28409,7 +28417,11 @@ void FFakeStereoRenderingHook::pre_render_dune_frame(
         VR::get()->is_stereo_emulation_enabled() || !VR::get()->get_runtime()->ready()) { return; }
 
     const auto* manager = g_hook->get_render_target_manager();
+#if __has_include("MonoRenderingPolicy.hpp")
     const auto generation = mono ? VR::get()->mono_generation() : manager->get_scene_capture_generation();
+#else
+    const auto generation = manager->get_scene_capture_generation();
+#endif
     const auto main_target = mono ? reinterpret_cast<sdk::FRenderTarget*>(manager->get_viewport())
         : manager->get_view_family_render_target();
     const auto candidate = uevr::dune_frame::read_family(reinterpret_cast<uintptr_t>(&family),
@@ -28420,6 +28432,7 @@ void FFakeStereoRenderingHook::pre_render_dune_frame(
     }
 
     std::optional<uevr::dune_frame::MonoTicket> mono_ticket{};
+#if __has_include("MonoRenderingPolicy.hpp")
     if (mono) {
         mono_ticket = DuneFrameCommands::observe_mono({generation, VR::get()->mono_request_token(),
             candidate->scene, candidate->target});
@@ -28428,6 +28441,7 @@ void FFakeStereoRenderingHook::pre_render_dune_frame(
             return;
         }
     }
+#endif
 
     static thread_local std::optional<uevr::dune_frame::FamilyFrame> last_frame{};
     static thread_local uint64_t last_generation{};
