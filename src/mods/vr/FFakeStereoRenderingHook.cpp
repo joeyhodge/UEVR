@@ -9969,6 +9969,15 @@ bool dune_frame_handoff_enabled() {
             runtime->is_openxr(), vr->is_using_native_stereo(), vr->is_native_stereo_fix_enabled());
 }
 
+bool dune_mono_frame_handoff_enabled() {
+    auto& vr = VR::get();
+    const auto* runtime = vr != nullptr ? vr->get_runtime() : nullptr;
+    return g_hook != nullptr && g_framework != nullptr && vr != nullptr &&
+        runtime != nullptr &&
+        uevr::dune_frame::mono_enabled(validated_dune_frame_handoff(), g_framework->is_dx12(),
+            runtime->is_openxr(), vr->is_using_mono(), vr->is_mono_transition_pending());
+}
+
 bool dune_native_transaction_runtime() {
     const auto& vr = VR::get();
     const auto* runtime = vr != nullptr ? vr->get_runtime() : nullptr;
@@ -10143,6 +10152,12 @@ struct DuneFrameCommands {
     static inline std::mutex publish_mutex{};
     static inline uint64_t published_generation{};
     static inline uint32_t published_frame{};
+    static inline uevr::dune_frame::MonoPublication mono_publication{};
+
+    static std::optional<uevr::dune_frame::MonoTicket> observe_mono(uevr::dune_frame::MonoScope scope) {
+        std::scoped_lock lock{publish_mutex};
+        return mono_publication.observe(scope);
+    }
 
     static void execute(sdk::FRHICommandBase_New* command, sdk::FRHICommandListBase* list, void* context) {
         std::optional<uevr::dune_frame::PendingFrame> frame{};
@@ -10164,6 +10179,22 @@ struct DuneFrameCommands {
         // Only publish the observed frame after its engine command executes. Do not
         // flush extra worker queues, synchronize XR, or dereference the command again.
         std::scoped_lock lock{publish_mutex};
+        if (frame->mono) {
+            if (!dune_mono_frame_handoff_enabled()) { return; }
+            const auto& vr = VR::get();
+            const auto xr = vr->get_openxr_runtime();
+            // Keep validation and publication in one XR assignment window. A
+            // retired/colliding ring entry must never advance Mono's render clock.
+            std::scoped_lock assignment{xr->sync_assignment_mtx};
+            if (!dune_mono_frame_handoff_enabled() || !vr->is_hmd_active() || !xr->ready() ||
+                !mono_publication.publish(*frame->mono, vr->mono_generation(), vr->mono_request_token(),
+                    reinterpret_cast<uintptr_t>(g_hook->get_render_target_manager()->get_viewport()),
+                    frame->frame, xr->has_mono_frame(frame->frame))) { return; }
+            xr->enqueue_render_poses_unsafe(frame->frame);
+            g_hook->note_successful_command_list_hijack();
+            SPDLOG_INFO_ONCE("[Dune][MonoFrameHandoff] Validated single-view RHI command executed; current Mono frame identity is advancing");
+            return;
+        }
         if (!dune_frame_handoff_enabled() || !uevr::dune_frame::should_publish(
                 g_hook->get_render_target_manager()->get_scene_capture_generation(),
                 frame->generation, frame->frame, published_generation, published_frame)) { return; }
@@ -10187,13 +10218,14 @@ struct DuneFrameCommands {
             is_probable_new_rhi_command(reinterpret_cast<sdk::FRHICommandBase_New*>(command), reason);
     }
 
-    static bool enqueue(uintptr_t graph, uint32_t frame, uint64_t generation) {
+    static bool enqueue(uintptr_t graph, uint32_t frame, uint64_t generation,
+        std::optional<uevr::dune_frame::MonoTicket> mono = std::nullopt) {
         std::scoped_lock lock{mutex};
         const auto command = uevr::dune_frame::read_tail(graph, read_dune_frame_memory, valid_command);
         if (!command || pending.contains(*command)) { return false; }
         uintptr_t original{};
         if (!read_dune_frame_memory(*command, &original, sizeof(original)) ||
-            !pending.reserve({*command, original, frame, generation})) { return false; }
+            !pending.reserve({*command, original, frame, generation, mono})) { return false; }
         const auto previous = InterlockedCompareExchangePointer(reinterpret_cast<void* volatile*>(*command),
             vtable.data(), reinterpret_cast<void*>(original));
         if (previous != reinterpret_cast<void*>(original)) {
@@ -28369,32 +28401,49 @@ bool FFakeStereoRenderingHook::is_dibr_single_view_active() const {
 void FFakeStereoRenderingHook::pre_render_dune_frame(
     ISceneViewExtension* extension, void* graph, sdk::FSceneViewFamily& family) {
     // The baseline pumped this queue once at the same family callback. Preserve
-    // that cadence even while Native Fix is off or a candidate is rejected.
+    // that cadence even while both handoff paths are off or a candidate is rejected.
     utility::ScopeGuard worker{[] { RenderThreadWorker::get().execute(); }};
-    if (!dune_frame_handoff_enabled() || !g_framework->is_game_data_intialized() ||
+    const bool mono = dune_mono_frame_handoff_enabled();
+    if ((!mono && !dune_frame_handoff_enabled()) || !g_framework->is_game_data_intialized() ||
         !g_hook->has_scene_view_family_offsets_ready() || !VR::get()->is_hmd_active() ||
         VR::get()->is_stereo_emulation_enabled() || !VR::get()->get_runtime()->ready()) { return; }
 
     const auto* manager = g_hook->get_render_target_manager();
-    const auto generation = manager->get_scene_capture_generation();
+    const auto generation = mono ? VR::get()->mono_generation() : manager->get_scene_capture_generation();
+    const auto main_target = mono ? reinterpret_cast<sdk::FRenderTarget*>(manager->get_viewport())
+        : manager->get_view_family_render_target();
     const auto candidate = uevr::dune_frame::read_family(reinterpret_cast<uintptr_t>(&family),
-        reinterpret_cast<uintptr_t>(manager->get_view_family_render_target()),
-        read_dune_frame_memory, valid_dune_frame_object);
-    if (!generation || !candidate) {
+        reinterpret_cast<uintptr_t>(main_target), read_dune_frame_memory, valid_dune_frame_object);
+    if (!generation || !candidate || (mono && candidate->view_count != 1)) {
         SPDLOG_WARN_ONCE("[Dune][FrameHandoff] Waiting for a validated initialized main-view family; poses unchanged");
         return;
     }
 
+    std::optional<uevr::dune_frame::MonoTicket> mono_ticket{};
+    if (mono) {
+        mono_ticket = DuneFrameCommands::observe_mono({generation, VR::get()->mono_request_token(),
+            candidate->scene, candidate->target});
+        if (!mono_ticket || !VR::get()->get_openxr_runtime()->has_mono_frame(candidate->frame)) {
+            SPDLOG_WARN_ONCE("[Dune][MonoFrameHandoff] Main family observed without its current pose/common projection; no speculative frame publication");
+            return;
+        }
+    }
+
     static thread_local std::optional<uevr::dune_frame::FamilyFrame> last_frame{};
     static thread_local uint64_t last_generation{};
-    if (last_frame == candidate && last_generation == generation) { return; }
+    static thread_local std::optional<uevr::dune_frame::MonoTicket> last_mono_ticket{};
+    if (last_frame == candidate && last_generation == generation && last_mono_ticket == mono_ticket) { return; }
+    // Mono consumes the pose/projection of this exact family, not an artificially
+    // shifted legacy stereo frame. Native Fix retains its existing compensation.
+    const auto frame = mono ? candidate->frame : candidate->frame + g_hook->get_frame_delay_compensation();
     if (!DuneFrameCommands::enqueue(reinterpret_cast<uintptr_t>(graph),
-            candidate->frame + g_hook->get_frame_delay_compensation(), generation)) {
+            frame, generation, mono_ticket)) {
         SPDLOG_WARN_ONCE("[Dune][FrameHandoff] No validated unowned RHI tail command; retaining poses without a speculative scan");
         return;
     }
     last_frame = candidate;
     last_generation = generation;
+    last_mono_ticket = mono_ticket;
     g_hook->note_prerender_viewfamily_seen();
 }
 
