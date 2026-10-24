@@ -2558,11 +2558,15 @@ void test_ktjl_hook_contracts() {
 #include "GalacticRacerBinkSeekTests.hpp"
 #include "GearsEDayNativeFixTests.hpp"
 #include "FinalFantasyResonanceTests.hpp"
+#include "ShippingSceneViewTests.hpp"
 #include "FrameworkInitializationTests.hpp"
 
 int main(int argc, char** argv) {
     test_ffrs_texture_selection();
+    test_shipping_scene_view_layouts();
+    test_ffrs_engine_version();
     if (argc == 3 && std::string_view{argv[1]} == "--ffrs-image") { test_ffrs_image(argv[2]); }
+    if (argc == 3 && std::string_view{argv[1]} == "--hotel188-image") { test_ffrs_image(argv[2], true); }
     test_framework_initialization();
     test_goweday_engine_allocation();
     test_goweday_native_family();
