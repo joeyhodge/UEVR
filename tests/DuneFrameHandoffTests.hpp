@@ -55,6 +55,8 @@ void test_dune_frame_handoff() {
     for (unsigned mask = 0; mask < 32; ++mask) {
         expect(d::enabled(mask & 1, mask & 2, mask & 4, mask & 8, mask & 16) == (mask == 31),
             "Dune handoff requires validated DX12/OpenXR/Native/Native Fix");
+        expect(d::mono_enabled(mask & 1, mask & 2, mask & 4, mask & 8, mask & 16) == (mask == 15),
+            "Dune Mono handoff requires the proven DX12/OpenXR contract, Mono and no pending transition");
     }
     expect(d::should_publish(4, 4, 100, 0, 0), "first executed command publishes its real frame");
     expect(d::should_publish(4, 4, 101, 4, 100), "subsequent execution advances frame identity");
@@ -112,6 +114,8 @@ void test_dune_frame_handoff() {
     write(views, view); write(view + 0x10, family); write(view + 0x13A0, int32_t{1});
     const auto initial = memory;
     expect(d::read_family(family, target, read, valid).has_value(), "live-shaped primary family accepted");
+    expect(d::read_family(family, target, read, valid)->view_count == 1,
+        "Mono can verify one physical view without changing Native family eligibility");
     expect(!d::read_family(view, target, read, valid), "view argument cannot be treated as family");
     expect(!d::read_family(family, target + 8, read, valid), "auxiliary target rejected");
     expect(!d::read_family(family + 1, target, read, valid), "unaligned family rejected");
@@ -128,6 +132,59 @@ void test_dune_frame_handoff() {
     expect(d::read_family(family, target, read, valid).has_value(), "full pass before capture remains acceptable");
     write(family + 0x84, uint32_t{101});
     expect(d::read_family(family, target, read, valid)->frame == 101, "failed observations do not poison later frames");
+    write(views + 8, view); write(family + 0x10, int32_t{2});
+    expect(d::read_family(family, target, read, valid)->view_count == 2,
+        "Native two-view families remain valid and cannot masquerade as Mono single-view families");
+    expect(d::FamilyFrame{101, scene, target, 1} == *d::read_family(family, target, read, valid),
+        "Native duplicate/replay suppression keeps its pre-Mono frame/scene/target identity");
+    write(family + 0x10, int32_t{1});
+
+    d::MonoPublication mono_publication{};
+    const d::MonoScope scope{3, 0x100000005, scene, target};
+    const auto mono = mono_publication.observe(scope);
+    expect(mono && mono->epoch != 0 && mono->scope == scope, "Mono gets its own non-capture identity");
+    expect(mono_publication.observe(scope) == mono, "same main-family scope retains its publication epoch");
+    expect(!mono_publication.publish(*mono, 3, scope.request_token, target, 100, false) && !mono_publication.last_frame,
+        "missing pose/projection/main-family gate cannot advance or poison Mono publication");
+    expect(mono_publication.publish(*mono, 3, scope.request_token, target, 100, true),
+        "executed Mono command with a current exact XR frame can publish without a Native capture");
+    expect(!mono_publication.publish(*mono, 3, scope.request_token, target, 100, true), "duplicate Mono frame rejected");
+    expect(!mono_publication.publish(*mono, 3, scope.request_token, target, 99, true), "out-of-order Mono completion rejected");
+    expect(!mono_publication.publish(*mono, 4, scope.request_token, target, 101, true), "Mono mode re-entry rejects retired generation");
+    expect(!mono_publication.publish(*mono, 3, scope.request_token + 1, target, 101, true),
+        "cancelled/replaced mode request cannot publish even before the generation changes");
+    expect(!mono_publication.publish(*mono, 3, scope.request_token, target + 8, 101, true),
+        "replaced main target cannot consume the previous viewport's Mono command");
+    expect(mono_publication.publish(*mono, 3, scope.request_token, target, 101, true),
+        "rejected observations leave the next valid frame publishable");
+    for (const auto bad : {d::MonoScope{0, scope.request_token, scene, target},
+             d::MonoScope{3, 0, scene, target}, d::MonoScope{3, scope.request_token, scene + 1, target},
+             d::MonoScope{3, scope.request_token, scene, 0}}) {
+        expect(!mono_publication.observe(bad), "invalid Mono identity cannot allocate a publication epoch");
+    }
+    expect(mono_publication.current == *mono && mono_publication.last_frame == 101,
+        "invalid identity observations do not reset the last good publication");
+    const auto scene_b = mono_publication.observe({3, scope.request_token, scene + 8, target});
+    expect(scene_b && scene_b->epoch != mono->epoch && !mono_publication.last_frame,
+        "scene change retires the old Mono scope before recording another command");
+    expect(!mono_publication.publish(*mono, 3, scope.request_token, target, 102, true), "old world's deferred command is rejected");
+    const auto scene_a_again = mono_publication.observe(scope);
+    expect(scene_a_again && scene_a_again->epoch != mono->epoch &&
+        !mono_publication.publish(*mono, 3, scope.request_token, target, 102, true),
+        "scene pointer A to B to A cannot resurrect a pending old-world ticket");
+    const auto target_b = mono_publication.observe({3, scope.request_token, scene, target + 8});
+    expect(target_b && !mono_publication.publish(*scene_a_again, 3, scope.request_token, target, 102, true),
+        "viewport/resolution target change invalidates pending Mono publication");
+    const auto reentered = mono_publication.observe({5, scope.request_token + 2, scene, target});
+    expect(reentered && mono_publication.publish(*reentered, 5, scope.request_token + 2, target, 10, true),
+        "new Mono generation can restart its frame clock independently of Native Fix's generation");
+    auto rollover = d::MonoPublication{};
+    const auto rollover_ticket = rollover.observe(scope);
+    expect(rollover.publish(*rollover_ticket, 3, scope.request_token, target, 0xFFFFFFFEu, true) &&
+        rollover.publish(*rollover_ticket, 3, scope.request_token, target, 10, true), "Mono frame rollover remains monotonic");
+    auto exhausted = d::MonoPublication{};
+    exhausted.current.epoch = std::numeric_limits<uint64_t>::max();
+    expect(!exhausted.observe(scope), "publication epochs fail closed instead of wrapping onto a retired ticket");
     write(graph + 0x50, list); write(list, root); write(list + 8, tail + 8);
     write(root + 8, tail); write(tail + 8, uintptr_t{});
     const auto command_initial = memory;
@@ -157,4 +214,11 @@ void test_dune_frame_handoff() {
     expect(!pending.take(root) && pending.contains(tail), "exactly-once retirement leaves other commands intact");
     expect(pending.reserve({root, table, 104, 2}), "retired storage supports later generations");
     expect(pending.take(tail).has_value() && pending.take(root).has_value(), "all commands retire independently of mode toggles");
+    expect(pending.reserve({root, table, 100, scope.generation, mono}), "Mono can reserve an engine command with its exact ticket");
+    expect(!pending.reserve({root, table, 100, scope.generation + 1}),
+        "Native/capture identity cannot replace an in-flight Mono command");
+    const auto mono_command = pending.take(root);
+    expect(mono_command && mono_command->mono == mono && mono_command->vtable == table,
+        "Mono execution retains its original callback and ticket through mode changes");
+    expect(!pending.take(root), "Mono command storage is retired exactly once");
 }
