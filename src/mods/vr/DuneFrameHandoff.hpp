@@ -48,6 +48,10 @@ constexpr bool enabled(bool validated, bool dx12, bool openxr, bool native, bool
     return validated && dx12 && openxr && native && native_fix;
 }
 
+constexpr bool mono_enabled(bool validated, bool dx12, bool openxr, bool mono, bool transition_pending) {
+    return validated && dx12 && openxr && mono && !transition_pending;
+}
+
 constexpr bool should_publish(uint64_t current_generation, uint64_t command_generation, uint32_t frame,
     uint64_t last_generation, uint32_t last_frame) {
     const auto delta = frame - last_frame;
@@ -64,7 +68,11 @@ struct FamilyFrame {
     uint32_t frame{};
     uintptr_t scene{};
     uintptr_t target{};
-    bool operator==(const FamilyFrame&) const = default;
+    int32_t view_count{};
+    // View count is an eligibility check, not a new Native Fix replay identity.
+    bool operator==(const FamilyFrame& other) const {
+        return frame == other.frame && scene == other.scene && target == other.target;
+    }
 };
 
 template <typename Read, typename ValidObject>
@@ -92,6 +100,7 @@ std::optional<FamilyFrame> read_family(uintptr_t family, uintptr_t main_target,
             !read(views[i] + 0x10, &owner, sizeof(owner)) || owner != family ||
             !read(views[i] + 0x13A0, &pass, sizeof(pass)) || pass < 0 || pass > 2) { return {}; }
     }
+    result.view_count = count;
     return result;
 }
 
@@ -112,11 +121,56 @@ std::optional<uintptr_t> read_tail(uintptr_t graph, Read&& read, ValidCommand&& 
     return tail;
 }
 
+struct MonoScope {
+    uint64_t generation{};
+    uint64_t request_token{};
+    uintptr_t scene{};
+    uintptr_t target{};
+    bool operator==(const MonoScope&) const = default;
+};
+
+struct MonoTicket {
+    MonoScope scope{};
+    uint64_t epoch{};
+    bool operator==(const MonoTicket&) const = default;
+};
+
+// Caller serializes access. Mono never borrows Native Fix's capture generation.
+// The epoch also distinguishes scene/target A -> B -> A within one Mono session.
+struct MonoPublication {
+    MonoTicket current{};
+    std::optional<uint32_t> last_frame{};
+
+    std::optional<MonoTicket> observe(MonoScope scope) {
+        if (!scope.generation || !scope.request_token ||
+            !aligned_pointer(scope.scene) || !aligned_pointer(scope.target)) { return {}; }
+        if (current.epoch == 0 || current.scope != scope) {
+            if (current.epoch == std::numeric_limits<uint64_t>::max()) { return {}; }
+            current = {scope, current.epoch + 1};
+            last_frame.reset();
+        }
+        return current;
+    }
+
+    bool publish(const MonoTicket& ticket, uint64_t generation, uint64_t request_token,
+        uintptr_t target, uint32_t frame, bool current_mono_frame) {
+        if (!current_mono_frame || !ticket.epoch || ticket != current ||
+            ticket.scope.generation != generation || ticket.scope.request_token != request_token ||
+            ticket.scope.target != target ||
+            (last_frame && !should_publish(generation, ticket.scope.generation, frame, generation, *last_frame))) {
+            return false;
+        }
+        last_frame = frame;
+        return true;
+    }
+};
+
 struct PendingFrame {
     uintptr_t command{};
     uintptr_t vtable{};
     uint32_t frame{};
     uint64_t generation{};
+    std::optional<MonoTicket> mono{};
 };
 
 // Caller serializes access. Never evict a pending command or relabel its frame.
