@@ -45,6 +45,7 @@
 #include <sdk/GearsEDayDiscovery.hpp>
 #include <sdk/TheSinkingCity2Native.hpp>
 #include <sdk/FinalFantasyResonance.hpp>
+#include <sdk/FinchGame.hpp>
 #include "GearsEDayAllocation.hpp"
 #include "GearsEDayNativeFix.hpp"
 #include "utility/HookDiagnostics.hpp"
@@ -3860,6 +3861,70 @@ sdk::UTexture* create_daysgone_legacy_render_target(
         object_address,
         width,
         height);
+    return texture;
+}
+
+bool finch_native_fix_runtime() {
+    static const bool target = sdk::finch::matches_executable(
+        utility::get_module_pathw(utility::get_executable()).value_or(L""));
+    if (!target || g_framework == nullptr || !g_framework->is_dx11() ||
+        !VR::get()->is_using_native_stereo() || !VR::get()->is_native_stereo_fix_enabled()) { return false; }
+    static const bool validated = sdk::finch::target_factory(sdk::discovery::process_memory(),
+        reinterpret_cast<uintptr_t>(utility::get_executable()));
+    if (!validated) { SPDLOG_ERROR_ONCE("[Finch][NativeFix] Legacy target factory did not validate; leaving capture unpublished"); }
+    return validated;
+}
+
+sdk::UTexture* create_finch_legacy_render_target(
+    sdk::UGameplayStatics* gameplay_statics, sdk::UWorld* world, uint32_t width, uint32_t height)
+{
+    namespace finch = sdk::finch;
+    if (!finch_native_fix_runtime() || gameplay_statics == nullptr || world == nullptr ||
+        !finch::dimensions(width, height)) { return nullptr; }
+    auto* target_class = sdk::find_uobject<sdk::UClass>(L"Class /Script/Engine.TextureRenderTarget2D");
+    if (!target_class || target_class->get_properties_size() != finch::texture_size) { return nullptr; }
+    for (const auto& [name, offset] : std::array{
+        std::pair{L"SizeX", 0xa8}, std::pair{L"SizeY", 0xac}, std::pair{L"ClearColor", 0xb0},
+        std::pair{L"bForceLinearGamma", 0xcc}, std::pair{L"bAutoGenerateMips", 0xcc},
+        std::pair{L"OverrideFormat", 0xd0}, std::pair{L"TargetGamma", 0xa0}})
+    {
+        const auto property = target_class->find_property(name);
+        if (!property || property->get_offset() != offset) {
+            SPDLOG_ERROR_ONCE("[Finch][NativeFix] Reflected target layout does not match its initializer");
+            return nullptr;
+        }
+    }
+
+    auto* object = gameplay_statics->spawn_object(target_class, world);
+    const auto address = reinterpret_cast<uintptr_t>(object);
+    const auto base = reinterpret_cast<uintptr_t>(utility::get_executable());
+    if (!object || !is_readable_process_range(address, finch::texture_size) ||
+        !is_writable_process_range(address, finch::texture_size) || object->get_class() != target_class ||
+        object->get_outer() != world || *reinterpret_cast<const uintptr_t*>(object) != base + finch::texture_vtable_rva)
+    {
+        SPDLOG_ERROR("[Finch][NativeFix] SpawnObject did not return the validated legacy render target");
+        return nullptr;
+    }
+
+    constexpr std::array<float, 4> clear{0, 0, 0, 1};
+    std::memcpy(reinterpret_cast<void*>(address + 0xb0), clear.data(), sizeof(clear));
+    *reinterpret_cast<float*>(address + 0xa0) = 0.0f;
+    *reinterpret_cast<uint32_t*>(address + 0xcc) &= ~0x4u;
+    // The game's own initializer owns UpdateResource/BeginInitResource. No
+    // guessed virtual calls or direct RHI creation bypass its render thread.
+    using InitCustomFormat = void (*)(sdk::UTexture*, uint32_t, uint32_t, uint8_t, bool);
+    const auto init = reinterpret_cast<InitCustomFormat>(base + finch::code::init_custom_format_rva);
+    auto* texture = static_cast<sdk::UTexture*>(object);
+    // The traced primary uses UNORM (flags 0x9); an sRGB capture (0x19)
+    // adds a second encode and brightens the right eye. Choose linear storage
+    // before RHI creation; the later display-gamma hook still matches 2.2.
+    init(texture, width, height, 2, true);
+    if (!finch::initialized_linear_capture(sdk::discovery::process_memory(), address, width, height))
+    {
+        SPDLOG_ERROR("[Finch][NativeFix] Legacy target initialization did not persist");
+        return nullptr;
+    }
+    SPDLOG_INFO("[Finch][NativeFix] Created legacy linear BGRA8 capture target {:x} [{}x{}]; viewport display gamma remains matched", address, width, height);
     return texture;
 }
 
@@ -23587,7 +23652,8 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         int32_t y = 0;
 
         if (!vr->is_using_afr() && true_index == 1 &&
-            (!vr->is_native_stereo_fix_enabled() || swgr_ue574_dx12_runtime() || goweday_ue561_dx12_runtime())) {
+            (!vr->is_native_stereo_fix_enabled() || swgr_ue574_dx12_runtime() || goweday_ue561_dx12_runtime() ||
+             finch_native_fix_runtime())) {
             x += w;
         }
 
@@ -27274,6 +27340,36 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         openvr->pose_queue[now_frame] = openvr->pose_queue[last_frame];
     }
 
+    sdk::finch::RightRectOverride finch_right_rects{};
+    if (finch_native_fix_runtime()) {
+        static const bool viewport_validated = sdk::finch::viewport_rect_contract(
+            sdk::discovery::process_memory(), reinterpret_cast<uintptr_t>(utility::get_executable()));
+        const auto as_rect = [](const FIntRect& source) {
+            sdk::finch::Rect rect{};
+            std::copy_n(source.bounds, 4, rect.begin());
+            return rect;
+        };
+        const auto write_rects = [](void*, uintptr_t view, const sdk::finch::ViewRects& rects) {
+            if (!sdk::finch::pointer(view) || view >= 0x0000800000000000ull - 0x60 ||
+                !is_writable_process_range(view + 0x30, sizeof(rects))) { return false; }
+            std::memcpy(reinterpret_cast<void*>(view + 0x30), &rects, sizeof(rects));
+            return true;
+        };
+        if (!viewport_validated || !finch_right_rects.initialize(sdk::discovery::process_memory(),
+                reinterpret_cast<uintptr_t>(native_left_view), reinterpret_cast<uintptr_t>(native_right_view),
+                as_rect(native_left_metadata.constrained_view_rect), as_rect(native_left_metadata.view_rect),
+                as_rect(native_right_metadata.constrained_view_rect), as_rect(native_right_metadata.view_rect),
+                native_capture_snapshot->width, native_capture_snapshot->height, nullptr, write_rects)) {
+            const bool restored = finch_right_rects.restore();
+            g_hook->invalidate_native_stereo_frame_packet(NativeStereoFixState::FailedClosed,
+                restored ? "Finch packed viewport rectangles did not validate" : "Finch viewport rectangles could not be restored");
+            SPDLOG_WARNING_EVERY_N_SEC(2, "[Finch][NativeFix] Keeping the original packed eye pair: rectangle transaction unavailable restored={}", restored);
+            if (restored) { call_original(); }
+            return;
+        }
+        SPDLOG_INFO_ONCE("[Finch][NativeFix] Using zero-origin rectangles only inside the renderer transaction; restoring packed rectangles before viewport coverage checks");
+    }
+
     // Render the proven primary view through the game's complete original
     // family array so auxiliary families keep their normal behavior.
     views.data[0] = native_left_view;
@@ -27431,6 +27527,12 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         } else {
             render_secondary_view();
         }
+    }
+    if (!finch_right_rects.restore()) {
+        g_hook->invalidate_native_stereo_frame_packet(NativeStereoFixState::FailedClosed,
+            "Finch packed rectangles were not restored after rendering");
+        SPDLOG_ERROR_EVERY_N_SEC(2, "[Finch][NativeFix] Right-eye rendering completed but packed viewport rectangles were not restored");
+        return;
     }
     stalker_secondary_frame = stalker_family_frame();
 
@@ -30711,7 +30813,7 @@ void FFakeStereoRenderingHook::adjust_view_rect(FFakeStereoRendering* stereo, in
     if (VR::get()->is_using_mono()) {
         *x = 0;
         *y = 0;
-    } else if (!VR::get()->is_native_stereo_fix_enabled() || swgr_ue574_dx12_runtime() || goweday_ue561_dx12_runtime() || sinking_city_2_native_runtime()) {
+    } else if (!VR::get()->is_native_stereo_fix_enabled() || swgr_ue574_dx12_runtime() || goweday_ue561_dx12_runtime() || sinking_city_2_native_runtime() || finch_native_fix_runtime()) {
         *x += *w * true_index;
     }
 }
@@ -42924,7 +43026,8 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
         daysgone_is_current_game() &&
         g_framework != nullptr &&
         g_framework->is_dx11();
-    if (kismet_rendering == nullptr && !use_daysgone_legacy_target) {
+    const auto use_finch_legacy_target = kismet_rendering == nullptr && finch_native_fix_runtime();
+    if (kismet_rendering == nullptr && !use_daysgone_legacy_target && !use_finch_legacy_target) {
         SPDLOG_ERROR("[VRRenderTargetManager] Failed to get UKismetRenderingLibrary!");
         return false;
     }
@@ -42968,7 +43071,10 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
         return false;
     }
 
-    this->scene_capture_actor = ugs->spawn_actor(world, actor_c, glm::vec3{0, 0, 0});
+    auto* capture_actor_class = use_finch_legacy_target
+        ? sdk::find_uobject<sdk::UClass>(L"Class /Script/Engine.SceneCapture2D") : actor_c;
+    if (capture_actor_class == nullptr) { return false; }
+    this->scene_capture_actor = ugs->spawn_actor(world, capture_actor_class, glm::vec3{0, 0, 0});
 
     if (this->scene_capture_actor == nullptr) {
         SPDLOG_ERROR("[VRRenderTargetManager] Failed to spawn actor!");
@@ -42992,9 +43098,26 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
         is_ue_5_5_dx_backend() || is_ue_5_6_dx_backend() ||
         is_ue_5_7_runtime() || is_ue_5_8();
     const auto component_plan = uevr::scene_capture::component_plan(
-        use_daysgone_legacy_component, use_bodycam_passive_capture_holder,
+        use_daysgone_legacy_component || use_finch_legacy_target, use_bodycam_passive_capture_holder,
         supports_deferred_configuration);
-    if (use_daysgone_legacy_component) {
+    if (use_finch_legacy_target) {
+        // This old engine rejects SpawnObject(UActorComponent). Its built-in
+        // SceneCapture2D actor constructs and registers the component correctly.
+        const auto property = capture_actor_class->find_property(L"CaptureComponent2D");
+        auto* actor = this->scene_capture_actor.get();
+        if (!property || property->get_offset() != sdk::finch::capture_component_offset ||
+            !is_readable_process_range(reinterpret_cast<uintptr_t>(actor),
+                sdk::finch::capture_component_offset + sizeof(void*))) { return false; }
+        auto* component = *property->get_data<sdk::USceneCaptureComponent2D*>(actor);
+        if (!component || !is_readable_process_range(reinterpret_cast<uintptr_t>(component),
+                sdk::UObjectBase::get_class_size()) || !component->is_a(scene_capture_c) ||
+            component->get_outer() != actor) { return false; }
+        this->scene_capture_component = component;
+        for (const auto name : {L"bCaptureEveryFrame", L"bCaptureOnMovement"}) {
+            if (scene_capture_c->find_property(name)) { component->set_bool_property(name, false); }
+        }
+        component->set_visibility(false);
+    } else if (use_daysgone_legacy_component) {
         // UE4.11 UGameplayStatics::SpawnObject rejects UActorComponent classes.
         // Construct and register this transient component through validated
         // Days Gone engine routines instead of entering the known-null path.
@@ -43016,7 +43139,9 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
     const auto target_width = VR::get()->get_hmd_width();
     const auto target_height = VR::get()->get_hmd_height();
     sdk::UTexture* tgt_raw{};
-    if (sdk::kh3::is_process() && g_framework->is_dx11() && VR::get()->is_native_stereo_fix_enabled()) {
+    if (use_finch_legacy_target) {
+        tgt_raw = create_finch_legacy_render_target(ugs, world, target_width, target_height);
+    } else if (sdk::kh3::is_process() && g_framework->is_dx11() && VR::get()->is_native_stereo_fix_enabled()) {
         tgt_raw = create_kh3_native_capture_target(ugs, world, target_width, target_height);
     } else if (kismet_rendering != nullptr) {
         tgt_raw = kismet_rendering->create_render_target_2d(
