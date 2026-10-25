@@ -2564,8 +2564,11 @@ void test_ktjl_hook_contracts() {
 #include "FinalFantasyResonanceTests.hpp"
 #include "ShippingSceneViewTests.hpp"
 #include "FrameworkInitializationTests.hpp"
+#include "FinchNativeFixTests.hpp"
 
 int main(int argc, char** argv) {
+    test_finch_native_fix_contracts();
+    if (argc == 3 && std::string_view{argv[1]} == "--finch-image") { test_finch_native_fix_image(argv[2]); }
     test_ffrs_texture_selection();
     test_shipping_scene_view_layouts();
     test_ffrs_engine_version();

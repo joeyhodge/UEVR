@@ -1,0 +1,103 @@
+{
+  "notice": "Original read-only Finch runtime bytes, not synthesized decoder templates. Names are ABI roles validated against code and source.",
+  "timestamp": 1498004125,
+  "image_size": 47947776,
+  "image_base": 140697770131456,
+  "blocks": [
+    {
+      "name": "constructor_prefix",
+      "rva": 17980480,
+      "hex": "488bc4555356574154415541564157488da8f8fcffff4881ecc80300000f2970"
+    },
+    {
+      "name": "constructor_family",
+      "rva": 17980590,
+      "hex": "488b82b0000000488901488b82b8000000488941084889711048897118488b82c000000048894120488b82c800000048894128"
+    },
+    {
+      "name": "constructor_world",
+      "rva": 17980689,
+      "hex": "418b87040100004c8db730020000498bce89872c020000"
+    },
+    {
+      "name": "constructor_pass",
+      "rva": 17980827,
+      "hex": "418b8700010000898720040000"
+    },
+    {
+      "name": "init_custom_format",
+      "rva": 18870400,
+      "hex": "0fb644242883e0018991a8000000448981ac000000448889d000000083a1cc000000fe0981cc000000488b0148ffa0d0010000"
+    },
+    {
+      "name": "update_resource",
+      "rva": 18802480,
+      "hex": "40534883ec204883794800488bd9743b488d0df9fed400e804013100488bd0488bcbe8c94444ff488b4b48e820147fff488b4b484885c9740a488b01ba01000000ff1048c7434800000000803dee5b8101007409803de65b810100742c8b4308c1e804a8017522488b03488bcbff90d8010000488943484885c0740d488bc84883c4205be907d17eff4883c4205bc3"
+    },
+    {
+      "name": "create_resource",
+      "rva": 18839536,
+      "hex": "40534883ec20488b01488bd9ff90e80000004885c074088b8090010000eb068b050b4b7b0185c07f3c0fb683d000000084c075118b8bcc00000083e102c1e10283c902eb030fb6c8803db84a7b010075088d41f783f801760583f9137507c683d000000002f683cc00000004745e8b8b"
+    },
+    {
+      "name": "render_texture_ref_getter",
+      "rva": 18866128,
+      "hex": "488b41084885c074054883c008c348"
+    },
+    {
+      "name": "render_wrapper_getter",
+      "rva": 5356528,
+      "hex": "488d4108c3"
+    },
+    {
+      "name": "native_texture_getter",
+      "rva": 16124656,
+      "hex": "488b8188000000c3"
+    },
+    {
+      "name": "wrapper_ref_getter",
+      "rva": 12027824,
+      "hex": "8b8180000000c3"
+    },
+    {
+      "name": "wrapper_setter",
+      "rva": 16621280,
+      "hex": "48895170c3"
+    },
+    {
+      "name": "render_target_destructor",
+      "rva": 18824864,
+      "hex": "4883e968e9d70a0000"
+    },
+    {
+      "name": "constructor_rects",
+      "rva": 17980641,
+      "hex": "0f1082a00000000f1141300f1082a00000000f1141400f108290000000c741600a0000000f114150"
+    },
+    {
+      "name": "viewport_rect_area",
+      "rva": 17051904,
+      "hex": "498b024d8d52080f10484066490f7ec8660f73d908443bc666480f7eca488bc2498bc8410f46f048c1e920413bcf440f46f9413bd6440f43f248c1e820413bc4440f43e02bc1412bd0660f6ec00f5bc0f30f2cc8660f6ec20f5bc0f30f2cc00fafc84403c94983eb017595"
+    },
+    {
+      "name": "viewport_overlap_rejection",
+      "rva": 17052075,
+      "hex": "85db0f843f020000418bcc418bc6412bcf2bc60fafc8443bc90f852802000041f6454c040f851d020000"
+    },
+    {
+      "name": "viewport_black_fill",
+      "rva": 17052675,
+      "hex": "ff50304d8b07488d9538020000498bcf488bd841ff5030660f6e1b410f28d04c8b6598410f28c8c644245800498bcc660f6e4004488d0562fb950148c7442450000000004889442448f3440f114c2440f3440f114c24380f5bc0f3440f114424300f5bdbf3440f11442428f30f11442420e8178d4400eb04"
+    },
+    {
+      "name": "capture_gamma_getter",
+      "rva": 18862272,
+      "hex": "488b5138f30f1082a00000000f2f05e153d40077258b415883e80983f8017612f682cc000000017509f30f1005b796d800c3f30f1005aa18d400c3"
+    },
+    {
+      "name": "capture_init_encoding",
+      "rva": 18870734,
+      "hex": "488b416840b6014883c168ff50384c8b87a0000000f30f5c05b9f7d300400fb6c6be010000008975cf458b88d4000000418b90ac0000000f54059498d3000f2f059d32d4000f1087b0000000410f42c7f6d8418b80cc0000001bc983e110448bd1410fbaea0c24040f1145d38b45df440f44d1"
+    }
+  ]
+}
