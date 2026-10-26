@@ -135,6 +135,9 @@
 #include "Borderlands4Slate.hpp"
 #include "Pre57SlateDiscovery.hpp"
 #include "Pre57SlateCode.hpp"
+#include "utility/ReadOnlyPointerAccessor.hpp"
+#include "utility/DiagnosticChange.hpp"
+#include "utility/D3D12ResourceInterface.hpp"
 #include "UE58OwnedUITexture.hpp"
 
 #include <tracy/Tracy.hpp>
@@ -6742,6 +6745,7 @@ bool should_preserve_promoted_ue55_slate_target() {
     return aphelion_is_current_game() ||
         mechwarrior_clans_is_current_game() ||
         supports_borderlands4_ue554_dedicated_ui_target() ||
+        supports_glory_to_the_heroes_ue554_dedicated_ui_target() ||
         everwind_is_current_game() ||
         pokemon_emerald_is_current_game() ||
         is_deadzone_ue56_executable();
@@ -7283,7 +7287,8 @@ bool ue55_dx12_try_get_native_resource_direct(
     FRHITexture2D* texture,
     const char* source,
     ID3D12Resource** out_native = nullptr,
-    D3D12_RESOURCE_DESC* out_desc = nullptr)
+    D3D12_RESOURCE_DESC* out_desc = nullptr,
+    bool read_only_probe = false)
 {
     if (goweday_ue561_dx12_runtime()) {
         return goweday_try_get_native_resource(texture, out_native, out_desc);
@@ -7352,6 +7357,8 @@ bool ue55_dx12_try_get_native_resource_direct(
         direct_slots = {4ull, 5ull};
     }
 
+    ID3D12Resource* selected_native{};
+    D3D12_RESOURCE_DESC selected_desc{};
     for (size_t slot_index = 0; slot_index < direct_slot_count; ++slot_index) {
         const auto slot = direct_slots[slot_index];
         const auto fn = reinterpret_cast<uintptr_t>(vtable[slot]);
@@ -7381,13 +7388,27 @@ bool ue55_dx12_try_get_native_resource_direct(
                 slot, exact_swzc_layout->revision);
         }
 
-        auto* native_raw = call_get_native_resource_guarded(texture, fn);
+        // A descriptor location is not a virtual ABI. Interpret only the getter's
+        // read-only initialized path; never probe a neighboring bindless/sret slot.
+        const bool read_only_getter = read_only_probe && exact_swzc_layout == nullptr &&
+            (is_ue_5_5_dx12_backend() || is_ue_5_6_dx12_backend());
+        const auto observed = read_only_getter
+            ? utility::accessor::read_pointer(sdk::discovery::process_memory(), fn,
+                reinterpret_cast<uintptr_t>(texture)) : std::nullopt;
+        auto* native_raw = read_only_getter ? (observed ? reinterpret_cast<void*>(*observed) : nullptr)
+            : call_get_native_resource_guarded(texture, fn);
 
         if (!is_probable_d3d_native_resource(native_raw)) {
             continue;
         }
 
         auto* native = (ID3D12Resource*)native_raw;
+        Microsoft::WRL::ComPtr<ID3D12Resource> queried;
+        if (read_only_getter &&
+            (!utility::d3d12_resource::query(reinterpret_cast<IUnknown*>(native_raw), queried.GetAddressOf()) ||
+             queried.Get() != native)) {
+            continue;
+        }
         D3D12_RESOURCE_DESC desc{};
 
         if (!get_d3d12_resource_desc_guarded(native, desc)) {
@@ -7403,6 +7424,21 @@ bool ue55_dx12_try_get_native_resource_direct(
             continue;
         }
 
+        if (read_only_getter) {
+            ID3D12Device4* raw{};
+            if (!get_d3d12_resource_device_guarded(native, &raw)) { continue; }
+            Microsoft::WRL::ComPtr<ID3D12Device4> resource_device;
+            resource_device.Attach(raw);
+            const auto& hook = g_framework->get_d3d12_hook();
+            if (!hook || !hook->get_device() || resource_device.Get() != hook->get_device()) { continue; }
+            if (selected_native && selected_native != native) {
+                SPDLOG_WARNING_EVERY_N_SEC(5, "[Pre5.7][SlateUI] Ambiguous read-only native accessors; original routing retained");
+                return false;
+            }
+            selected_native = native; selected_desc = desc;
+            continue;
+        }
+
         FRHITexture2D::set_vtable(vtable);
 
         if (out_native != nullptr) {
@@ -7413,6 +7449,13 @@ bool ue55_dx12_try_get_native_resource_direct(
             *out_desc = desc;
         }
 
+        return true;
+    }
+
+    if (selected_native) {
+        FRHITexture2D::set_vtable(vtable);
+        if (out_native) { *out_native = selected_native; }
+        if (out_desc) { *out_desc = selected_desc; }
         return true;
     }
 
@@ -8473,7 +8516,7 @@ bool sw_zero_company_ue56_try_bootstrap_scene_target(
 std::optional<D3D12_RESOURCE_DESC> ue55_try_get_d3d12_desc(FRHITexture2D* texture, const char* source) {
     D3D12_RESOURCE_DESC desc{};
 
-    if (!ue55_dx12_try_get_native_resource_direct(texture, source, nullptr, &desc)) {
+    if (!ue55_dx12_try_get_native_resource_direct(texture, source, nullptr, &desc, true)) {
         return std::nullopt;
     }
 
@@ -13698,6 +13741,7 @@ void FFakeStereoRenderingHook::on_frame() {
     home_together_pool_guard::attempt_install();
     attempt_hook_game_engine_tick();
     attempt_hook_slate_thread();
+    update_pre57_slate_ui_observation();
     attempt_hook_fsceneview_constructor();
     attempt_hook_daysgone_slate_intermediate_buffer();
     attempt_hook_daysgone_bend_taa_composite();
@@ -13816,6 +13860,29 @@ std::string FFakeStereoRenderingHook::build_hook_provenance_json() {
             {"ue58_rtm_enabled", m_uses_ue58_rendertarget_manager},
             {"ue58_rtm_abi", ue58_abi_name},
         };
+
+        {
+            std::scoped_lock lock{m_pre57_slate_observation_mutex};
+            const auto& observation = m_pre57_slate_observation;
+            result["pre57_slate_ui_observation"] = {
+                {"enabled", m_pre57_slate_observation_enabled.load(std::memory_order_acquire)},
+                {"diagnostic_only", true}, {"routing_authorized", false},
+                {"state", uevr::pre57_slate::name(observation.state)},
+                {"known_adapter", observation.known_adapter},
+                {"stable_samples", observation.stable}, {"observed_ms", observation.observed_ms},
+                {"texture", observation.facts.texture}, {"native", observation.facts.native},
+                {"scene_texture", observation.facts.scene_texture}, {"scene_native", observation.facts.scene_native},
+                {"width", observation.facts.desc.Width}, {"height", observation.facts.desc.Height},
+                {"format", static_cast<uint32_t>(observation.facts.desc.Format)},
+                {"window_ownership_proven", false}, {"pool_ownership_proven", false},
+                {"copy_retirement_proven", false},
+            };
+            if (m_pre57_slate_observation_registration) {
+                const auto& registration = *m_pre57_slate_observation_registration;
+                result["pre57_slate_ui_observation"]["callsite"] = registration.callsite;
+                result["pre57_slate_ui_observation"]["callee"] = registration.target;
+            }
+        }
 
         {
             const auto& diagnostics = m_ue58_slate_ui_capability;
@@ -15589,6 +15656,142 @@ void FFakeStereoRenderingHook::attempt_hook_ue57_slate_elements_pass() {
         "Hooked {} UE 5.7 DrawWindow_RenderThread callsites for validated ElementsTexture inspection ({} same-module calls found)",
         hooked_count,
         direct_calls.size());
+}
+
+void FFakeStereoRenderingHook::update_pre57_slate_ui_observation() {
+    namespace s = uevr::pre57_slate;
+    const auto vr = VR::get();
+    const bool enabled = vr && vr->is_pre57_slate_ui_observation_enabled();
+    const bool previous = m_pre57_slate_observation_enabled.exchange(enabled, std::memory_order_acq_rel);
+    if (!enabled) {
+        if (previous) {
+            std::scoped_lock lock{m_pre57_slate_observation_mutex};
+            m_pre57_slate_observation.reset();
+        }
+        return;
+    }
+    if (!previous) {
+        m_pre57_slate_observation_attempted = false;
+        m_pre57_slate_observation_next_ms.store(0, std::memory_order_release);
+        std::scoped_lock lock{m_pre57_slate_observation_mutex};
+        m_pre57_slate_observation.reset(s::ObservationState::WaitingDraw);
+    }
+    if (m_pre57_slate_observation_attempted) { return; }
+    static const auto contract = s::engine_contract(sdk::search_for_version(utility::get_executable()).value_or(L""),
+        sdk::get_file_version_info().dwFileVersionMS);
+    if (!g_framework || !g_framework->is_dx12() || contract != s::EngineContract::RDG55_56) {
+        std::scoped_lock lock{m_pre57_slate_observation_mutex};
+        m_pre57_slate_observation.reset(contract == s::EngineContract::Immediate54
+            ? s::ObservationState::Legacy54 : s::ObservationState::Unsupported);
+        m_pre57_slate_observation_attempted = true;
+        return;
+    }
+    if (!m_slate_thread_hook.target_address()) { return; } // Do not cache a transient missing DrawWindow.
+    m_pre57_slate_observation_attempted = true;
+    if (supports_ue55_dedicated_ui_target_for_current_game()) {
+        // Observe through the adapter's existing callback, never stack a second
+        // hook on its callsite or broaden that adapter's routing predicate.
+        std::scoped_lock lock{m_pre57_slate_observation_mutex};
+        m_pre57_slate_observation.state = s::ObservationState::Observing;
+        m_pre57_slate_observation.known_adapter = true;
+        return;
+    }
+    if (m_pre57_slate_observation_hook) {
+        std::scoped_lock lock{m_pre57_slate_observation_mutex};
+        m_pre57_slate_observation.state = s::ObservationState::Discovered;
+        return;
+    }
+    const auto draw = m_slate_thread_hook.target_address();
+    const auto module = utility::get_module_within(draw);
+    const auto size = module ? utility::get_module_size(*module) : std::nullopt;
+    const s::ImageRange image{module ? reinterpret_cast<uintptr_t>(*module) : 0, size.value_or(0)};
+    const auto reject = [&] {
+        std::scoped_lock lock{m_pre57_slate_observation_mutex};
+        m_pre57_slate_observation.state = s::ObservationState::Rejected;
+    };
+    const auto found = s::discover_raw_output(draw, image, m_slate_thread_hook.original_bytes(),
+        {s::glory_raw_registration, s::glory_raw_registration_mask},
+        [](uintptr_t p, void* output, size_t count) { return sdk::discovery::read_process(nullptr,p,output,count); },
+        [](uintptr_t p, size_t count) { return is_executable_process_range(p,count); },
+        [](uintptr_t p) -> std::optional<s::FunctionRange> {
+            const auto owner = get_runtime_function_range(p);
+            return owner ? std::optional{s::FunctionRange{owner->begin,owner->end,owner->image_base}} : std::nullopt;
+        });
+    if (!found.match) { reject(); return; }
+    auto hook = safetyhook::create_mid(reinterpret_cast<void*>(found.match->callsite),
+        &FFakeStereoRenderingHook::pre57_slate_ui_observation_hook, safetyhook::MidHook::StartDisabled);
+    if (!hook) { reject(); return; }
+    m_pre57_slate_observation_hook = std::move(hook);
+    {
+        std::scoped_lock lock{m_pre57_slate_observation_mutex};
+        m_pre57_slate_observation_registration = found.match;
+        m_pre57_slate_observation.state = s::ObservationState::Discovered;
+    }
+    if (!m_pre57_slate_observation_hook.enable()) { m_pre57_slate_observation_hook.reset(); reject(); return; }
+    SPDLOG_INFO("[Pre5.7][SlateUI] Read-only raw registration observer installed at {:x}; no UI routing or allocation authorized",
+        found.match->callsite);
+}
+
+void FFakeStereoRenderingHook::pre57_slate_ui_observation_hook(safetyhook::Context& context) {
+    if (!g_hook || !g_hook->m_pre57_slate_observation_enabled.load(std::memory_order_acquire)) { return; }
+    std::array<char16_t, 19> name{};
+    if (!sdk::discovery::process_memory().load(context.r8, name) || name.back() != 0 ||
+        std::u16string_view{name.data(), name.size() - 1} != u"SlateOutputTexture") { return; }
+    g_hook->note_pre57_slate_ui_texture(context.rdx);
+}
+
+void FFakeStereoRenderingHook::note_pre57_slate_ui_texture(uintptr_t texture, uintptr_t renderer) {
+    if (!m_pre57_slate_observation_enabled.load(std::memory_order_acquire) ||
+        (!is_ue_5_5_dx12_backend() && !is_ue_5_6_dx12_backend())) { return; }
+    const auto now = GetTickCount64();
+    auto next = m_pre57_slate_observation_next_ms.load(std::memory_order_acquire);
+    if (now < next || !m_pre57_slate_observation_next_ms.compare_exchange_strong(next, now + 1000,
+        std::memory_order_acq_rel)) { return; }
+    namespace s = uevr::pre57_slate;
+    s::TextureFacts facts{};
+    facts.texture = texture;
+    auto* const rtm = get_render_target_manager();
+    facts.scene_texture = rtm ? reinterpret_cast<uintptr_t>(rtm->get_render_target()) : 0;
+    const auto& hook = g_framework->get_d3d12_hook();
+    facts.expected_device = hook ? reinterpret_cast<uintptr_t>(hook->get_device()) : 0;
+    const auto inspect = [&](uintptr_t object, D3D12_RESOURCE_DESC& desc, uintptr_t* device) -> uintptr_t {
+        const auto memory = sdk::discovery::process_memory();
+        uintptr_t table{};
+        if (!utility::accessor::pointer(object) || !memory.load(object, table) || !utility::get_module_within(table)) { return 0; }
+        uintptr_t result{};
+        for (const auto slot : {4u, 5u, 7u}) {
+            uintptr_t fn{};
+            if (!memory.load(table + slot * sizeof(uintptr_t), fn) || !utility::get_module_within(fn)) { continue; }
+            const auto candidate = utility::accessor::read_pointer(memory, fn, object);
+            auto* native = candidate ? reinterpret_cast<ID3D12Resource*>(*candidate) : nullptr;
+            D3D12_RESOURCE_DESC observed{};
+            Microsoft::WRL::ComPtr<ID3D12Resource> queried;
+            if (!is_probable_d3d_native_resource(native) ||
+                !utility::d3d12_resource::query(reinterpret_cast<IUnknown*>(native), queried.GetAddressOf()) ||
+                queried.Get() != native || !get_d3d12_resource_desc_guarded(native, observed)) { continue; }
+            if (result && result != *candidate) { return 0; }
+            result = *candidate; desc = observed;
+            if (device) {
+                ID3D12Device4* raw{};
+                if (!get_d3d12_resource_device_guarded(native, &raw)) { return 0; }
+                Microsoft::WRL::ComPtr<ID3D12Device4> retained; retained.Attach(raw);
+                *device = reinterpret_cast<uintptr_t>(retained.Get());
+            }
+        }
+        return result;
+    };
+    facts.native = inspect(texture, facts.desc, &facts.device);
+    D3D12_RESOURCE_DESC scene_desc{};
+    facts.scene_native = facts.scene_texture == texture ? facts.native : inspect(facts.scene_texture,scene_desc,nullptr);
+    s::Epoch epoch{};
+    epoch.draw = m_slate_thread_hook.target_address();
+    epoch.module = reinterpret_cast<uintptr_t>(utility::get_module_within(epoch.draw).value_or(nullptr));
+    epoch.renderer = renderer; epoch.scene = facts.scene_native; epoch.device = facts.device;
+    epoch.extent = {static_cast<uint32_t>(facts.desc.Width),facts.desc.Height};
+    if (const auto vr = VR::get()) { epoch.rendering_method = static_cast<uint32_t>(vr->requested_rendering_method()); }
+    std::unique_lock lock{m_pre57_slate_observation_mutex, std::try_to_lock};
+    if (!lock.owns_lock() || !m_pre57_slate_observation_enabled.load(std::memory_order_acquire)) { return; }
+    m_pre57_slate_observation.observe(epoch,facts,now);
 }
 
 void FFakeStereoRenderingHook::attempt_hook_ue55_slate_output_texture_register() {
@@ -32571,15 +32774,21 @@ bool ue55_is_valid_ui_texture_candidate(
     }
 
     if (texture == rtm->get_render_target()) {
-        SPDLOG_INFO_EVERY_N_SEC(2, "[UE5.5][SlateUI] rejecting {} candidate because it matches the scene render target: tex={:x}",
-            source != nullptr ? source : "<unknown>", (uintptr_t)texture);
+        static thread_local utility::logging::DiagnosticChanges<2> scene_alias_log;
+        if (scene_alias_log.should_log(supports_glory_to_the_heroes_ue554_dedicated_ui_target(), reinterpret_cast<uintptr_t>(source),
+                {reinterpret_cast<uintptr_t>(rtm), reinterpret_cast<uintptr_t>(texture)})) {
+            SPDLOG_INFO_EVERY_N_SEC(2, "[UE5.5][SlateUI] rejecting {} candidate because it matches the scene render target: tex={:x}",
+                source != nullptr ? source : "<unknown>", (uintptr_t)texture);
+        }
         return false;
     }
 
-    const auto desc = ue55_try_get_d3d12_desc(texture, source);
-    if (!desc) {
+    ID3D12Resource* native{};
+    D3D12_RESOURCE_DESC native_desc{};
+    if (!ue55_dx12_try_get_native_resource_direct(texture,source,&native,&native_desc,true)) {
         return false;
     }
+    const auto desc = std::optional{native_desc};
 
     if (!expected_extent || expected_extent->width == 0 || expected_extent->height == 0) {
         SPDLOG_INFO_EVERY_N_SEC(2,
@@ -32605,14 +32814,29 @@ bool ue55_is_valid_ui_texture_candidate(
         return false;
     }
 
-    SPDLOG_INFO_EVERY_N_SEC(2,
-        "[UE5.5][SlateUI] accepted {} candidate tex={:x} [{}x{} fmt={} flags=0x{:x}]",
-        source != nullptr ? source : "<unknown>",
-        (uintptr_t)texture,
-        desc->Width,
-        desc->Height,
-        (uint32_t)desc->Format,
-        (uint32_t)desc->Flags);
+    if (is_ue_5_5_dx12_backend() || is_ue_5_6_dx12_backend()) {
+        ID3D12Resource* scene{};
+        if (!uevr::pre57_slate::supported_color(*desc) ||
+            !ue55_dx12_try_get_native_resource_direct(rtm->get_render_target(), "Slate scene alias check", &scene, nullptr, true) ||
+            !scene || native == scene) {
+            SPDLOG_INFO_EVERY_N_SEC(5, "[Pre5.7][SlateUI] Refusing unsupported or scene-aliased UI promotion; original routing retained");
+            return false;
+        }
+    }
+
+    static thread_local utility::logging::DiagnosticChanges<7> accepted_log;
+    if (accepted_log.should_log(supports_glory_to_the_heroes_ue554_dedicated_ui_target(), reinterpret_cast<uintptr_t>(source),
+            {reinterpret_cast<uintptr_t>(rtm), reinterpret_cast<uintptr_t>(texture), reinterpret_cast<uintptr_t>(native),
+                desc->Width, desc->Height, static_cast<uint64_t>(desc->Format), static_cast<uint64_t>(desc->Flags)})) {
+        SPDLOG_INFO_EVERY_N_SEC(2,
+            "[UE5.5][SlateUI] accepted {} candidate tex={:x} [{}x{} fmt={} flags=0x{:x}]",
+            source != nullptr ? source : "<unknown>",
+            (uintptr_t)texture,
+            desc->Width,
+            desc->Height,
+            (uint32_t)desc->Format,
+            (uint32_t)desc->Flags);
+    }
 
     return true;
 }
@@ -32634,13 +32858,19 @@ void ue55_promote_slate_outputs(
     UE55SlateDrawWindowPassOutputs outputs{};
     memcpy(&outputs, outputs_ptr, sizeof(outputs));
 
-    SPDLOG_INFO_EVERY_N_SEC(2,
-        "[UE5.5][SlateUI] DrawWindow outputs viewport_rhi={:x} viewport_texture={:x} output_texture={:x} expected={}x{}",
-        (uintptr_t)outputs.viewport_rhi,
-        (uintptr_t)outputs.viewport_texture_rhi,
-        (uintptr_t)outputs.output_texture_rhi,
-        expected_extent ? expected_extent->width : 0,
-        expected_extent ? expected_extent->height : 0);
+    static thread_local utility::logging::DiagnosticChanges<6> outputs_log;
+    if (outputs_log.should_log(supports_glory_to_the_heroes_ue554_dedicated_ui_target(), 0,
+            {reinterpret_cast<uintptr_t>(rtm), reinterpret_cast<uintptr_t>(outputs.viewport_rhi),
+                reinterpret_cast<uintptr_t>(outputs.viewport_texture_rhi), reinterpret_cast<uintptr_t>(outputs.output_texture_rhi),
+                expected_extent ? expected_extent->width : 0, expected_extent ? expected_extent->height : 0})) {
+        SPDLOG_INFO_EVERY_N_SEC(2,
+            "[UE5.5][SlateUI] DrawWindow outputs viewport_rhi={:x} viewport_texture={:x} output_texture={:x} expected={}x{}",
+            (uintptr_t)outputs.viewport_rhi,
+            (uintptr_t)outputs.viewport_texture_rhi,
+            (uintptr_t)outputs.output_texture_rhi,
+            expected_extent ? expected_extent->width : 0,
+            expected_extent ? expected_extent->height : 0);
+    }
 
     if (everspace2_is_current_game() || sw_zero_company_ue56_is_current_game()) {
         // These titles transition through pooled DrawWindow outputs. Keep the
@@ -33076,6 +33306,8 @@ void FFakeStereoRenderingHook::slate_output_texture_register_hook_impl(safetyhoo
         return;
     }
 
+    if (!ue58) { g_hook->note_pre57_slate_ui_texture(ctx.rdx); }
+
     auto* rtm = g_hook->get_render_target_manager();
 
     if (ue58 &&
@@ -33263,6 +33495,14 @@ void FFakeStereoRenderingHook::slate_output_texture_register_hook_impl(safetyhoo
         return;
     }
 
+    if (!ue58 && (is_ue_5_5_dx12_backend() || is_ue_5_6_dx12_backend()) &&
+        !ue55_is_valid_ui_texture_candidate(rtm, ui_target, UE55SlateExtent{expected_width,expected_height},
+            "dedicated UI at registration")) {
+        // Revalidate at the write boundary too: a wrapper can start aliasing the
+        // scene after promotion. Rejecting only the Present copy is too late.
+        return;
+    }
+
     if (!original_desc) {
         original_desc = ue55_try_get_d3d12_desc(original, "original SlateOutputTexture");
     }
@@ -33303,16 +33543,21 @@ void FFakeStereoRenderingHook::slate_output_texture_register_hook_impl(safetyhoo
         return;
     }
 
-    SPDLOG_INFO_EVERY_N_SEC(1,
-        "{} routing SlateOutputTexture original={:x} [{}x{}] -> dedicated={:x} [{}x{} fmt={}]",
-        tag,
-        (uintptr_t)original,
-        original_desc->Width,
-        original_desc->Height,
-        (uintptr_t)ui_target,
-        desc->Width,
-        desc->Height,
-        (uint32_t)desc->Format);
+    static thread_local utility::logging::DiagnosticChanges<8> routing_log;
+    if (routing_log.should_log(supports_glory_to_the_heroes_ue554_dedicated_ui_target(), 0,
+            {reinterpret_cast<uintptr_t>(rtm), reinterpret_cast<uintptr_t>(original), original_desc->Width, original_desc->Height,
+                reinterpret_cast<uintptr_t>(ui_target), desc->Width, desc->Height, static_cast<uint64_t>(desc->Format)})) {
+        SPDLOG_INFO_EVERY_N_SEC(1,
+            "{} routing SlateOutputTexture original={:x} [{}x{}] -> dedicated={:x} [{}x{} fmt={}]",
+            tag,
+            (uintptr_t)original,
+            original_desc->Width,
+            original_desc->Height,
+            (uintptr_t)ui_target,
+            desc->Width,
+            desc->Height,
+            (uint32_t)desc->Format);
+    }
 
     ctx.rdx = (uintptr_t)ui_target;
 }
@@ -37839,15 +38084,22 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         const auto expected_extent = a4_has_ue_5_5_full_inputs ? ue55_get_slate_expected_extent(ue55_inputs_full) : std::nullopt;
 
         if (expected_extent) {
-            SPDLOG_INFO_EVERY_N_SEC(2,
-                "[UE5.5][SlateUI] DrawWindow trusted Slate extent [{}x{}] scene_rect min=[{},{}] max=[{},{}] scale={:.3f}",
-                expected_extent->width,
-                expected_extent->height,
-                ue55_inputs_full.scene_view_rect.min.x,
-                ue55_inputs_full.scene_view_rect.min.y,
-                ue55_inputs_full.scene_view_rect.max.x,
-                ue55_inputs_full.scene_view_rect.max.y,
-                ue55_inputs_full.viewport_scale_ui);
+            static thread_local utility::logging::DiagnosticChanges<7> extent_log;
+            const auto scale_bits = std::bit_cast<uint32_t>(ue55_inputs_full.viewport_scale_ui);
+            if (extent_log.should_log(supports_glory_to_the_heroes_ue554_dedicated_ui_target(), 0,
+                    {expected_extent->width, expected_extent->height,
+                        static_cast<uint64_t>(ue55_inputs_full.scene_view_rect.min.x), static_cast<uint64_t>(ue55_inputs_full.scene_view_rect.min.y),
+                        static_cast<uint64_t>(ue55_inputs_full.scene_view_rect.max.x), static_cast<uint64_t>(ue55_inputs_full.scene_view_rect.max.y), scale_bits})) {
+                SPDLOG_INFO_EVERY_N_SEC(2,
+                    "[UE5.5][SlateUI] DrawWindow trusted Slate extent [{}x{}] scene_rect min=[{},{}] max=[{},{}] scale={:.3f}",
+                    expected_extent->width,
+                    expected_extent->height,
+                    ue55_inputs_full.scene_view_rect.min.x,
+                    ue55_inputs_full.scene_view_rect.min.y,
+                    ue55_inputs_full.scene_view_rect.max.x,
+                    ue55_inputs_full.scene_view_rect.max.y,
+                    ue55_inputs_full.viewport_scale_ui);
+            }
 
             if (everwind_is_current_game() || is_deadzone_ue56_executable()) {
                 // Some UE5.5/5.6 titles already expose the correct UI texture
@@ -40945,6 +41197,29 @@ bool VRRenderTargetManager_Base::try_get_sw_zero_company_pinned_ui_resource(
     return true; // A pending/mismatched target must not fall through to speculative calls.
 }
 
+bool VRRenderTargetManager_Base::try_get_pre57_slate_ui_native(
+    FRHITexture2D* texture, Microsoft::WRL::ComPtr<ID3D12Resource>& native) {
+    native.Reset();
+    if ((!is_ue_5_5_dx12_backend() && !is_ue_5_6_dx12_backend()) ||
+        !supports_ue55_dedicated_ui_target_for_current_game()) {
+        return false;
+    }
+    ID3D12Resource* resource{};
+    ID3D12Resource* scene{};
+    D3D12_RESOURCE_DESC desc{};
+    if (texture && texture == get_dedicated_ui_target() && texture != get_render_target() &&
+        ue55_dx12_try_get_native_resource_direct(texture, "retained pre-5.7 Slate UI", &resource, &desc, true) &&
+        uevr::pre57_slate::supported_color(desc) &&
+        desc.Width == dedicated_ui_width && desc.Height == dedicated_ui_height &&
+        ue55_dx12_try_get_native_resource_direct(get_render_target(), "retained pre-5.7 Slate scene", &scene, nullptr, true) &&
+        scene && scene != resource) {
+        native = resource;
+    }
+    // Handled, including rejection: presentation must not fall back to the
+    // process-global getter's historical virtual-slot probing.
+    return true;
+}
+
 bool VRRenderTargetManager_Base::prepare_sw_zero_company_dedicated_ui_target(
     FRHITexture2D* rt,
     uint32_t width,
@@ -42050,12 +42325,14 @@ void VRRenderTargetManager_Base::ensure_dedicated_ui_target(uintptr_t command_li
             ID3D12Resource* native_resource{};
             D3D12_RESOURCE_DESC native_desc{};
 
-            if (stalker2_uses_ue55_draw_windows_array_layout()) {
+            if (stalker2_uses_ue55_draw_windows_array_layout() ||
+                (supports_ue55_dedicated_ui_target_for_current_game() &&
+                 (is_ue_5_5_dx12_backend() || is_ue_5_6_dx12_backend()))) {
                 if (ue55_dx12_try_get_native_resource_direct(
                         existing_target,
-                        "Stalker2 retained dedicated UI target",
+                        "retained pre-5.7 dedicated UI target",
                         &native_resource,
-                        &native_desc) &&
+                        &native_desc, true) &&
                     native_resource != nullptr &&
                     native_desc.Width == dedicated_ui_width &&
                     native_desc.Height == dedicated_ui_height)
