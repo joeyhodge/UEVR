@@ -133,6 +133,8 @@
 #include "HellraiserCaptureLayout.hpp"
 #include "BreathedgeInventoryPolicy.hpp"
 #include "Borderlands4Slate.hpp"
+#include "Pre57SlateDiscovery.hpp"
+#include "Pre57SlateCode.hpp"
 #include "UE58OwnedUITexture.hpp"
 
 #include <tracy/Tracy.hpp>
@@ -15771,14 +15773,14 @@ void FFakeStereoRenderingHook::attempt_hook_ue55_slate_output_texture_register()
         return;
     }
 
-    m_attempted_hook_ue55_slate_output_texture_register = true;
-
     const auto draw_window = g_hook != nullptr ? g_hook->m_slate_thread_hook.target_address() : 0;
 
     if (draw_window == 0) {
-        SPDLOG_ERROR("[UE5.5][SlateUI] Cannot scan DrawWindow_RenderThread because the Slate hook has no target address");
+        SPDLOG_INFO_EVERY_N_SEC(5, "[UE5.5][SlateUI] Waiting for the DrawWindow hook before output discovery");
         return;
     }
+
+    m_attempted_hook_ue55_slate_output_texture_register = true;
 
     uintptr_t slate_output_ref_ip{};
     uintptr_t register_callsite{};
@@ -15797,49 +15799,103 @@ void FFakeStereoRenderingHook::attempt_hook_ue55_slate_output_texture_register()
         register_target = found->target;
         SPDLOG_INFO("[GoWEDay][SlateUI] Validated original DrawWindow body: name {:x}, register {:x} -> {:x}",
             slate_output_ref_ip, register_callsite, register_target);
+    } else if (supports_glory_to_the_heroes_ue554_dedicated_ui_target()) {
+        const auto function = get_runtime_function_range(draw_window);
+        const auto module = utility::get_module_within(draw_window);
+        const auto size = module ? utility::get_module_size(*module) : std::nullopt;
+        const uevr::pre57_slate::ImageRange image{module ? reinterpret_cast<uintptr_t>(*module) : 0, size.value_or(0)};
+        if (!function || function->begin != draw_window || function->image_base != image.base ||
+            function->size() > 0x10000 || !image.contains(draw_window, function->size())) {
+            SPDLOG_WARN("[Glory][SlateUI] DrawWindow function ownership is not proven; preserving original routing");
+            return;
+        }
+        const auto code = uevr::post_init::module_window(draw_window, image.base,
+            image.base + image.size, function->size(), true);
+        if (code.size() != function->size()) {
+            SPDLOG_WARN("[Glory][SlateUI] DrawWindow code is incomplete; preserving original routing");
+            return;
+        }
+        const auto found = uevr::pre57_slate::find_raw_registration(code, draw_window, image,
+            m_slate_thread_hook.original_bytes(),
+            {uevr::pre57_slate::glory_raw_registration, uevr::pre57_slate::glory_raw_registration_mask},
+            [](uintptr_t address, void* output, size_t count) {
+                return sdk::discovery::read_process(nullptr, address, output, count);
+            }, [](uintptr_t address, size_t count) { return is_executable_process_range(address, count); });
+        if (!found.match) {
+            SPDLOG_WARN("[Glory][SlateUI] {}: preserving original routing", uevr::pre57_slate::name(found.state));
+            return;
+        }
+        slate_output_ref_ip = found.match->name_reference;
+        register_callsite = found.match->callsite;
+        register_target = found.match->target;
+        const auto callee = get_runtime_function_range(register_target);
+        if (!callee || callee->begin != register_target || callee->image_base != image.base ||
+            callee->size() != uevr::pre57_slate::glory_raw_registration.size()) {
+            SPDLOG_WARN("[Glory][SlateUI] Output callee ownership is not proven; preserving original routing");
+            return;
+        }
+        SPDLOG_INFO("[Glory][SlateUI] Proven unique raw output registration in original DrawWindow code at {:x}", register_callsite);
     } else {
         // Decode linearly here. exhaustive_decode follows early CALL branches in this
         // function and can miss the straight-line RegisterExternalTexture callsite.
-        for (auto* ip = (uint8_t*)draw_window; (uintptr_t)ip < draw_window + 0x3000;) {
-            const auto decoded = utility::decode_one(ip);
-
-            if (!decoded) {
-                break;
-            }
+        // The stolen bytes end at an instruction boundary; never decode the hook
+        // jump or its address literal. Keep existing custom-game selection rules.
+        const auto module = utility::get_module_within(draw_window);
+        const auto size = module ? utility::get_module_size(*module) : std::nullopt;
+        const uevr::pre57_slate::ImageRange image{module ? reinterpret_cast<uintptr_t>(*module) : 0, size.value_or(0)};
+        const auto stolen = m_slate_thread_hook.original_bytes().size();
+        const auto owner = get_canonical_runtime_function_range(draw_window);
+        const std::optional<uevr::pre57_slate::Owner> expected_owner = owner
+            ? std::optional{uevr::pre57_slate::Owner{owner->begin,owner->image_base}} : std::nullopt;
+        const auto owns_instruction = [&](uintptr_t ip) {
+            if (!expected_owner || expected_owner->begin != draw_window || expected_owner->image_base != image.base) { return true; }
+            const auto candidate = get_canonical_runtime_function_range(ip);
+            return uevr::pre57_slate::legacy_owner_matches(expected_owner,draw_window,image.base,
+                candidate ? std::optional{uevr::pre57_slate::Owner{candidate->begin,candidate->image_base}} : std::nullopt);
+        };
+        const auto limit = uevr::pre57_slate::legacy_scan_limit(image, draw_window, stolen);
+        if (!limit) { return; }
+        const auto code = uevr::post_init::module_window(draw_window, image.base, image.base + image.size, *limit, true);
+        for (size_t offset = stolen; offset < code.size();) {
+            INSTRUX decoded{};
+            if (!ND_SUCCESS(NdDecodeEx(&decoded, code.data() + offset, code.size() - offset, ND_CODE_64, ND_DATA_64)) ||
+                !decoded.Length || decoded.Length > code.size() - offset) { break; }
+            const auto ip = draw_window + offset;
 
             if (!after_slate_output_ref) {
-                const auto referenced = utility::resolve_displacement((uintptr_t)ip);
+                const auto referenced = utility::resolve_displacement(ip);
 
                 if (referenced &&
                     is_readable_process_range(*referenced, sizeof(wchar_t) * 19) &&
-                    std::wstring_view{(const wchar_t*)*referenced, 18}.starts_with(L"SlateOutputTexture"))
+                    std::wstring_view{(const wchar_t*)*referenced, 18}.starts_with(L"SlateOutputTexture") &&
+                    owns_instruction(ip))
                 {
-                    slate_output_ref_ip = (uintptr_t)ip;
+                    slate_output_ref_ip = ip;
                     after_slate_output_ref = true;
                     SPDLOG_INFO("[UE5.5][SlateUI] found SlateOutputTexture reference at {:x}", slate_output_ref_ip);
                 }
 
-                ip += decoded->Length;
+                offset += decoded.Length;
                 continue;
             }
 
-            const auto mnemonic = std::string_view{decoded->Mnemonic};
+            const auto mnemonic = std::string_view{decoded.Mnemonic};
 
             if (mnemonic.starts_with("CALL")) {
-                const auto target = utility::resolve_displacement((uintptr_t)ip);
+                const auto target = utility::resolve_displacement(ip);
 
-                if (target.has_value()) {
-                    register_callsite = (uintptr_t)ip;
+                if (target.has_value() && owns_instruction(ip)) {
+                    register_callsite = ip;
                     register_target = *target;
                     break;
                 }
             }
 
-            if (decoded->Instruction == ND_INS_RETN || decoded->Instruction == ND_INS_INT3) {
+            if (decoded.Instruction == ND_INS_RETN || decoded.Instruction == ND_INS_INT3) {
                 break;
             }
 
-            ip += decoded->Length;
+            offset += decoded.Length;
         }
     }
 
@@ -32785,10 +32841,7 @@ struct UE55SlateDrawWindowPassOutputs {
     FRHITexture2D* output_texture_rhi;
 };
 
-struct UE55SlateExtent {
-    uint32_t width{};
-    uint32_t height{};
-};
+using UE55SlateExtent = uevr::pre57_slate::Extent;
 
 bool sw_zero_company_has_source_matched_slate_sret_abi() {
     if (!sw_zero_company_ue56_is_current_game() ||
@@ -32996,14 +33049,8 @@ bool try_read_ue55_slate_draw_windows_first_input(
 }
 
 std::optional<UE55SlateExtent> ue55_get_slate_expected_extent(const UE55SlateDrawWindowPassInputs& inputs) {
-    const auto width = inputs.scene_view_rect.max.x - inputs.scene_view_rect.min.x;
-    const auto height = inputs.scene_view_rect.max.y - inputs.scene_view_rect.min.y;
-
-    if (width <= 0 || height <= 0 || width > 16384 || height > 16384) {
-        return std::nullopt;
-    }
-
-    return UE55SlateExtent{(uint32_t)width, (uint32_t)height};
+    return uevr::pre57_slate::checked_extent(inputs.scene_view_rect.min.x, inputs.scene_view_rect.min.y,
+        inputs.scene_view_rect.max.x, inputs.scene_view_rect.max.y);
 }
 
 bool looks_like_vtable_object(void* object) {
