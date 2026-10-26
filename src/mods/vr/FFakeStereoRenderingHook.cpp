@@ -15788,7 +15788,7 @@ void FFakeStereoRenderingHook::note_pre57_slate_ui_texture(uintptr_t texture, ui
     epoch.module = reinterpret_cast<uintptr_t>(utility::get_module_within(epoch.draw).value_or(nullptr));
     epoch.renderer = renderer; epoch.scene = facts.scene_native; epoch.device = facts.device;
     epoch.extent = {static_cast<uint32_t>(facts.desc.Width),facts.desc.Height};
-    if (const auto vr = VR::get()) { epoch.rendering_method = static_cast<uint32_t>(vr->requested_rendering_method()); }
+    if (const auto vr = VR::get()) { epoch.rendering_method = static_cast<uint32_t>(vr->m_rendering_method->value()); }
     std::unique_lock lock{m_pre57_slate_observation_mutex, std::try_to_lock};
     if (!lock.owns_lock() || !m_pre57_slate_observation_enabled.load(std::memory_order_acquire)) { return; }
     m_pre57_slate_observation.observe(epoch,facts,now);
