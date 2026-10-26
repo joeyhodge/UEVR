@@ -7,6 +7,7 @@
 #include <memory>
 
 #include <sdk/StereoStuff.hpp>
+#include <sdk/FinchAim.hpp>
 #include <safetyhook.hpp>
 
 #include "Mod.hpp"
@@ -19,6 +20,7 @@ class IXRCamera;
 class IHeadMountedDisplay;
 class APlayerController;
 class APlayerCameraManager;
+class UClass;
 }
 
 class FFakeStereoRenderingHook;
@@ -61,6 +63,8 @@ private:
 
     void pre_initialize();
     void initialize();
+    bool try_install_finch_aim();
+    bool is_current_finch_camera(sdk::APlayerCameraManager* camera) const;
     bool analyze_head_tracking_allowed(uintptr_t return_address);
 
     // IXRTrackingSystem
@@ -186,6 +190,11 @@ private:
     std::chrono::steady_clock::time_point m_daysgone_weapon_aim_next_retry{};
     bool m_attempted_hook_view_rotation{false};
     bool m_initialized{false};
+    std::atomic<bool> m_finch_aim_hook_owned{false};
+    sdk::finch::aim::Contract m_finch_aim_contract{};
+    sdk::finch::aim::Layout m_finch_aim_layout{};
+    sdk::finch::aim::SetupBudget m_finch_aim_setup{};
+    std::array<sdk::UClass*, 3> m_finch_aim_classes{};
     bool m_is_leq_4_25{false}; // <= 4.25, IsHeadTrackingAllowedForWorld does not exist
     bool m_is_leq_4_17{false}; // <= 4.17, IXRTrackingSystem and IXRCamera do not exist
     bool m_relative_transform_corrected{false}; // For UpdatePlayerCamera, causes player to become a midget if not corrected
