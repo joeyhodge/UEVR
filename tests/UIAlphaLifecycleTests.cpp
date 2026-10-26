@@ -8,6 +8,7 @@
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 #include "mods/vr/UIAlpha.hpp"
+#include "utility/D3D12ResourceInterface.hpp"
 #include <array>
 #include <cstdio>
 #include <stdexcept>
@@ -203,6 +204,18 @@ int main() try {
     ComPtr<ID3D12Resource> source12;
     require(d12->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc12, D3D12_RESOURCE_STATE_RENDER_TARGET,
         nullptr, IID_PPV_ARGS(&source12)), "DX12 source");
+    ComPtr<ID3D12Resource> queried_resource;
+    expect(utility::d3d12_resource::query(source12.Get(), queried_resource.GetAddressOf()) && queried_resource.Get() == source12.Get(),
+        "actual D3D12 resource interface is established before resource-only virtual calls");
+    queried_resource.Reset();
+    expect(!utility::d3d12_resource::query(d12.Get(), queried_resource.GetAddressOf()) && !queried_resource,
+        "a D3D12 device from the same native module is not a texture resource");
+    expect(!utility::d3d12_resource::query(queue.Get(), queried_resource.GetAddressOf()) && !queried_resource,
+        "a D3D12 queue is not accepted through a module-only vtable check");
+    expect(!utility::d3d12_resource::query(source11.Get(), queried_resource.GetAddressOf()) && !queried_resource,
+        "a real DX11 texture cannot enter a D3D12 descriptor path");
+    expect(!utility::d3d12_resource::query(nullptr, queried_resource.GetAddressOf()) && !queried_resource,
+        "pending native resources fail without probing another virtual slot");
     ID3D12Resource* inputs12[]{source12.Get()};
     ui::D3D12 helper12;
     lifecycle(helper12, [&](const ui::Request& request) { return helper12.copy(request, d12.Get(), queue.Get(), inputs12, 0); });

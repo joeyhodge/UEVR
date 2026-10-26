@@ -2986,6 +2986,10 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         : uevr::nascar::is_target()
         ? (nascar_ui_snapshot ? reinterpret_cast<FRHITexture2D*>(nascar_ui_snapshot->source_texture) : nullptr)
         : ffsr->get_render_target_manager()->get_ui_target();
+    // Keep one validated native resource for this submission. Do not rediscover
+    // a getter from a raw UI wrapper midway through a resize or target change.
+    ComPtr<ID3D12Resource> pre57_ui_native;
+    const bool pre57_ui_handled = ffsr->get_render_target_manager()->try_get_pre57_slate_ui_native(ui_target, pre57_ui_native);
     const auto native_ui_resource = [&]() -> ID3D12Resource* {
         if (sdk::galactic_racer::current_game() && g_framework->is_dx12()) {
             return swgr_ui_snapshot && swgr_ui_snapshot->device_identity == reinterpret_cast<uintptr_t>(device)
@@ -2996,6 +3000,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         if (ffsr->get_render_target_manager()->try_get_sw_zero_company_pinned_ui_resource(ui_target, native)) {
             return native;
         }
+        if (pre57_ui_handled) { return pre57_ui_native.Get(); }
         return ui_target ? static_cast<ID3D12Resource*>(ui_target->get_native_resource()) : nullptr;
     };
 
@@ -4297,7 +4302,13 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         }
     }
 
-    auto* active_ui_tex = ue58_ui_uses_shader_conversion ? ue58_ui_submit_context : &m_game_ui_tex;
+    // nullptr means "use m_game_ui_tex" to the spectator helper. Use an empty
+    // override on rejection so neither it nor alpha/clear passes reuse a stale
+    // source that may now alias the scene. Keep old GPU references, do not reset.
+    static d3d12::TextureContext rejected_pre57_ui;
+    const bool pre57_ui_rejected = pre57_ui_handled && native_ui_resource() == nullptr;
+    auto* active_ui_tex = pre57_ui_rejected ? &rejected_pre57_ui
+        : ue58_ui_uses_shader_conversion ? ue58_ui_submit_context : &m_game_ui_tex;
 
     const auto halo_electra_renderer_2d_screen =
         vr->is_halo_electra_cinematic_active() &&
@@ -4729,7 +4740,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         if (is_right_eye_frame) {
             if (use_2d_screen) {
                 m_openvr.ui_tex.commands.copy(m_2d_screen_tex[0].texture.Get(), m_openvr.ui_tex.texture.Get(), ENGINE_SRC_COLOR);
-            } else if (ui_target != nullptr) {
+            } else if (ui_target != nullptr && !pre57_ui_rejected) {
                 m_openvr.ui_tex.commands.copy(native_ui_resource(), m_openvr.ui_tex.texture.Get(), ENGINE_SRC_COLOR);
             }
         } else if (use_2d_screen) {

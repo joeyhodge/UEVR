@@ -909,6 +909,10 @@ public:
         return m_compatibility_ui_layer_pose_stabilizer->value();
     }
 
+    bool is_pre57_slate_ui_observation_enabled() const {
+        return m_compatibility_pre57_slate_ui_observation->value();
+    }
+
     bool is_swgr_bink_seek_budget_enabled() const {
         return m_compatibility_swgr_bink_seek_budget->value();
     }
@@ -1929,6 +1933,7 @@ private:
     const ModToggle::Ptr m_compatibility_head_turn_camera_stabilizer{ ModToggle::create(generate_name("Compatibility_HeadTurnCameraStabilizer"), false, true) };
     const ModToggle::Ptr m_compatibility_ui_layer_pose_telemetry{ ModToggle::create(generate_name("Compatibility_UILayerPoseTelemetry"), false, true) };
     const ModToggle::Ptr m_compatibility_ui_layer_pose_stabilizer{ ModToggle::create(generate_name("Compatibility_UILayerPoseStabilizer"), false, true) };
+    const ModToggle::Ptr m_compatibility_pre57_slate_ui_observation{ ModToggle::create(generate_name("Compatibility_Pre57SlateUIObservation"), false, true) };
     const ModToggle::Ptr m_compatibility_swgr_bink_seek_budget{ ModToggle::create(generate_name("Compatibility_SWGRBinkSeekBudget"), false, true) };
     const ModToggle::Ptr m_compatibility_swgr_disable_panini{ ModToggle::create(generate_name("Compatibility_SWGRDisablePanini"), false, true) };
     const ModToggle::Ptr m_compatibility_swgr_panini_component{ ModToggle::create(generate_name("Compatibility_SWGRPaniniComponentFallback"), false, true) };
@@ -2409,6 +2414,7 @@ public:
             *m_compatibility_head_turn_camera_stabilizer,
             *m_compatibility_ui_layer_pose_telemetry,
             *m_compatibility_ui_layer_pose_stabilizer,
+            *m_compatibility_pre57_slate_ui_observation,
             *m_compatibility_swgr_bink_seek_budget,
             *m_compatibility_swgr_disable_panini,
             *m_compatibility_swgr_panini_component,
