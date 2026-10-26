@@ -41,11 +41,20 @@
 #include <sdk/UGameViewportClient.hpp>
 #include <sdk/GearsEDayDiscovery.hpp>
 #include <sdk/DiscoveryMemory.hpp>
+#include <sdk/FinchGameRuntime.hpp>
 
 #include "IXRTrackingSystemHook.hpp"
 #include "GearsEDayAim.hpp"
 
 namespace {
+bool is_finch_executable() {
+    static const bool result = [] {
+        const auto path = utility::get_module_pathw(utility::get_executable());
+        return path && sdk::finch::matches_executable(*path);
+    }();
+    return result;
+}
+
 bool is_deadzone_ue56_executable() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -191,7 +200,7 @@ bool is_legacy_aim_reflection_ready() try {
 bool is_payday3_aim_guard_enabled();
 
 bool is_direct_aim_compatibility_requested() {
-    if (is_daysgone_executable()) {
+    if (is_daysgone_executable() || is_finch_executable()) {
         return false;
     }
 
@@ -211,7 +220,7 @@ bool is_direct_aim_compatibility_requested() {
 }
 
 bool is_direct_aim_compatibility_active() {
-    if (is_daysgone_executable()) {
+    if (is_daysgone_executable() || is_finch_executable()) {
         return false;
     }
 
@@ -1357,6 +1366,12 @@ void IXRTrackingSystemHook::pre_initialize() {
         return &fake_name;
     };
 
+    if (is_finch_executable()) {
+        // Its native version and aim ABI are validated at mode entry. Never
+        // infer a modern XR interface from the missing Windows version resource.
+        return;
+    }
+
     const auto version = sdk::get_file_version_info();
     const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
     
@@ -1394,6 +1409,97 @@ void IXRTrackingSystemHook::pre_initialize() {
 
 void IXRTrackingSystemHook::on_draw_ui() {
 }
+
+namespace {
+bool is_live_finch_aim_object(sdk::UObjectBase* object) try {
+    if (!sdk::UObjectBase::has_validated_header_layout() || !sdk::finch::pointer(reinterpret_cast<uintptr_t>(object)) ||
+        !detail::is_readable_process_range(reinterpret_cast<uintptr_t>(object), sdk::UObjectBase::get_class_size())) {
+        return false;
+    }
+    const auto objects = sdk::FUObjectArray::get();
+    const auto index = object->get_internal_index();
+    if (!objects) { return false; }
+    const auto count = objects->get_object_count();
+    if (count <= 0 || index >= static_cast<uint32_t>(count)) { return false; }
+    const auto item = objects->get_object(static_cast<int32_t>(index));
+    return item && item->get_object() == object && !object->is_pending_kill_or_unreachable();
+} catch (...) { return false; }
+}
+
+bool IXRTrackingSystemHook::try_install_finch_aim() {
+    if (m_finch_aim_hook_owned.load(std::memory_order_acquire)) { return true; }
+    if (!is_finch_executable() || m_process_view_rotation_hook) { return false; }
+    const auto now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+    if (!m_finch_aim_setup.take(now)) { return false; }
+
+    const auto known = sdk::finch::aim::contract(sdk::discovery::process_memory(), sdk::finch::current_base());
+    if (!known) {
+        SPDLOG_WARN("[Finch][Aim] Native 4.10.1 rotation contract unavailable ({}/3); leaving the game HMD/POV unchanged", m_finch_aim_setup.attempts);
+        return false;
+    }
+
+    const auto camera_class = sdk::APlayerCameraManager::static_class();
+    const auto controller_class = sdk::APlayerController::static_class();
+    const auto local_class = sdk::find_uobject<sdk::UClass>(L"Class /Script/Engine.LocalPlayer");
+    const std::array<sdk::UClass*, 3> classes{camera_class, controller_class, local_class};
+    for (const auto klass : classes) {
+        if (!is_live_finch_aim_object(klass)) { return false; }
+    }
+    const auto owner = camera_class->find_property(L"PCOwner");
+    const auto camera = controller_class->find_property(L"PlayerCameraManager");
+    const auto player = controller_class->find_property(L"Player");
+    const auto controller = local_class->find_property(L"PlayerController");
+    if (!owner || !camera || !player || !controller ||
+        owner->get_offset() != sdk::finch::aim::owner_offset || camera->get_offset() != sdk::finch::aim::camera_offset) {
+        SPDLOG_WARN("[Finch][Aim] Reflected camera ownership does not match the native callsites; preserving game aim");
+        return false;
+    }
+    const sdk::finch::aim::Layout layout{static_cast<uint32_t>(player->get_offset()),
+        static_cast<uint32_t>(controller->get_offset())};
+    const auto controller_size = controller_class->get_properties_size();
+    const auto player_size = local_class->get_properties_size();
+    if (!sdk::finch::aim::valid_layout(layout) ||
+        controller_size < 0x28 || controller_size > 0x10000 || player_size < 0x28 || player_size > 0x10000 ||
+        layout.player + sizeof(void*) > static_cast<uint32_t>(controller_size) ||
+        layout.local_controller + sizeof(void*) > static_cast<uint32_t>(player_size)) { return false; }
+
+    m_finch_aim_contract = *known;
+    m_finch_aim_layout = layout;
+    m_finch_aim_classes = classes;
+    m_process_view_rotation_hook = safetyhook::create_inline(known->process_rotation, &process_view_rotation,
+        safetyhook::InlineHook::StartDisabled);
+    if (!m_process_view_rotation_hook) {
+        SPDLOG_ERROR("[Finch][Aim] Could not install the validated native rotation hook; preserving game aim");
+        return false;
+    }
+    m_overridden_version = "4.10";
+    m_is_leq_4_17 = true;
+    m_is_leq_4_25 = true;
+    m_finch_aim_hook_owned.store(true, std::memory_order_release);
+    if (const auto enabled = m_process_view_rotation_hook.enable(); !enabled) {
+        m_finch_aim_hook_owned.store(false, std::memory_order_release);
+        m_process_view_rotation_hook.reset();
+        SPDLOG_ERROR("[Finch][Aim] Could not enable the prepared native rotation hook; preserving game aim");
+        return false;
+    }
+    SPDLOG_INFO("[Finch][Aim] Validated native UE4.10.1 ProcessViewRotation at {:x}; legacy fake HMD and camera-output writes are bypassed", known->process_rotation);
+    return true;
+}
+
+bool IXRTrackingSystemHook::is_current_finch_camera(sdk::APlayerCameraManager* camera) const try {
+    if (!m_finch_aim_hook_owned.load(std::memory_order_acquire)) { return false; }
+    const auto current = sdk::finch::aim::context(sdk::discovery::process_memory(),
+        m_finch_aim_contract, m_finch_aim_layout, reinterpret_cast<uintptr_t>(camera),
+        [&](uintptr_t address, sdk::finch::aim::Role role) {
+            const auto object = reinterpret_cast<sdk::UObjectBase*>(address);
+            const auto expected = m_finch_aim_classes[static_cast<size_t>(role)];
+            if (!is_live_finch_aim_object(object) || !is_live_finch_aim_object(expected)) { return false; }
+            const auto klass = object->get_class();
+            return is_live_finch_aim_object(klass) && klass->is_a(expected);
+        });
+    return current.has_value();
+} catch (...) { return false; }
 
 bool IXRTrackingSystemHook::try_install_daysgone_weapon_aim_bridge(void* weapon) {
     if (!is_daysgone_executable() || weapon == nullptr || !detail::is_live_daysgone_object(weapon)) {
@@ -1930,6 +2036,10 @@ void IXRTrackingSystemHook::daysgone_weapon_aim_trace(safetyhook::Context& ctx) 
 
 void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     auto& vr = VR::get();
+    if (is_finch_executable()) {
+        if (vr->is_any_aim_method_active()) { try_install_finch_aim(); }
+        else { m_finch_aim_setup.reset(); }
+    }
     const auto direct_aim_compat_requested = is_direct_aim_compatibility_requested();
     const auto direct_aim_compat_active = is_direct_aim_compatibility_active();
     const auto deadzone_direct_aim = is_deadzone_ue56_executable();
@@ -1993,7 +2103,7 @@ void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float d
         }
     }
 
-    if (!m_initialized &&
+    if (!is_finch_executable() && !m_initialized &&
         ((vr->is_any_aim_method_active() && !direct_aim_compat_active && !suppress_legacy_fake_hmd_for_aim) ||
          vr->wants_blueprint_load())) {
         if (!m_initialized) {
@@ -2034,6 +2144,7 @@ void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float d
 }
 
 void IXRTrackingSystemHook::on_post_engine_tick(sdk::UGameEngine* engine, float delta) {
+    if (is_finch_executable()) { return; }
     if (is_daysgone_executable()) {
         if (is_daysgone_native_aim_requested() &&
             !VR::get()->is_controller_camera_conflict_guard_active()) {
@@ -2056,6 +2167,7 @@ void IXRTrackingSystemHook::on_post_engine_tick(sdk::UGameEngine* engine, float 
 }
 
 void IXRTrackingSystemHook::initialize() {
+    if (is_finch_executable()) { return; }
     m_initialized = true;
 
     SPDLOG_INFO("IXRTrackingSystemHook::initialize");
@@ -2467,6 +2579,7 @@ IXRTrackingSystemHook::SharedPtr* IXRTrackingSystemHook::get_stereo_rendering_de
 }
 
 void IXRTrackingSystemHook::manual_update_control_rotation(sdk::UGameEngine* engine_override) {
+    if (is_finch_executable()) { return; }
     if (is_daysgone_executable()) {
         return;
     }
@@ -3683,6 +3796,36 @@ void IXRTrackingSystemHook::process_view_rotation(
 
     auto& vr = VR::get();
 
+    if (is_finch_executable()) {
+        call_orig();
+        if (!sdk::finch::aim::should_adjust(vr->is_any_aim_method_active(), vr->is_hmd_active(),
+                vr->is_controller_aim_enabled(), vr->is_using_controllers(),
+                vr->is_controller_camera_conflict_guard_active(), true) ||
+            !std::isfinite(delta_time) || delta_time < 0.0f || !g_hook->is_current_finch_camera(pcm)) { return; }
+        if (g_hook->m_stereo_hook->has_double_precision()) { return; }
+        const auto rotation = glm::quat{vr->get_rotation(0)};
+        const auto norm = glm::dot(rotation, rotation);
+        if (!detail::finite_quat(rotation) || norm < 0.25f || norm > 4.0f) { return; }
+        if (vr->is_controller_aim_enabled()) {
+            if (vr->get_runtime()->is_openvr() && vr->get_controllers().size() < 2) { return; }
+            const auto valid_pose = [&](uint32_t index) {
+                if (!index || index == UINT32_MAX) { return false; }
+                const auto q = glm::quat{vr->get_aim_rotation(index)};
+                const auto length = glm::dot(q, q);
+                return detail::finite_quat(q) && length >= 0.25f && length <= 4.0f &&
+                    detail::finite_vec3(glm::vec3{vr->get_aim_position(index)});
+            };
+            const auto method = vr->get_aim_method();
+            const auto left = vr->get_left_controller_index(), right = vr->get_right_controller_index();
+            if ((method == VR::AimMethod::LEFT_CONTROLLER && !valid_pose(left)) ||
+                (method == VR::AimMethod::RIGHT_CONTROLLER && !valid_pose(right)) ||
+                ((method == VR::AimMethod::TWO_HANDED_LEFT || method == VR::AimMethod::TWO_HANDED_RIGHT) &&
+                    (left == right || !valid_pose(left) || !valid_pose(right)))) { return; }
+        }
+        g_hook->update_view_rotation(pcm, rot);
+        return;
+    }
+
     if (is_daysgone_executable() && vr->is_any_aim_method_active()) {
         call_orig();
         return;
@@ -3736,7 +3879,7 @@ void IXRTrackingSystemHook::update_view_rotation(sdk::UObject* reference_obj, Ro
     // Double check that the player controller passed through here is the local player controller
     static bool had_detection_error = false;
     if (!is_payday3_aim_guard_enabled() && !is_deadzone_ue56_executable() && !is_ue4_14_through_4_17() &&
-        !is_daysgone_executable() &&
+        !is_daysgone_executable() && !is_finch_executable() &&
         !had_detection_error && vr->is_aim_multiplayer_support_enabled()) try {
         if (reference_obj != nullptr && sdk::FUObjectArray::get() != nullptr) {
             const auto reference_obj_c = reference_obj->get_class();
