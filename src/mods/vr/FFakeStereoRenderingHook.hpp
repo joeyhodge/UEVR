@@ -36,6 +36,7 @@
 #include "CompatibilityPolicy.hpp"
 #include "UE58UIInitialization.hpp"
 #include "UE58OwnedUITexture.hpp"
+#include "Pre57SlateSafety.hpp"
 #include "GalacticRacerOwnedTexture.hpp"
 #include "utility/BufferedRTTextureCall.hpp"
 #include "StupidNeverDiesUI.hpp"
@@ -312,6 +313,7 @@ public:
     void set_dedicated_ui_target(FRHITexture2D* rt, uint32_t width = 0, uint32_t height = 0);
     bool prepare_sw_zero_company_dedicated_ui_target(FRHITexture2D* rt, uint32_t width, uint32_t height);
     bool is_sw_zero_company_dedicated_ui_target_prepared(FRHITexture2D* rt) const;
+    bool try_get_pre57_slate_ui_native(FRHITexture2D* texture, Microsoft::WRL::ComPtr<ID3D12Resource>& native);
     bool try_get_sw_zero_company_pinned_ui_resource(FRHITexture2D* rt, ID3D12Resource*& native) const;
     void inherit_dedicated_ui_state_from(VRRenderTargetManager_Base& source, const char* reason);
     void request_dedicated_ui_target(uint32_t width, uint32_t height);
@@ -1137,6 +1139,10 @@ public:
     bool is_hook_provenance_diagnostics_enabled() const noexcept {
         return m_hook_provenance_diagnostics.load(std::memory_order_acquire);
     }
+    const char* get_pre57_slate_ui_observation_status() const {
+        std::scoped_lock lock{m_pre57_slate_observation_mutex};
+        return uevr::pre57_slate::name(m_pre57_slate_observation.state);
+    }
     uevr::vr_compatibility::UE58DedicatedUICapability get_ue58_dedicated_ui_capability() const {
         return m_ue58_slate_ui_capability.capability.load(std::memory_order_acquire);
     }
@@ -1156,6 +1162,9 @@ public:
 
 private:
     std::string build_hook_provenance_json();
+    void update_pre57_slate_ui_observation();
+    void note_pre57_slate_ui_texture(uintptr_t texture, uintptr_t renderer = 0);
+    static void pre57_slate_ui_observation_hook(safetyhook::Context& context);
     void draw_hook_provenance_diagnostics();
     void note_ue58_slate_ui_runtime_observation(
         uintptr_t original,
@@ -1588,12 +1597,20 @@ private:
     safetyhook::MidHook m_dead_island_ue425_compute_light_grid_hook{};
     safetyhook::MidHook m_dead_island_ue425_hair_light_indices_hook{};
     safetyhook::InlineHook m_split_fiction_haze_view_builder_hook{};
+    // State outlives both the observer hook and the existing adapter callbacks.
+    std::atomic_bool m_pre57_slate_observation_enabled{};
+    std::atomic_uint64_t m_pre57_slate_observation_next_ms{};
+    bool m_pre57_slate_observation_attempted{};
+    mutable std::mutex m_pre57_slate_observation_mutex{};
+    uevr::pre57_slate::Observation m_pre57_slate_observation{};
+    std::optional<uevr::pre57_slate::Registration> m_pre57_slate_observation_registration{};
     safetyhook::InlineHook m_slate_thread_hook{};
     safetyhook::MidHook m_stupid_never_dies_ui_hook{};
     safetyhook::MidHook m_stupid_never_dies_ui_lookup_hook{};
     std::optional<uevr::stupid_never_dies_ui::Call> m_stupid_never_dies_ui_call{};
     std::vector<safetyhook::MidHook> m_ue57_slate_elements_hooks{};
     safetyhook::MidHook m_ue55_slate_output_texture_register_hook{};
+    safetyhook::MidHook m_pre57_slate_observation_hook{};
     safetyhook::MidHook m_swgr_slate_output_restore_hook{};
     safetyhook::MidHook m_swgr_slate_output_hook{};
     safetyhook::MidHook m_swgr_bink_packet_hook{};

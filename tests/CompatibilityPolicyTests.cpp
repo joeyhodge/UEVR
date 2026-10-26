@@ -9,6 +9,7 @@
 #include <sdk/FSceneViewFamily.hpp>
 #include <sdk/FSceneViewLayoutPolicy.hpp>
 #include <sdk/MafiaDiscovery.hpp>
+#include "../dependencies/submodules/UESDK/tests/GloryFNameDiscoveryTests.hpp"
 
 #include "mods/GameSpecific.hpp"
 #include "utility/UObjectScanBudget.hpp"
@@ -2566,8 +2567,14 @@ void test_ktjl_hook_contracts() {
 #include "FrameworkInitializationTests.hpp"
 #include "FinchNativeFixTests.hpp"
 #include "Pre57SlateDiscoveryTests.hpp"
+#include "Pre57UIResourceTests.hpp"
 
 int main(int argc, char** argv) {
+    glory_fname_tests::run(expect);
+    if (argc == 3 && std::string_view{argv[1]} == "--glory-fname-image") { glory_fname_tests::shipping_image(argv[2], expect); }
+    test_pre57_ui_resources();
+    test_pre57_ui_safety();
+    if (argc == 3 && std::string_view{argv[1]} == "--pre57-ui-getter-fixture") { test_pre57_ui_getter_fixture(argv[2]); }
     test_pre57_slate_discovery();
     if (argc == 3 && std::string_view{argv[1]} == "--pre57-slate-fixture") { test_pre57_slate_fixture(argv[2]); }
     test_finch_native_fix_contracts();

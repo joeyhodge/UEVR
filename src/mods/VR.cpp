@@ -9773,6 +9773,14 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             m_compatibility_head_turn_camera_stabilizer->draw("Head-Turn Camera Stabilizer");
             m_compatibility_ui_layer_pose_telemetry->draw("UI Layer Pose Telemetry");
             m_compatibility_ui_layer_pose_stabilizer->draw("UI Layer Pose Stabilizer");
+            m_compatibility_pre57_slate_ui_observation->draw("Observe UE5.5/5.6 Slate UI (Experimental)");
+            if (m_compatibility_pre57_slate_ui_observation->value() && m_fake_stereo_hook) {
+                ImGui::TextWrapped("%s", m_fake_stereo_hook->get_pre57_slate_ui_observation_status());
+                ImGui::TextWrapped("Read-only discovery: no CVar, alpha, UI destination, allocation or rendering-mode changes. "
+                    "Existing game adapters keep priority. A distinct texture is not proof of main-window or pooled-resource ownership; "
+                    "unknown routes remain unchanged. UE5.4 retains its separate immediate-command-list path. "
+                    "Results are included in Hook Provenance.");
+            }
             if (sdk::galactic_racer::current_dx12_game()) {
                 m_compatibility_swgr_letterboxing->draw("Galactic Racer Cinematic Letterboxing Fix (Experimental)");
                 if (!m_compatibility_swgr_letterboxing->value()) { uevr::swgr_letterbox::update(false, false); }
