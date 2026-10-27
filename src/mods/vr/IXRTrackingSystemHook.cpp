@@ -23,6 +23,7 @@
 #include <sdk/UClass.hpp>
 #include <sdk/UObjectBase.hpp>
 #include <sdk/FProperty.hpp>
+#include <sdk/FBoolProperty.hpp>
 #include <sdk/ScriptRotator.hpp>
 #include <sdk/ScriptVector.hpp>
 #include <sdk/UGameplayStatics.hpp>
@@ -45,6 +46,7 @@
 
 #include "IXRTrackingSystemHook.hpp"
 #include "GearsEDayAim.hpp"
+#include "FinchAimPose.hpp"
 
 namespace {
 bool is_finch_executable() {
@@ -1428,7 +1430,7 @@ bool is_live_finch_aim_object(sdk::UObjectBase* object) try {
 
 bool IXRTrackingSystemHook::try_install_finch_aim() {
     if (m_finch_aim_hook_owned.load(std::memory_order_acquire)) { return true; }
-    if (!is_finch_executable() || m_process_view_rotation_hook) { return false; }
+    if (!is_finch_executable() || m_process_view_rotation_hook || m_finch_camera_handoff_hook) { return false; }
     const auto now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count());
     if (!m_finch_aim_setup.take(now)) { return false; }
@@ -1442,7 +1444,10 @@ bool IXRTrackingSystemHook::try_install_finch_aim() {
     const auto camera_class = sdk::APlayerCameraManager::static_class();
     const auto controller_class = sdk::APlayerController::static_class();
     const auto local_class = sdk::find_uobject<sdk::UClass>(L"Class /Script/Engine.LocalPlayer");
-    const std::array<sdk::UClass*, 3> classes{camera_class, controller_class, local_class};
+    const auto character_class = sdk::find_uobject<sdk::UClass>(L"Class /Script/FinchGame.FinchGameCharacter");
+    const auto movement_class = sdk::find_uobject<sdk::UClass>(L"Class /Script/FinchGame.FinchCharMovementComponent");
+    const auto component_class = sdk::find_uobject<sdk::UClass>(L"Class /Script/Engine.CameraComponent");
+    const std::array<sdk::UClass*, 6> classes{camera_class, controller_class, local_class, character_class, movement_class, component_class};
     for (const auto klass : classes) {
         if (!is_live_finch_aim_object(klass)) { return false; }
     }
@@ -1464,12 +1469,30 @@ bool IXRTrackingSystemHook::try_install_finch_aim() {
         layout.player + sizeof(void*) > static_cast<uint32_t>(controller_size) ||
         layout.local_controller + sizeof(void*) > static_cast<uint32_t>(player_size)) { return false; }
 
+    const auto field_matches = [](sdk::UClass* klass, const wchar_t* name, uint32_t offset) {
+        const auto field = klass->find_property(name);
+        return field && field->get_offset() == offset && klass->get_properties_size() >= offset + sizeof(void*);
+    };
+    const auto active = static_cast<sdk::FBoolProperty*>(component_class->find_property(L"bIsActive"));
+    if (!field_matches(controller_class, L"Pawn", 0x350) ||
+        !field_matches(character_class, L"CharacterMovement", 0x3b8) ||
+        !field_matches(character_class, L"CameraComponentRef", 0x598) ||
+        !field_matches(movement_class, L"FinchGameCharacterOwner", 0x618) ||
+        !field_matches(movement_class, L"UpdatedCameraComponent", 0x4c8) ||
+        !field_matches(camera_class, L"ViewTarget", 0xb78) ||
+        !field_matches(camera_class, L"PendingViewTarget", 0xf60) ||
+        !active || active->get_offset() != 0xa2 || active->get_field_size() != 1 ||
+        active->get_byte_offset() != 0 || active->get_byte_mask() != 4) {
+        SPDLOG_WARN("[Finch][Aim] Active camera-consumer fields did not validate; preserving game aim");
+        return false;
+    }
+
     m_finch_aim_contract = *known;
     m_finch_aim_layout = layout;
     m_finch_aim_classes = classes;
-    m_process_view_rotation_hook = safetyhook::create_inline(known->process_rotation, &process_view_rotation,
+    m_finch_camera_handoff_hook = safetyhook::create_inline(known->sync_rotation, &finch_camera_handoff,
         safetyhook::InlineHook::StartDisabled);
-    if (!m_process_view_rotation_hook) {
+    if (!m_finch_camera_handoff_hook) {
         SPDLOG_ERROR("[Finch][Aim] Could not install the validated native rotation hook; preserving game aim");
         return false;
     }
@@ -1477,20 +1500,20 @@ bool IXRTrackingSystemHook::try_install_finch_aim() {
     m_is_leq_4_17 = true;
     m_is_leq_4_25 = true;
     m_finch_aim_hook_owned.store(true, std::memory_order_release);
-    if (const auto enabled = m_process_view_rotation_hook.enable(); !enabled) {
+    if (const auto enabled = m_finch_camera_handoff_hook.enable(); !enabled) {
         m_finch_aim_hook_owned.store(false, std::memory_order_release);
-        m_process_view_rotation_hook.reset();
+        m_finch_camera_handoff_hook.reset();
         SPDLOG_ERROR("[Finch][Aim] Could not enable the prepared native rotation hook; preserving game aim");
         return false;
     }
-    SPDLOG_INFO("[Finch][Aim] Validated native UE4.10.1 ProcessViewRotation at {:x}; legacy fake HMD and camera-output writes are bypassed", known->process_rotation);
+    SPDLOG_INFO("[Finch][Aim] Validated authoritative camera handoff at {:x}; early ProcessViewRotation mutation and fake HMD are bypassed", known->sync_rotation);
     return true;
 }
 
-bool IXRTrackingSystemHook::is_current_finch_camera(sdk::APlayerCameraManager* camera) const try {
+bool IXRTrackingSystemHook::is_current_finch_controller(sdk::APlayerController* controller) const try {
     if (!m_finch_aim_hook_owned.load(std::memory_order_acquire)) { return false; }
-    const auto current = sdk::finch::aim::context(sdk::discovery::process_memory(),
-        m_finch_aim_contract, m_finch_aim_layout, reinterpret_cast<uintptr_t>(camera),
+    const auto current = sdk::finch::aim::camera_consumer(sdk::discovery::process_memory(),
+        m_finch_aim_contract, m_finch_aim_layout, reinterpret_cast<uintptr_t>(controller),
         [&](uintptr_t address, sdk::finch::aim::Role role) {
             const auto object = reinterpret_cast<sdk::UObjectBase*>(address);
             const auto expected = m_finch_aim_classes[static_cast<size_t>(role)];
@@ -1500,6 +1523,84 @@ bool IXRTrackingSystemHook::is_current_finch_camera(sdk::APlayerCameraManager* c
         });
     return current.has_value();
 } catch (...) { return false; }
+
+Rotator<float>* IXRTrackingSystemHook::finch_camera_handoff(sdk::APlayerController* controller,
+    Rotator<float>* output, float delta_time, const Rotator<float>* requested, bool face_pawn) {
+    const auto call_original = [&](const Rotator<float>* rotation) {
+        return g_hook->m_finch_camera_handoff_hook.call<Rotator<float>*>(controller, output, delta_time, rotation, face_pawn);
+    };
+    auto& vr = VR::get();
+    if (!g_hook->m_finch_aim_hook_owned.load(std::memory_order_acquire) ||
+        !sdk::finch::aim::is_camera_handoff(g_hook->m_finch_aim_contract, reinterpret_cast<uintptr_t>(_ReturnAddress())) ||
+        !sdk::finch::aim::should_adjust(vr->is_any_aim_method_active(), vr->is_hmd_active(),
+            vr->is_controller_aim_enabled(), vr->is_using_controllers(), vr->is_controller_camera_conflict_guard_active(), true) ||
+        (!vr->is_headlocked_aim_enabled() && !vr->is_controller_aim_enabled()) ||
+        !std::isfinite(delta_time) || delta_time < 0 || !face_pawn || g_hook->m_stereo_hook->has_double_precision() ||
+        !detail::is_writable_process_range(reinterpret_cast<uintptr_t>(output), sizeof(*output)) ||
+        !g_hook->is_current_finch_controller(controller)) { return call_original(requested); }
+
+    Rotator<float> authored{};
+    if (!sdk::discovery::process_memory().load(reinterpret_cast<uintptr_t>(requested), authored)) { return call_original(requested); }
+    auto aim = glm::quat{vr->get_rotation(0)};
+    if (!uevr::finch_aim::valid(aim)) { return call_original(requested); }
+    const auto now = std::chrono::high_resolution_clock::now();
+    auto& data = g_hook->m_process_view_rotation_data;
+    if (vr->is_controller_aim_enabled()) {
+        if (vr->get_runtime()->is_openvr() && vr->get_controllers().size() < 2) { return call_original(requested); }
+        const auto valid_pose = [&](uint32_t index) {
+            return index && index != UINT32_MAX && uevr::finch_aim::valid(glm::quat{vr->get_aim_rotation(index)}) &&
+                uevr::finch_aim::finite(glm::vec3{vr->get_aim_position(index)});
+        };
+        const auto method = vr->get_aim_method();
+        const auto left = vr->get_left_controller_index(), right = vr->get_right_controller_index();
+        const bool left_primary = method == VR::AimMethod::LEFT_CONTROLLER || method == VR::AimMethod::TWO_HANDED_LEFT;
+        const auto primary = left_primary ? left : right;
+        const bool two_handed = method == VR::AimMethod::TWO_HANDED_LEFT || method == VR::AimMethod::TWO_HANDED_RIGHT;
+        if (!valid_pose(primary) || (two_handed && (left == right || !valid_pose(left) || !valid_pose(right)))) { return call_original(requested); }
+        const auto position = glm::vec3{vr->get_aim_position(primary)};
+        glm::vec3 forward{};
+        if (two_handed) {
+            forward = glm::vec3{vr->get_aim_position(left_primary ? right : left)} - position;
+            if (!uevr::finch_aim::finite(forward) || glm::dot(forward, forward) < 0.000001f) { return call_original(requested); }
+            forward = utility::math::to_quat(glm::normalize(forward)) * glm::vec3{0, 0, -1};
+        } else {
+            forward = glm::quat{vr->get_aim_rotation(primary)} * glm::vec3{0, 0, 1};
+        }
+        if (!uevr::finch_aim::finite(forward) || glm::dot(forward, forward) < 0.000001f) { return call_original(requested); }
+        forward = position + glm::normalize(forward) * 1000.0f - glm::vec3{vr->get_standing_origin()};
+        if (!uevr::finch_aim::finite(forward) || glm::dot(forward, forward) < 0.000001f) { return call_original(requested); }
+        aim = utility::math::to_quat(glm::normalize(forward));
+        if (!uevr::finch_aim::valid(aim)) { return call_original(requested); }
+        if (vr->is_aim_interpolation_enabled() && uevr::finch_aim::valid(data.last_aim_rot)) {
+            const auto dt = std::clamp(std::chrono::duration<float>(now - data.last_update).count(), 0.0f, 0.1f);
+            const auto speed = vr->get_aim_speed();
+            if (!std::isfinite(speed) || speed < 0) { return call_original(requested); }
+            const auto weight = std::clamp(dt * speed * std::abs(glm::dot(aim, data.last_aim_rot)), 0.0f, 1.0f);
+            aim = glm::normalize(glm::slerp(data.last_aim_rot, aim, weight));
+        }
+    }
+    const auto plan = uevr::finch_aim::plan({authored.pitch, authored.yaw, authored.roll}, aim, vr->get_rotation_offset());
+    if (!plan) { return call_original(requested); }
+    const Rotator<float> selected{plan->world_degrees.x, plan->world_degrees.y, plan->world_degrees.z};
+    const auto result = call_original(&selected);
+    Rotator<float> returned{};
+    if (result != output || !sdk::discovery::process_memory().load(reinterpret_cast<uintptr_t>(output), returned) ||
+        !uevr::finch_aim::accepted(*plan, {returned.pitch, returned.yaw, returned.roll})) {
+        SPDLOG_WARN_ONCE("[Finch][Aim] Camera handoff did not return the selected orientation; preserving recenter state");
+        return result;
+    }
+    if (!vr->is_decoupled_pitch_enabled()) {
+        data.auto_enabled_decoupled_pitch = true;
+        vr->set_decoupled_pitch(true);
+    }
+    vr->set_rotation_offset(plan->next_offset);
+    data.last_update = now;
+    data.was_called = true;
+    if (vr->is_controller_aim_enabled()) { data.last_aim_rot = aim; }
+    g_hook->m_last_view_rotation = returned;
+    SPDLOG_INFO_ONCE("[Finch][Aim] Authoritative controller/camera handoff active; pitch and yaw compensation committed after native acceptance");
+    return result;
+}
 
 bool IXRTrackingSystemHook::try_install_daysgone_weapon_aim_bridge(void* weapon) {
     if (!is_daysgone_executable() || weapon == nullptr || !detail::is_live_daysgone_object(weapon)) {
@@ -2132,6 +2233,10 @@ void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float d
             data.was_called = false;
             vr->recenter_view();
             vr->set_pre_flattened_rotation(glm::identity<glm::quat>());
+            if (is_finch_executable() && data.auto_enabled_decoupled_pitch) {
+                data.auto_enabled_decoupled_pitch = false;
+                vr->set_decoupled_pitch(false);
+            }
 
             SPDLOG_INFO("IXRTrackingSystemHook: Recentering view because of timeout");
         }
@@ -3798,31 +3903,6 @@ void IXRTrackingSystemHook::process_view_rotation(
 
     if (is_finch_executable()) {
         call_orig();
-        if (!sdk::finch::aim::should_adjust(vr->is_any_aim_method_active(), vr->is_hmd_active(),
-                vr->is_controller_aim_enabled(), vr->is_using_controllers(),
-                vr->is_controller_camera_conflict_guard_active(), true) ||
-            !std::isfinite(delta_time) || delta_time < 0.0f || !g_hook->is_current_finch_camera(pcm)) { return; }
-        if (g_hook->m_stereo_hook->has_double_precision()) { return; }
-        const auto rotation = glm::quat{vr->get_rotation(0)};
-        const auto norm = glm::dot(rotation, rotation);
-        if (!detail::finite_quat(rotation) || norm < 0.25f || norm > 4.0f) { return; }
-        if (vr->is_controller_aim_enabled()) {
-            if (vr->get_runtime()->is_openvr() && vr->get_controllers().size() < 2) { return; }
-            const auto valid_pose = [&](uint32_t index) {
-                if (!index || index == UINT32_MAX) { return false; }
-                const auto q = glm::quat{vr->get_aim_rotation(index)};
-                const auto length = glm::dot(q, q);
-                return detail::finite_quat(q) && length >= 0.25f && length <= 4.0f &&
-                    detail::finite_vec3(glm::vec3{vr->get_aim_position(index)});
-            };
-            const auto method = vr->get_aim_method();
-            const auto left = vr->get_left_controller_index(), right = vr->get_right_controller_index();
-            if ((method == VR::AimMethod::LEFT_CONTROLLER && !valid_pose(left)) ||
-                (method == VR::AimMethod::RIGHT_CONTROLLER && !valid_pose(right)) ||
-                ((method == VR::AimMethod::TWO_HANDED_LEFT || method == VR::AimMethod::TWO_HANDED_RIGHT) &&
-                    (left == right || !valid_pose(left) || !valid_pose(right)))) { return; }
-        }
-        g_hook->update_view_rotation(pcm, rot);
         return;
     }
 
