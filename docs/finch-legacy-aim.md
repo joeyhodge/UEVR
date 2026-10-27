@@ -6,12 +6,25 @@ callback also receives a camera manager and POV, not the quaternion/position
 outputs used by newer XR camera callbacks. Selecting a version table alone is
 not a safe fix.
 
-The Finch adapter hooks the verified native `ProcessViewRotation` method with
-its original four-argument signature. It calls the game first, then reuses the
-existing HMD/controller aim calculation only for the current, reciprocal
-local-player/controller/camera binding. It does not publish a fake HMD, write
-camera-manager/POV storage, patch a following camera call, or perform a second
-control-rotation update during the engine tick.
+Finch's movement-camera tick later overwrites `ControlRotation` from its camera
+component. An early `ProcessViewRotation` change therefore does not establish
+that the game camera accepted the aim. Recentring at that early point can remove
+head motion that never reached the camera.
+
+The adapter hooks the verified native camera handoff instead. Its five-argument
+ABI includes the hidden rotator result, frame delta, requested world rotation
+and existing face-pawn flag. The original helper normalizes the selected
+rotation, updates the controller, and returns it to the movement-camera caller
+which applies that same orientation to its camera component. Only this exact
+consumer callsite and a reciprocal live local-player/controller/camera binding
+are accepted.
+
+Pose planning is side-effect-free. Recenter and automatic decoupled-pitch state
+are committed only after the native return is validated. There is no fake HMD,
+camera-manager/POV storage write, following-call NOP, early rotation mutation,
+or second engine-tick control-rotation writer. If the game stops using the
+handoff, the existing timeout also restores only pitch state owned by the
+Finch adapter.
 
 ## Guards
 
