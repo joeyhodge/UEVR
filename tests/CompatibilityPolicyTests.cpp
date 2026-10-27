@@ -2580,6 +2580,7 @@ int main(int argc, char** argv) {
     if (argc == 3 && std::string_view{argv[1]} == "--pre57-slate-fixture") { test_pre57_slate_fixture(argv[2]); }
     test_finch_native_fix_contracts();
     test_finch_aim_contracts();
+    test_finch_aim_pose();
     if (argc == 3 && std::string_view{argv[1]} == "--finch-image") {
         test_finch_native_fix_image(argv[2]);
         test_finch_aim_image(argv[2]);

@@ -64,7 +64,9 @@ private:
     void pre_initialize();
     void initialize();
     bool try_install_finch_aim();
-    bool is_current_finch_camera(sdk::APlayerCameraManager* camera) const;
+    bool is_current_finch_controller(sdk::APlayerController* controller) const;
+    static Rotator<float>* finch_camera_handoff(sdk::APlayerController* controller,
+        Rotator<float>* output, float delta_time, const Rotator<float>* requested, bool face_pawn);
     bool analyze_head_tracking_allowed(uintptr_t return_address);
 
     // IXRTrackingSystem
@@ -165,6 +167,7 @@ private:
     uintptr_t m_addr_of_process_view_rotation_ptr{};
     //std::unique_ptr<PointerHook> m_process_view_rotation_hook{};
     safetyhook::InlineHook m_process_view_rotation_hook{};
+    safetyhook::InlineHook m_finch_camera_handoff_hook{};
     safetyhook::MidHook m_daysgone_weapon_aim_trace_hook{};
     std::atomic<void*> m_daysgone_active_pawn{};
     std::atomic<void*> m_daysgone_active_controller{};
@@ -194,7 +197,7 @@ private:
     sdk::finch::aim::Contract m_finch_aim_contract{};
     sdk::finch::aim::Layout m_finch_aim_layout{};
     sdk::finch::aim::SetupBudget m_finch_aim_setup{};
-    std::array<sdk::UClass*, 3> m_finch_aim_classes{};
+    std::array<sdk::UClass*, 6> m_finch_aim_classes{};
     bool m_is_leq_4_25{false}; // <= 4.25, IsHeadTrackingAllowedForWorld does not exist
     bool m_is_leq_4_17{false}; // <= 4.17, IXRTrackingSystem and IXRCamera do not exist
     bool m_relative_transform_corrected{false}; // For UpdatePlayerCamera, causes player to become a midget if not corrected
