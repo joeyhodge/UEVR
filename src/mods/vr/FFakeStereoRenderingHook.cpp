@@ -30728,10 +30728,15 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
 
     auto vqi_norm = glm::normalize(view_quat_inverse);
 
-    // Decoupled Pitch
-    if (vr->is_decoupled_pitch_enabled()) {
+    // Finch's journal is a world-space menu viewed by its own pitched camera.
+    // Keep gameplay compensation, but do not flatten that validated menu view.
+    const bool finch_journal_pitch = vr->is_decoupled_pitch_enabled() && g_hook->m_tracking_system_hook &&
+        g_hook->m_tracking_system_hook->preserve_finch_journal_pitch();
+    if (uevr::finch_menu::flatten_pitch(vr->is_decoupled_pitch_enabled(), finch_journal_pitch)) {
         vr->set_pre_flattened_rotation(vqi_norm);
         vqi_norm = utility::math::flatten(vqi_norm);
+    } else if (finch_journal_pitch) {
+        vr->set_pre_flattened_rotation(glm::identity<glm::quat>());
     }
 
     const auto camera_forward_offset = vr->get_camera_forward_offset();

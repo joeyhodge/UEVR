@@ -2,6 +2,7 @@
 
 #include <sdk/FinchAim.hpp>
 #include "mods/vr/FinchAimPose.hpp"
+#include "mods/vr/FinchMenuView.hpp"
 
 namespace {
 struct FinchAimFixture : FinchFixture {
@@ -59,6 +60,64 @@ void test_finch_aim_contracts() {
         a::is_camera_handoff(*known, good.base + 0x12768b),
         "Finch validates the authoritative camera handoff rather than mutating early ProcessViewRotation");
     if (!known) { return; }
+    {
+        namespace menu=uevr::finch_menu;
+        expect(captured.at("journal_menu").at("camera_offset")==menu::menu_camera_offset &&
+            captured.at("journal_menu").at("outer_offset")==menu::outer_offset &&
+            captured.at("journal_menu").at("live_reference_verified")==true,
+            "journal field evidence matches the two SDK dumps and live menu-to-camera ownership comparison");
+        constexpr uintptr_t actor=0x300026000, camera=0x30002a000, level=0x30002c000;
+        auto fixture=good;fixture.add(actor,0x2ee0);fixture.add(camera,0x400);fixture.add(level,0x400);
+        fixture.put(actor+menu::menu_camera_offset,camera);fixture.put(actor+0x20,level);fixture.put(camera+0x20,level);
+        fixture.put(F::camera+0xb78,camera);
+        const menu::Binding binding{actor,camera,level,menu::menu_camera_offset,0x20,true};
+        const auto evaluate=[&](auto& data,const auto& b,bool current=true,bool local=true) {
+            return menu::journal_view(data.memory(),b,F::camera,F::pawn,local,[&] { return current; });
+        };
+        expect(evaluate(fixture,binding),"Finch journal bypass requires the menu's actual camera and shared live level");
+        expect(!menu::flatten_pitch(true,evaluate(fixture,binding)),
+            "HMD/controller aim or manually enabled decoupling preserves the journal's authored pitch");
+        expect(!menu::flatten_pitch(false,true) && !menu::flatten_pitch(false,false),
+            "Game aim with decoupling off stays off; journal handling never enables a setting");
+        auto gameplay=fixture;gameplay.put(F::camera+0xb78,F::pawn);
+        expect(!evaluate(gameplay,binding) && menu::flatten_pitch(true,evaluate(gameplay,binding)),
+            "normal gameplay retains exactly the working aim/decoupled-pitch compensation");
+        for(const auto [target,pending]:std::array<std::pair<uintptr_t,uintptr_t>,3>{{
+            {F::pawn,camera},{camera,F::pawn},{camera,camera}
+        }}) {
+            auto transition=fixture;transition.put(F::camera+0xb78,target);transition.put(F::camera+0xf60,pending);
+            expect(evaluate(transition,binding),"only verified player-to-journal camera blends share the journal exception");
+        }
+        for(const auto [target,pending]:std::array<std::pair<uintptr_t,uintptr_t>,3>{{
+            {F::player,uintptr_t{0}},{camera,F::player},{F::player,camera}
+        }}) {
+            auto transition=fixture;transition.put(F::camera+0xb78,target);transition.put(F::camera+0xf60,pending);
+            expect(!evaluate(transition,binding),"other scripted views and unknown camera blends keep their existing behavior");
+        }
+        expect(!evaluate(fixture,binding,false) && !evaluate(fixture,binding,true,false),
+            "retired objects or a foreign controller/local-player context cannot authorize journal compensation");
+        for(const auto [address,value]:std::array<std::pair<uintptr_t,uintptr_t>,3>{{
+            {actor+menu::menu_camera_offset,F::camera},{actor+0x20,F::player},{camera+0x20,F::player}
+        }}) {
+            auto changed=fixture;changed.put(address,value);
+            expect(!evaluate(changed,binding),"replaced journal camera or mismatched level retires the exception");
+        }
+        auto bad=binding;bad.validated=false;
+        expect(!evaluate(fixture,bad),"an unvalidated build/reflected menu layout cannot use the journal exception");
+        bad=binding;bad.camera_field+=8;
+        expect(!evaluate(fixture,bad),"a nearby unknown object field cannot substitute for MenuCamera");
+        bad=binding;bad.outer_field=0;
+        expect(!evaluate(fixture,bad),"an unproved outer field cannot substitute a vtable or another pointer for level ownership");
+        bad=binding;bad.menu=0x7ffffffffff8ull;
+        expect(!evaluate(fixture,bad),"journal pointer overflow is rejected before reading");
+        auto unreadable=fixture;unreadable.readable=false;
+        expect(!evaluate(unreadable,binding),"unreadable menu state preserves the ordinary path without executing game code");
+        const auto before=fixture.blocks;
+        evaluate(fixture,binding);
+        expect(std::equal(before.begin(),before.end(),fixture.blocks.begin(),fixture.blocks.end(),[](const auto& a,const auto& b) {
+            return a.address==b.address && a.code==b.code && a.bytes==b.bytes;
+        }),"journal recognition does not write actors, cameras, control rotation, UI transforms or game state");
+    }
     expect(a::native_version(good.memory(), good.base)->minor == 10,
         "Finch reads initialized native 4.10.1 metadata without a file version or branch regex");
     auto context = a::context(good.memory(), *known, good.layout, F::camera, F::live);
