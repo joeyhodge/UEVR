@@ -43,6 +43,27 @@ The SDK also recognizes this validated build's legacy `Hand`/`PlayerIndex`
 motion-controller properties instead of expecting a modern `MotionSource`.
 This is not automatic creation of VR hands or game-native grabbing support.
 
+## Journal Camera
+
+Finch's pause journal is world-space geometry, viewed by a separate camera
+pointing down at the book. Flattening that camera's pitch places the book
+sideways or below the HMD. The menu exception preserves its authored rotation;
+it does not change the working gameplay aim planner or control-rotation hook.
+
+Bounded game-thread preparation verifies the existing exact-build contract,
+reflected `MeshTextMenu.MenuCamera` ownership, native controller/camera fields
+and the menu instance in the streamed Menu level. The menu actor, camera, level
+and class identities retain any available object-array serials. Current classes,
+local ownership and the selected camera reference are rechecked even when UE4
+has not allocated weak serials. Eye callbacks do not
+scan objects, convert names, call menu functions or modify game objects.
+
+Only the validated journal camera and player-to-journal blends bypass pitch
+flattening. Other scripted cameras, stale/unknown state and normal gameplay
+keep the existing path. This applies when Decoupled Pitch is active, including
+manual use in Game aim and automatic use in HMD/controller aim. No saved option
+is changed. The UI pitch-compensation cache is neutral only for this menu view.
+
 ## Verification
 
 The existing compatibility-policy suite includes original-code fixtures,

@@ -2,6 +2,13 @@
   "source_image_sha256": "0f78bff729701ed14d718c84b2b8d9053a399acacd5ed7f061d98be623ffc9e3",
   "image_size": 47947776,
   "timestamp": 1498004125,
+  "journal_menu": {
+    "class": "Class /Script/FinchGame.MeshTextMenu",
+    "camera_property": "MenuCamera",
+    "camera_offset": 11768,
+    "outer_offset": 32,
+    "live_reference_verified": true
+  },
   "blocks": [
     {
       "name": "version_getter",
