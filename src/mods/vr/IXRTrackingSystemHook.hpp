@@ -8,6 +8,8 @@
 
 #include <sdk/StereoStuff.hpp>
 #include <sdk/FinchAim.hpp>
+#include <sdk/ObjectIdentity.hpp>
+#include "FinchMenuView.hpp"
 #include <safetyhook.hpp>
 
 #include "Mod.hpp"
@@ -45,6 +47,7 @@ public:
 
     void manual_update_control_rotation(sdk::UGameEngine* engine = nullptr);
     void update_view_rotation(sdk::UObject* reference_obj, Rotator<float>* rot);
+    bool preserve_finch_journal_pitch() const;
 
 private:
     struct ReferenceController {
@@ -64,6 +67,7 @@ private:
     void pre_initialize();
     void initialize();
     bool try_install_finch_aim();
+    bool try_prepare_finch_menu_view();
     bool is_current_finch_controller(sdk::APlayerController* controller) const;
     static Rotator<float>* finch_camera_handoff(sdk::APlayerController* controller,
         Rotator<float>* output, float delta_time, const Rotator<float>* requested, bool face_pawn);
@@ -198,6 +202,11 @@ private:
     sdk::finch::aim::Layout m_finch_aim_layout{};
     sdk::finch::aim::SetupBudget m_finch_aim_setup{};
     std::array<sdk::UClass*, 6> m_finch_aim_classes{};
+    sdk::finch::aim::Contract m_finch_menu_contract{};
+    sdk::finch::aim::Layout m_finch_menu_layout{};
+    sdk::finch::aim::SetupBudget m_finch_menu_setup{};
+    uevr::finch_menu::Binding m_finch_menu_binding{};
+    std::array<sdk::object_liveness::Identity, 8> m_finch_menu_objects{};
     bool m_is_leq_4_25{false}; // <= 4.25, IsHeadTrackingAllowedForWorld does not exist
     bool m_is_leq_4_17{false}; // <= 4.17, IXRTrackingSystem and IXRCamera do not exist
     bool m_relative_transform_corrected{false}; // For UpdatePlayerCamera, causes player to become a midget if not corrected
