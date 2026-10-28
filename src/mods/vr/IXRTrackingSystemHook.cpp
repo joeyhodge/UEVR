@@ -24,6 +24,7 @@
 #include <sdk/UObjectBase.hpp>
 #include <sdk/FProperty.hpp>
 #include <sdk/FBoolProperty.hpp>
+#include <sdk/FObjectProperty.hpp>
 #include <sdk/ScriptRotator.hpp>
 #include <sdk/ScriptVector.hpp>
 #include <sdk/UGameplayStatics.hpp>
@@ -43,6 +44,7 @@
 #include <sdk/GearsEDayDiscovery.hpp>
 #include <sdk/DiscoveryMemory.hpp>
 #include <sdk/FinchGameRuntime.hpp>
+#include <sdk/threading/GameThreadWorker.hpp>
 
 #include "IXRTrackingSystemHook.hpp"
 #include "GearsEDayAim.hpp"
@@ -1524,6 +1526,115 @@ bool IXRTrackingSystemHook::is_current_finch_controller(sdk::APlayerController* 
     return current.has_value();
 } catch (...) { return false; }
 
+bool IXRTrackingSystemHook::try_prepare_finch_menu_view() try {
+    if (!is_finch_executable() || !GameThreadWorker::get().is_same_thread()) { return false; }
+    if (m_finch_menu_binding.validated) {
+        uintptr_t current_camera{};
+        if (std::all_of(m_finch_menu_objects.begin(),m_finch_menu_objects.end(),[](const auto& id) {
+            return sdk::is_current_object(id);
+        }) && sdk::discovery::process_memory().load(m_finch_menu_binding.menu+m_finch_menu_binding.camera_field,current_camera) &&
+            current_camera==m_finch_menu_binding.camera) { return true; }
+        m_finch_menu_binding={};m_finch_menu_objects={};m_finch_menu_setup.reset();
+    }
+    const auto now=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (!m_finch_menu_setup.take(now)) { return false; }
+    const auto known=m_finch_aim_hook_owned.load(std::memory_order_acquire) ?
+        std::optional{m_finch_aim_contract} : sdk::finch::aim::contract(sdk::discovery::process_memory(),sdk::finch::current_base());
+    if (!known || !sdk::UObjectBase::has_validated_header_layout() ||
+        sdk::UObjectBase::get_outer_private_offset()!=uevr::finch_menu::outer_offset) { return false; }
+    const auto manager_class=sdk::APlayerCameraManager::static_class();
+    const auto controller_class=sdk::APlayerController::static_class();
+    const auto player_class=sdk::find_uobject<sdk::UClass>(L"Class /Script/Engine.LocalPlayer");
+    const auto menu_class=sdk::find_uobject<sdk::UClass>(L"Class /Script/FinchGame.MeshTextMenu");
+    const auto camera_class=sdk::find_uobject<sdk::UClass>(L"Class /Script/Engine.CameraActor");
+    const std::array<sdk::UClass*,5> classes{manager_class,controller_class,player_class,menu_class,camera_class};
+    if (!std::all_of(classes.begin(),classes.end(),is_live_finch_aim_object)) { return false; }
+    const auto owner=manager_class->find_property(L"PCOwner");
+    const auto manager=controller_class->find_property(L"PlayerCameraManager");
+    const auto player=controller_class->find_property(L"Player");
+    const auto controller=player_class->find_property(L"PlayerController");
+    const auto camera=menu_class->find_property(L"MenuCamera");
+    const auto target=manager_class->find_property(L"ViewTarget");
+    const auto pending=manager_class->find_property(L"PendingViewTarget");
+    const auto pawn=controller_class->find_property(L"Pawn");
+    const auto property_type=camera?reinterpret_cast<sdk::UObjectBase*>(camera->get_class()):nullptr;
+    const auto menu_size=menu_class->get_properties_size();
+    if (!owner || !manager || !player || !controller || !camera || !target || !pending || !pawn ||
+        owner->get_offset()!=sdk::finch::aim::owner_offset || manager->get_offset()!=sdk::finch::aim::camera_offset ||
+        target->get_offset()!=0xb78 || pending->get_offset()!=0xf60 || pawn->get_offset()!=0x350 ||
+        camera->get_offset()!=uevr::finch_menu::menu_camera_offset ||
+        menu_size<=0 || menu_size>0x10000 || static_cast<size_t>(menu_size)<uevr::finch_menu::menu_camera_offset+sizeof(void*) ||
+        !is_live_finch_aim_object(property_type) || property_type->get_fname().to_string()!=L"ObjectProperty" ||
+        static_cast<sdk::FObjectProperty*>(camera)->get_property_class()!=camera_class) { return false; }
+    const sdk::finch::aim::Layout layout{static_cast<uint32_t>(player->get_offset()),static_cast<uint32_t>(controller->get_offset())};
+    if (!sdk::finch::aim::valid_layout(layout) || controller_class->get_properties_size()<=0 ||
+        player_class->get_properties_size()<=0 || manager_class->get_properties_size()<0xf68 ||
+        controller_class->get_properties_size()>0x10000 || player_class->get_properties_size()>0x10000 ||
+        layout.player+sizeof(void*)>static_cast<size_t>(controller_class->get_properties_size()) ||
+        layout.local_controller+sizeof(void*)>static_cast<size_t>(player_class->get_properties_size())) { return false; }
+    // This fixed, immutable game build owns its journal in the streamed Menu
+    // level. Resolve it only during bounded preparation, not in an eye callback.
+    const auto menu=sdk::find_uobject<sdk::UObjectBase>(L"MeshTextMenu_BP_C /Game/Maps/Menu.menu.PersistentLevel.MeshTextMenu_BP_C_0",false);
+    if (!is_live_finch_aim_object(menu) || !is_live_finch_aim_object(menu->get_class()) || !menu->get_class()->is_a(menu_class)) { return false; }
+    uintptr_t camera_address{};
+    if (!sdk::discovery::process_memory().load(reinterpret_cast<uintptr_t>(menu)+uevr::finch_menu::menu_camera_offset,camera_address)) { return false; }
+    const auto menu_camera=reinterpret_cast<sdk::UObjectBase*>(camera_address);
+    if (!is_live_finch_aim_object(menu_camera) || !is_live_finch_aim_object(menu_camera->get_class()) ||
+        !menu_camera->get_class()->is_a(camera_class)) { return false; }
+    const auto level=reinterpret_cast<sdk::UObjectBase*>(menu->get_outer());
+    if (!is_live_finch_aim_object(level) || menu_camera->get_outer()!=reinterpret_cast<sdk::UObject*>(level)) { return false; }
+    std::array<sdk::object_liveness::Identity,8> identities{};
+    const std::array<sdk::UObjectBase*,8> objects{manager_class,controller_class,player_class,menu_class,camera_class,menu,menu_camera,level};
+    for(size_t i=0;i<objects.size();++i) {
+        const auto observed=sdk::observe_uobject(objects[i]);
+        if (!observed) { return false; }identities[i]=observed->identity;
+    }
+    m_finch_menu_contract=*known;m_finch_menu_layout=layout;m_finch_menu_objects=identities;
+    m_finch_menu_binding={reinterpret_cast<uintptr_t>(menu),camera_address,reinterpret_cast<uintptr_t>(level),
+        uevr::finch_menu::menu_camera_offset,sdk::UObjectBase::get_outer_private_offset(),true};
+    SPDLOG_INFO("[Finch][Menu] Validated journal camera ownership; authored menu pitch is preserved without changing aim or settings");
+    return true;
+} catch (...) { return false; }
+
+bool IXRTrackingSystemHook::preserve_finch_journal_pitch() const try {
+    if (!is_finch_executable() || !m_finch_menu_binding.validated || !GameThreadWorker::get().is_same_thread()) { return false; }
+    const auto engine=sdk::UEngine::get();
+    const auto player=engine?engine->get_localplayer(0):nullptr;
+    if (!player) { return false; }
+    const auto& memory=sdk::discovery::process_memory();
+    uintptr_t controller{},manager{},pawn{},target{};
+    if (!memory.load(reinterpret_cast<uintptr_t>(player)+m_finch_menu_layout.local_controller,controller) ||
+        !sdk::finch::pointer(controller) || !memory.load(controller+sdk::finch::aim::camera_offset,manager) ||
+        !sdk::finch::pointer(manager) || !memory.load(manager+0xb78,target) ||
+        !memory.load(controller+0x350,pawn)) { return false; }
+    uintptr_t pending{};
+    if (!memory.load(manager+0xf60,pending) || !uevr::finch_menu::journal_target(target,pending,pawn,m_finch_menu_binding.camera)) { return false; }
+    const auto current=sdk::finch::aim::controller_context(memory,m_finch_menu_contract,m_finch_menu_layout,controller,
+        [&](uintptr_t address,sdk::finch::aim::Role role) {
+            const auto index=static_cast<size_t>(role);
+            if(index>=3 || !sdk::is_current_object(m_finch_menu_objects[index])) { return false; }
+            const auto object=reinterpret_cast<sdk::UObjectBase*>(address);
+            const auto klass=reinterpret_cast<sdk::UClass*>(m_finch_menu_objects[index].object);
+            return is_live_finch_aim_object(object) && is_live_finch_aim_object(object->get_class()) && object->get_class()->is_a(klass);
+        });
+    if (!current || current->player!=reinterpret_cast<uintptr_t>(player) || current->camera!=manager) { return false; }
+    return uevr::finch_menu::journal_view(memory,m_finch_menu_binding,manager,pawn,true,[&] {
+        if (!std::all_of(m_finch_menu_objects.begin(),m_finch_menu_objects.end(),[](const auto& id) {
+            return sdk::is_current_object(id);
+        })) { return false; }
+        // UE4 may not have allocated a weak serial for these objects. Cached
+        // discovery is never authority: recheck their current classes as well
+        // as the native menu reference/level/selected-camera relationship.
+        for(const auto [object_index,class_index]:std::array<std::pair<size_t,size_t>,2>{{{5,3},{6,4}}}) {
+            const auto object=reinterpret_cast<sdk::UObjectBase*>(m_finch_menu_objects[object_index].object);
+            const auto klass=reinterpret_cast<sdk::UClass*>(m_finch_menu_objects[class_index].object);
+            if (!is_live_finch_aim_object(object) || !is_live_finch_aim_object(object->get_class()) ||
+                !object->get_class()->is_a(klass)) { return false; }
+        }
+        return true;
+    });
+} catch (...) { return false; }
+
 Rotator<float>* IXRTrackingSystemHook::finch_camera_handoff(sdk::APlayerController* controller,
     Rotator<float>* output, float delta_time, const Rotator<float>* requested, bool face_pawn) {
     const auto call_original = [&](const Rotator<float>* rotation) {
@@ -2140,6 +2251,8 @@ void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float d
     if (is_finch_executable()) {
         if (vr->is_any_aim_method_active()) { try_install_finch_aim(); }
         else { m_finch_aim_setup.reset(); }
+        if (vr->is_any_aim_method_active() || vr->is_decoupled_pitch_enabled()) { try_prepare_finch_menu_view(); }
+        else { m_finch_menu_setup.reset(); }
     }
     const auto direct_aim_compat_requested = is_direct_aim_compatibility_requested();
     const auto direct_aim_compat_active = is_direct_aim_compatibility_active();
