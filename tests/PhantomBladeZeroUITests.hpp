@@ -75,6 +75,64 @@ void test_native_layout(const Expect& expect) {
     }
 }
 
+template <typename Expect>
+void test_native_copy_extent(const Expect& expect) {
+    namespace p = uevr::pbz_native;
+    p::CopyExtent value{true, true, true, 4944, 2416, 1920, 1080, 2472, 2416};
+    expect(p::copy_extent_action(value) == p::CopyExtentAction::rebuild,
+        "PBZ refreshes the desktop startup extent before copying the Native Fix eye pair");
+    value.cached_width = 4944;
+    value.cached_height = 2416;
+    expect(p::copy_extent_action(value) == p::CopyExtentAction::unchanged,
+        "PBZ steady-state Native Fix does not rebuild per frame");
+    value.cached_width = 1920;
+    expect(p::copy_extent_action(value) == p::CopyExtentAction::rebuild,
+        "PBZ detects a stale width independently");
+    value.cached_width = 4944;
+    value.cached_height = 1080;
+    expect(p::copy_extent_action(value) == p::CopyExtentAction::rebuild,
+        "PBZ detects a stale height independently");
+    value.cached_height = 2416;
+    value.source_width = 1920;
+    value.source_height = 1080;
+    expect(p::copy_extent_action(value) == p::CopyExtentAction::wait_for_scene,
+        "PBZ does not treat the desktop source as a packed Native Fix eye pair");
+    value.external_scene = false;
+    expect(p::copy_extent_action(value) == p::CopyExtentAction::wait_for_scene,
+        "PBZ requires an external engine scene target rather than the desktop swapchain");
+    value.scoped = false;
+    expect(p::copy_extent_action(value) == p::CopyExtentAction::unchanged,
+        "The extent policy leaves other games and rendering modes unchanged");
+    value = {true, true, false, 4944, 2416, 1920, 1080, 2472, 2416};
+    expect(p::copy_extent_action(value) == p::CopyExtentAction::wait_for_scene,
+        "PBZ requires a validated source descriptor before rebuilding");
+    value.descriptor_valid = true;
+    for (const auto width : {uint64_t{0}, uint64_t{2472}, uint64_t{4943}, uint64_t{UINT32_MAX}, UINT64_MAX}) {
+        value.source_width = width;
+        expect(p::copy_extent_action(value) == p::CopyExtentAction::wait_for_scene,
+            "PBZ rejects absent, one-eye, mismatched or overflowing scene widths");
+    }
+    value.source_width = 4944;
+    for (const auto height : {0u, 1080u, 2415u, UINT32_MAX}) {
+        value.source_height = height;
+        expect(p::copy_extent_action(value) == p::CopyExtentAction::wait_for_scene,
+            "PBZ rejects scene heights that do not match the HMD eye");
+    }
+    value.source_height = 2416;
+    for (const auto width : {0u, 8193u, UINT32_MAX}) {
+        value.eye_width = width;
+        expect(p::copy_extent_action(value) == p::CopyExtentAction::wait_for_scene,
+            "PBZ bounds eye extents before packed-width arithmetic");
+    }
+    value = {true, true, true, 8192, 4096, 4944, 2416, 4096, 4096};
+    expect(p::copy_extent_action(value) == p::CopyExtentAction::rebuild,
+        "PBZ rebuilds for a validated HMD resolution change too");
+    value.cached_width = 8192;
+    value.cached_height = 4096;
+    expect(p::copy_extent_action(value) == p::CopyExtentAction::unchanged,
+        "PBZ resolution transition settles without a reset loop");
+}
+
 struct Memory {
     static constexpr uintptr_t base = 0x10000, owner = 0x11000, resource = 0x12000, rhi = 0x14000;
     std::array<uint8_t, 0x6000> bytes{};
@@ -114,6 +172,7 @@ template <typename Expect>
 void run(const Expect& expect) {
     using namespace uevr;
     test_native_layout(expect);
+    test_native_copy_extent(expect);
     pbz_ui::Creation state{true, true, true, true, true, true, true, 1920, 1080};
     expect(pbz_ui::can_request(state), "PBZ menu UI does not require a scene family");
     std::array flags{&state.exact_game, &state.dx12, &state.inputs_proven, &state.game_data,
