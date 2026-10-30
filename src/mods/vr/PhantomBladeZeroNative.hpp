@@ -9,6 +9,33 @@ inline constexpr size_t stereo_pass_offset = 0xde0;
 inline constexpr size_t stereo_index_offset = 0xde4;
 inline constexpr size_t primary_index_offset = 0xde8;
 
+enum class CopyExtentAction : uint8_t { unchanged, wait_for_scene, rebuild };
+
+struct CopyExtent {
+    bool scoped{};
+    bool external_scene{};
+    bool descriptor_valid{};
+    uint64_t source_width{};
+    uint32_t source_height{};
+    uint32_t cached_width{};
+    uint32_t cached_height{};
+    uint32_t eye_width{};
+    uint32_t eye_height{};
+};
+
+constexpr CopyExtentAction copy_extent_action(const CopyExtent& value) {
+    if (!value.scoped) { return CopyExtentAction::unchanged; }
+    if (!value.external_scene || !value.descriptor_valid ||
+        value.eye_width == 0 || value.eye_width > 8192 ||
+        value.eye_height == 0 || value.eye_height > 16384 ||
+        value.source_width != uint64_t{value.eye_width} * 2 ||
+        value.source_height != value.eye_height) {
+        return CopyExtentAction::wait_for_scene;
+    }
+    return value.source_width == value.cached_width && value.source_height == value.cached_height
+        ? CopyExtentAction::unchanged : CopyExtentAction::rebuild;
+}
+
 // The real FSceneView constructor transfers InitOptions' pass/index and
 // initializes PrimaryViewIndex. These are not the stock UE5.7 dd0/dd8 fields.
 inline constexpr auto constructor_fields = std::to_array<uint8_t>({
