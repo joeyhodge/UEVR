@@ -1572,6 +1572,7 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/Borderlands4Slate.hpp"
 	"src/mods/vr/BreathedgeInventoryPolicy.hpp"
 	"src/mods/vr/CVarDiagnostics.hpp"
+	"src/mods/vr/CVarExistingPriority.hpp"
 	"src/mods/vr/CVarManager.hpp"
 	"src/mods/vr/CompatibilityPolicy.hpp"
 	"src/mods/vr/ControllerTouchBindings.hpp"
