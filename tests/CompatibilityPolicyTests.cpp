@@ -27,6 +27,7 @@
 #include "mods/vr/KtjLHookContracts.hpp"
 #include "mods/vr/SWZeroCompanyBinary.hpp"
 #include "mods/vr/GearsEDayAllocation.hpp"
+#include "PhantomBladeZeroUITests.hpp"
 
 namespace {
 
@@ -2572,6 +2573,7 @@ void test_ktjl_hook_contracts() {
 
 int main(int argc, char** argv) {
     glory_fname_tests::run(expect);
+    pbz_ui_tests::run(expect);
     if (argc == 3 && std::string_view{argv[1]} == "--glory-fname-image") { glory_fname_tests::shipping_image(argv[2], expect); }
     test_pre57_ui_resources();
     test_pre57_ui_safety();
