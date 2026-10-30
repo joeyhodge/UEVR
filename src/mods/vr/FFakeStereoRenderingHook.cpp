@@ -48,6 +48,7 @@
 #include <sdk/PhantomBladeZeroObjectArray.hpp>
 #include <sdk/PhantomBladeZeroRenderTarget.hpp>
 #include "PhantomBladeZeroUI.hpp"
+#include "PhantomBladeZeroNative.hpp"
 #include <sdk/FinchGame.hpp>
 #include "GearsEDayAllocation.hpp"
 #include "GearsEDayNativeFix.hpp"
@@ -735,7 +736,8 @@ public:
         sdk::FSceneViewFamily* expected_family,
         const char*& failure_reason,
         size_t stereo_pass_offset = ue57_stereo_pass_offset,
-        size_t primary_view_index_offset = ue57_primary_view_index_offset)
+        size_t primary_view_index_offset = ue57_primary_view_index_offset,
+        bool pbz_layout_proven = false)
     {
         failure_reason = nullptr;
 
@@ -747,7 +749,9 @@ public:
         const auto view_address = reinterpret_cast<uintptr_t>(view);
         if ((stereo_pass_offset != ue57_stereo_pass_offset || primary_view_index_offset != ue57_primary_view_index_offset) &&
             (stereo_pass_offset != uevr::swgr_native::stereo_pass_offset ||
-             primary_view_index_offset != uevr::swgr_native::primary_index_offset)) {
+             primary_view_index_offset != uevr::swgr_native::primary_index_offset) &&
+            !(pbz_layout_proven && stereo_pass_offset == uevr::pbz_native::stereo_pass_offset &&
+                primary_view_index_offset == uevr::pbz_native::primary_index_offset)) {
             failure_reason = "singleton stereo offsets are not a validated contract";
             return false;
         }
@@ -27271,6 +27275,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
 
     if (use_ue57_linked_family_transaction) {
         const bool swgr_linked = swgr_ue574_dx12_runtime();
+        const bool pbz_linked = pbz_ue574_dx12_runtime();
         uevr::swgr_native::RectOverride swgr_right_rects{};
         uevr::gears_native::RectOverride goweday_right_rects{};
         const auto fail_closed = [&](const char* reason) {
@@ -27295,6 +27300,30 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             return;
         }
 
+        bool pbz_layout_proven{};
+        if (pbz_linked) {
+            static std::atomic<uintptr_t> proven_constructor{};
+            const auto constructor = g_hook->m_sceneview_data.constructor_hook.target_address();
+            const auto layout = sdk::FSceneViewInitOptionsBase::get_layout_snapshot();
+            const auto base = reinterpret_cast<uintptr_t>(utility::get_executable());
+            if (!layout || layout->stereo_pass != 0x1c0 || constructor == 0) {
+                fail_closed("PBZ original constructor/init-options contract is unavailable");
+                return;
+            }
+            if (proven_constructor.load(std::memory_order_acquire) != constructor) {
+                if (!uevr::pbz_native::layout_proven(sdk::discovery::process_memory(), constructor,
+                        base, utility::get_module_size(utility::get_executable()).value_or(0))) {
+                    // Cache immutable code rejection, not transient family/resource failures.
+                    g_hook->m_native_stereo_ue57_capability_failure_generation.store(
+                        native_capture_snapshot->generation, std::memory_order_release);
+                    fail_closed("PBZ constructor and independent stereo consumers do not prove its view layout");
+                    return;
+                }
+                proven_constructor.store(constructor, std::memory_order_release);
+                SPDLOG_INFO("[PBZ][NativeStereoFix] Validated pass/index/primary-index at +0xde0/+0xde4/+0xde8; logical eye/state retained");
+            }
+            pbz_layout_proven = true;
+        }
         if (goweday_linked) {
             static const bool layout_proven = uevr::gears_native::singleton_layout(sdk::discovery::process_memory(),
                 g_hook->m_sceneview_data.constructor_hook.target_address()) &&
@@ -27482,8 +27511,9 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
                 native_right_view,
                 right_family,
                 singleton_primary_failure_reason,
-                swgr_linked ? uevr::swgr_native::stereo_pass_offset : 0xdd0,
-                swgr_linked ? uevr::swgr_native::primary_index_offset : 0xdd8))
+                pbz_linked ? uevr::pbz_native::stereo_pass_offset : swgr_linked ? uevr::swgr_native::stereo_pass_offset : 0xdd0,
+                pbz_linked ? uevr::pbz_native::primary_index_offset : swgr_linked ? uevr::swgr_native::primary_index_offset : 0xdd8,
+                pbz_layout_proven))
         {
             const bool right_singleton_restored = right_singleton_primary.restore();
             const bool right_family_restored =
@@ -32257,7 +32287,7 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
 
         const auto native_fix_state =
             g_hook->m_native_stereo_fix_state.load(std::memory_order_acquire);
-        if ((swgr_ue574_dx12_runtime() || goweday_ue561_dx12_runtime()) && capture_snapshot->generation ==
+        if ((swgr_ue574_dx12_runtime() || goweday_ue561_dx12_runtime() || pbz_ue574_dx12_runtime()) && capture_snapshot->generation ==
             g_hook->m_native_stereo_ue57_capability_failure_generation.load(std::memory_order_acquire)) {
             // Preserve both ordinary views without oscillating FailedClosed /
             // LearningEyePair every frame after a cached capability rejection.
