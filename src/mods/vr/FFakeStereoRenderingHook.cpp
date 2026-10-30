@@ -93,6 +93,7 @@
 #include "StellarBladeRendererEntry.hpp"
 #include "HiFiRushRendererEntry.hpp"
 #include "SifuRendererEntry.hpp"
+#include "B1RendererEntry.hpp"
 #include "SatisfactoryRuntime.hpp"
 #include "SifuMeshCommands.hpp"
 #include "DuneFrameHandoff.hpp"
@@ -11525,6 +11526,49 @@ std::optional<RuntimeFunctionRange> get_sifu_callable_renderer_range(
     return candidate;
 }
 
+bool b1_is_supported_renderer_runtime() {
+    static const bool exact_game_version = []() {
+        const auto path = utility::get_module_pathw(utility::get_executable()).value_or(L"");
+        const auto version = sdk::get_file_version_info();
+        return uevr::b1::is_supported_runtime(path, version.dwFileVersionMS, version.dwFileVersionLS, true);
+    }();
+    return exact_game_version && g_framework != nullptr && g_framework->is_dx12();
+}
+
+std::optional<RuntimeFunctionRange> get_b1_callable_renderer_range(
+    uintptr_t callback_return, uintptr_t excluded_viewport_draw) {
+    if (!uevr::b1::matches_family_layout(*sdk::FSceneViewFamily::get_layout_snapshot()) ||
+        !indirect_virtual_call_returns_to(callback_return, 0x28)) {
+        return std::nullopt;
+    }
+
+    const auto candidate = get_canonical_runtime_function_range(callback_return);
+    if (!candidate || candidate->image_base != reinterpret_cast<uintptr_t>(utility::get_executable()) ||
+        candidate->size() > 0x4000 || callback_return < candidate->begin || callback_return >= candidate->end ||
+        !uevr::b1::is_distinct_renderer_entry(candidate->begin, excluded_viewport_draw) ||
+        !is_readable_process_range(candidate->begin, candidate->size()) ||
+        !is_executable_process_range(candidate->begin, candidate->size())) {
+        return std::nullopt;
+    }
+
+    DWORD64 root_image_base{};
+    const auto root = RtlLookupFunctionEntry(candidate->begin, &root_image_base, nullptr);
+    if (root == nullptr || root_image_base != candidate->image_base || root->UnwindData == 0 ||
+        root_image_base + root->BeginAddress != candidate->begin ||
+        root->EndAddress <= root->BeginAddress || root->EndAddress - root->BeginAddress < 0x22) {
+        return std::nullopt;
+    }
+    const auto unwind = candidate->image_base + root->UnwindData;
+    constexpr auto unwind_size = uevr::b1::renderer_root_unwind.size();
+    if (unwind < candidate->image_base || !is_readable_process_range(unwind, unwind_size) ||
+        !uevr::b1::has_callable_renderer_entry(
+            {reinterpret_cast<const uint8_t*>(candidate->begin), candidate->size()},
+            {reinterpret_cast<const uint8_t*>(unwind), unwind_size}, callback_return - candidate->begin)) {
+        return std::nullopt;
+    }
+    return candidate;
+}
+
 bool has_begin_rendering_viewfamily_wrapper_shape(const RuntimeFunctionRange& wrapper) {
     // UE5's singular wrapper builds a one-element TArrayView on the stack. Keep
     // this as corroborating evidence rather than the sole resolver condition.
@@ -11548,6 +11592,17 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
     uintptr_t direct_callback_return = 0,
     uintptr_t excluded_viewport_draw = 0)
 {
+    if (b1_is_supported_renderer_runtime()) {
+        const auto candidate = get_b1_callable_renderer_range(direct_callback_return, excluded_viewport_draw);
+        if (!candidate) {
+            SPDLOG_WARN_ONCE("[B1][NativeStereoFix] Renderer callback/ABI not validated; preserving the original renderer without a size-based stack fallback");
+            return std::nullopt;
+        }
+        SPDLOG_INFO("[B1][NativeStereoFix] Validated singular renderer entry {:x} from callback {:x}; family FrameNumber +0x7C, SDK layout unchanged",
+            candidate->begin, direct_callback_return);
+        return candidate->begin;
+    }
+
     {
         namespace k = uevr::ktjl::renderer;
         static const auto path = utility::get_module_pathw(utility::get_executable()).value_or(L"");
@@ -28309,7 +28364,8 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
                         reinterpret_cast<uintptr_t>(_ReturnAddress()),
                         (farfarwest_ue581_view_extension_layout_is_current_game() ||
                          hifi_rush_native_fix_renderer_is_current_game() ||
-                         sifu_native_fix_renderer_is_current_game())
+                         sifu_native_fix_renderer_is_current_game() ||
+                         b1_is_supported_renderer_runtime())
                             ? g_hook->m_gameviewportclient_draw_hook.target_address()
                             : 0);
             if (!candidate) {
