@@ -45,6 +45,9 @@
 #include <sdk/GearsEDayDiscovery.hpp>
 #include <sdk/TheSinkingCity2Native.hpp>
 #include <sdk/FinalFantasyResonance.hpp>
+#include <sdk/PhantomBladeZeroObjectArray.hpp>
+#include <sdk/PhantomBladeZeroRenderTarget.hpp>
+#include "PhantomBladeZeroUI.hpp"
 #include <sdk/FinchGame.hpp>
 #include "GearsEDayAllocation.hpp"
 #include "GearsEDayNativeFix.hpp"
@@ -6521,7 +6524,26 @@ bool should_create_validated_automatic_ue58_ui_target() {
         g_hook->requires_ue58_synthetic_ui_target();
 }
 
+bool pbz_ue574_dx12_runtime() {
+    if (g_framework == nullptr || !g_framework->is_dx12()) { return false; }
+    static const bool exact_game = [] {
+        const auto path = utility::get_module_pathw(utility::get_executable());
+        const auto version = sdk::get_file_version_info();
+        return path && sdk::pbz::eligible(*path, version.dwFileVersionMS, version.dwFileVersionLS);
+    }();
+    return exact_game;
+}
+
+bool uses_lazy_localplayer_viewstates() {
+    // These games allocate histories in CalcSceneViewInitOptions. Replaying
+    // their PostInitProperties only repeats game-specific delegate registration.
+    return stalker2_uses_lazy_synced_viewstates() || pbz_ue574_dx12_runtime();
+}
+
+std::atomic_bool g_pbz_slate_ui_inputs_proven{};
+
 bool should_harden_ue58_ui_initialization() {
+    if (pbz_ue574_dx12_runtime()) { return true; }
     return uevr::vr_compatibility::should_harden_ue58_synthetic_ui_initialization(
         is_validated_ue58_slate_ui_runtime(), is_ue58_dx12_backend(),
         should_create_validated_automatic_ue58_ui_target(), supports_legacy_allowlisted_ue58_ui_route());
@@ -7728,6 +7750,14 @@ bool ue58_dx12_has_proven_native_accessor(uintptr_t rhi) {
     }
     // Cache only immutable game code, never an instance or an inferred offset.
     static std::atomic<uintptr_t> proven_native_vtable{};
+    if (pbz_ue574_dx12_runtime()) {
+        static std::atomic<uintptr_t> pbz_native_vtable{};
+        if (pbz_native_vtable.load(std::memory_order_acquire) != vtable) {
+            if (!ue58_ui_validate_accessor(rhi, 5, uevr::pbz_ui::native_resource_prefix)) { return false; }
+            pbz_native_vtable.store(vtable, std::memory_order_release);
+        }
+        return true;
+    }
     if (proven_native_vtable.load(std::memory_order_acquire) != vtable) {
         if (!ue58_ui_validate_accessor(rhi, 5, uevr::ue58_owned_ui::native_resource_accessor)) {
             return false;
@@ -7744,7 +7774,7 @@ try {
     const auto rhi = reinterpret_cast<uintptr_t>(texture);
     const auto scene_rhi = reinterpret_cast<uintptr_t>(scene);
     uintptr_t vtable{}, scene_vtable{};
-    if (!is_validated_ue58_slate_ui_runtime() || !is_ue58_dx12_backend() ||
+    if ((!(is_validated_ue58_slate_ui_runtime() && is_ue58_dx12_backend()) && !pbz_ue574_dx12_runtime()) ||
         rhi == 0 || scene_rhi == 0 || rhi == scene_rhi ||
         !safe_read_value(rhi, vtable) || !safe_read_value(scene_rhi, scene_vtable) || vtable != scene_vtable)
     {
@@ -7874,6 +7904,54 @@ try {
     return UE58OwnedTextureResource{*identity, std::move(*native)};
 } catch (...) {
     reason = "owned resource became unreadable during validation";
+    return std::nullopt;
+}
+
+std::optional<UE58OwnedTextureResource> pbz_validate_owned_texture(
+    sdk::UTexture* texture, FRHITexture2D* scene, uint32_t width, uint32_t height, const char*& reason)
+try {
+    reason = "PBZ owned texture or source ABI is not ready";
+    if (!pbz_ue574_dx12_runtime() || texture == nullptr || scene == nullptr ||
+        !ue58_dx12_has_proven_native_accessor(reinterpret_cast<uintptr_t>(scene)))
+    {
+        return std::nullopt;
+    }
+    const auto owner = reinterpret_cast<uintptr_t>(texture);
+    const auto owner_class = texture->get_class();
+    if (owner_class == nullptr) { return std::nullopt; }
+    const auto size = owner_class->get_properties_size();
+    if (size <= 0 || size > uevr::ue58_owned_ui::max_owner_size ||
+        !is_readable_process_range(owner, size)) { return std::nullopt; }
+    const auto read = [](uintptr_t address, auto& out) { return safe_read_value(address, out); };
+    const auto validate = [&](uintptr_t resource, uintptr_t rhi) {
+        uintptr_t table{}, scene_table{};
+        return is_readable_process_range(resource, uevr::pbz_ui::resource_size) &&
+            ue58_ui_validate_accessor(resource, 6, uevr::pbz_ui::size_x_accessor) &&
+            ue58_ui_validate_accessor(resource, 7, uevr::pbz_ui::size_y_accessor) &&
+            ue58_ui_validate_accessor(resource + uevr::pbz_ui::render_target_offset,
+                2, uevr::ue58_owned_ui::render_target_accessor) &&
+            ue58_ui_validate_accessor(resource + uevr::pbz_ui::render_target_offset,
+                6, sdk::pbz_render_target::gamma_code) &&
+            safe_read_value(rhi, table) && safe_read_value(reinterpret_cast<uintptr_t>(scene), scene_table) &&
+            table == scene_table;
+    };
+    reason = "PBZ GT/RT mirrors, owner, dimensions or accessor code do not agree";
+    const auto identity = uevr::pbz_ui::find_owned_resource(owner, size, width, height, read, validate);
+    if (!identity) { return std::nullopt; }
+    reason = "PBZ native resource, format, device or scene separation is not ready";
+    auto native = ue58_dx12_validate_native_texture(
+        reinterpret_cast<FRHITexture2D*>(identity->rhi_texture), scene, width, height);
+    if (!native) { return std::nullopt; }
+    reason = "PBZ owned resource changed during validation";
+    if (uevr::pbz_ui::find_owned_resource(owner, size, width, height, read, validate) != identity) {
+        return std::nullopt;
+    }
+    sdk::FRenderTarget::update_offsets(reinterpret_cast<sdk::FRenderTarget*>(
+        identity->resource + uevr::pbz_ui::render_target_offset));
+    reason = "ready";
+    return UE58OwnedTextureResource{*identity, std::move(*native)};
+} catch (...) {
+    reason = "PBZ owned resource became unreadable";
     return std::nullopt;
 }
 
@@ -14984,7 +15062,7 @@ void* FFakeStereoRenderingHook::engine_tick_hook(sdk::UGameEngine* engine, float
     if (uevr::nascar::is_target()) {
         hook->service_nascar_synced_redraw(engine);
     }
-    if (is_validated_ue58_slate_ui_runtime() && is_ue58_dx12_backend()) {
+    if ((is_validated_ue58_slate_ui_runtime() && is_ue58_dx12_backend()) || pbz_ue574_dx12_runtime()) {
         hook->get_render_target_manager()->service_ue58_ui_game_thread();
     }
 
@@ -24992,12 +25070,12 @@ void FFakeStereoRenderingHook::setup_viewpoint(ISceneViewExtension* extension, v
         return;
     }
 
-    if (stalker2_uses_lazy_synced_viewstates()) {
-        // GSCLocalPlayer::PostInitProperties registers game delegates and resets
-        // flags, not ViewStates. CalcSceneViewInitOptions allocates those lazily.
+    if (uses_lazy_localplayer_viewstates()) {
+        // Game PostInitProperties overrides register delegates, not ViewStates.
+        // CalcSceneViewInitOptions allocates the histories on actual views.
         SPDLOG_INFO_ONCE(
-            "[Stalker2][GhostingFix] Preserving LocalPlayer initialization in Synced; "
-            "only opt-in bounded view-count pulses may allocate missing eye histories");
+            "[GhostingFix] Preserving game-specific LocalPlayer initialization; "
+            "only opt-in bounded view-count pulses may allocate missing lazy eye histories");
         return;
     }
 
@@ -25312,7 +25390,7 @@ void FFakeStereoRenderingHook::localplayer_setup_viewpoint(void* localplayer, vo
     ZoneScopedN("LocalPlayerSetupViewPoint");
     SPDLOG_INFO_ONCE("Called LocalPlayerSetupViewPoint for the first time");
 
-    if (!g_hook->m_fixed_localplayer_view_count && !stalker2_uses_lazy_synced_viewstates()) {
+    if (!g_hook->m_fixed_localplayer_view_count && !uses_lazy_localplayer_viewstates()) {
         static bool attempted = false;
 
         if (!attempted) {
@@ -26334,6 +26412,19 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             const auto& identity = *native_capture_snapshot->swgr_owned_resource;
             rtrsrc = reinterpret_cast<sdk::FTextureRenderTargetResource*>(identity.resource);
             rtfrt = reinterpret_cast<sdk::FRenderTarget*>(identity.resource + uevr::swgr_owned::render_target_offset);
+            scene_capture_rhi = reinterpret_cast<FRHITexture2D*>(identity.rhi_texture);
+        }
+    } else if (pbz_ue574_dx12_runtime()) {
+        if (native_capture_snapshot != nullptr && native_capture_snapshot->ue58_owned_resource && rt != nullptr &&
+            reinterpret_cast<uintptr_t>(rt) == native_capture_snapshot->owner_texture &&
+            native_capture_snapshot->generation == rtm->get_scene_capture_generation() &&
+            uevr::pbz_ui::resource_matches(reinterpret_cast<uintptr_t>(rt), *native_capture_snapshot->ue58_owned_resource,
+                native_capture_snapshot->width, native_capture_snapshot->height,
+                [](uintptr_t address, auto& out) { return safe_read_value(address, out); }))
+        {
+            const auto& identity = *native_capture_snapshot->ue58_owned_resource;
+            rtrsrc = reinterpret_cast<sdk::FTextureRenderTargetResource*>(identity.resource);
+            rtfrt = reinterpret_cast<sdk::FRenderTarget*>(identity.resource + uevr::pbz_ui::render_target_offset);
             scene_capture_rhi = reinterpret_cast<FRHITexture2D*>(identity.rhi_texture);
         }
     } else if (native_capture_snapshot != nullptr && native_capture_snapshot->ue58_owned_resource) {
@@ -30953,7 +31044,7 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
         !g_hook->m_get_desired_number_of_views_hook;
 
     if (!uevr::nascar::is_target() && !vr->should_skip_post_init_properties() && wants_localplayer_bootstrap &&
-        !stalker2_uses_lazy_synced_viewstates()) {
+        !uses_lazy_localplayer_viewstates()) {
         if (!g_hook->m_fixed_localplayer_view_count) {
             if (!g_hook->m_calculate_stereo_projection_matrix_post_hook) {
                 const auto return_address = (uintptr_t)_ReturnAddress();
@@ -31393,7 +31484,7 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
                 ghosting_needs_second_state &&
                 uevr::vr_compatibility::is_ghosting_bootstrap_allocator_ready(
                     g_hook->m_fixed_localplayer_view_count,
-                    stalker2_uses_lazy_synced_viewstates(),
+                    uses_lazy_localplayer_viewstates(),
                     g_hook->is_in_viewport_client_draw(),
                     !!g_hook->m_get_desired_number_of_views_hook &&
                         !g_hook->m_analyzing_view_extensions) &&
@@ -31627,7 +31718,7 @@ void FFakeStereoRenderingHook::post_calculate_stereo_projection_matrix(safetyhoo
 #endif
 
     if (g_hook->m_fixed_localplayer_view_count || g_hook->m_hooked_alternative_localplayer_scan ||
-        stalker2_uses_lazy_synced_viewstates()) {
+        uses_lazy_localplayer_viewstates()) {
         return;
     }
 
@@ -31829,7 +31920,7 @@ void FFakeStereoRenderingHook::pre_get_projection_data(safetyhook::Context& ctx)
     SPDLOG_INFO_ONCE("pre get projection data called!");
 #endif
 
-    if (g_hook->m_fixed_localplayer_view_count || stalker2_uses_lazy_synced_viewstates()) {
+    if (g_hook->m_fixed_localplayer_view_count || uses_lazy_localplayer_viewstates()) {
         return;
     }
 
@@ -31856,10 +31947,10 @@ void FFakeStereoRenderingHook::pre_get_projection_data(safetyhook::Context& ctx)
 
 void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
     if (uevr::nascar::is_target()) { return; }
-    if (stalker2_uses_lazy_synced_viewstates()) {
+    if (uses_lazy_localplayer_viewstates()) {
         // Defense for bootstrap hooks left installed after a rendering-mode change.
-        // Do not mark PostInit complete: Native/Native Fix retain their own bootstrap.
-        SPDLOG_INFO_ONCE("[Stalker2][GhostingFix] Skipping LocalPlayer PostInitProperties replay in Synced");
+        // Do not mark PostInit complete or claim a validated eye pair.
+        SPDLOG_INFO_ONCE("[LocalPlayer] Using lazy eye-history allocation; no PostInitProperties replay");
         return;
     }
 
@@ -37296,8 +37387,21 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     // normally services RenderThreadWorker. DrawWindow is independently proven
     // to run on FRenderingThread, so service only the dedicated UE5.8 UI queue
     // here after Slate finishes. The general render-worker queue is untouched.
+    if (pbz_ue574_dx12_runtime() && !g_pbz_slate_ui_inputs_proven.load(std::memory_order_acquire)) {
+        std::array<uint8_t, uevr::pbz_ui::slate_inputs_contract.size()> code{};
+        const auto target = g_hook->m_slate_thread_hook.target_address();
+        if (utility::get_module_within(target).value_or(nullptr) == utility::get_executable() &&
+            is_executable_process_range(target + uevr::pbz_ui::slate_inputs_offset, code.size()) &&
+            safe_read_value(target + uevr::pbz_ui::slate_inputs_offset, code) &&
+            code == uevr::pbz_ui::slate_inputs_contract)
+        {
+            g_pbz_slate_ui_inputs_proven.store(true, std::memory_order_release);
+            SPDLOG_INFO("[PBZ][SlateUI] Verified DrawWindow inputs; UI initialization is independent of scene-family discovery");
+        }
+    }
     const bool pump_ue58_slate_ui_resource_worker =
-        is_validated_ue58_slate_ui_runtime() && is_ue58_dx12_backend();
+        (is_validated_ue58_slate_ui_runtime() && is_ue58_dx12_backend()) ||
+        (pbz_ue574_dx12_runtime() && g_pbz_slate_ui_inputs_proven.load(std::memory_order_acquire));
     utility::ScopeGuard ue58_slate_ui_resource_worker_guard{[&]() {
         if (pump_ue58_slate_ui_resource_worker) {
             get_ue58_slate_ui_resource_worker().execute();
@@ -38326,6 +38430,27 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             ue56_dx12_try_get_native_resource(provider_texture, "Viewport RT provider texture");
     }
 
+    if (pbz_ue574_dx12_runtime()) {
+        const auto extent = g_framework->get_d3d12_rt_size();
+        const auto width = extent.x > 0 ? static_cast<uint32_t>(extent.x) : 0u;
+        const auto height = extent.y > 0 ? static_cast<uint32_t>(extent.y) : 0u;
+        const auto vr = VR::get();
+        const bool needs_target = rtm->get_dedicated_ui_target() == nullptr ||
+            rtm->get_dedicated_ui_width() != width || rtm->get_dedicated_ui_height() != height;
+        if (needs_target && vr && vr->is_hmd_active() && !vr->is_stereo_emulation_enabled() &&
+            !vr->is_extreme_compatibility_mode_enabled() &&
+            uevr::pbz_ui::can_request({
+                true, true, g_pbz_slate_ui_inputs_proven.load(std::memory_order_acquire),
+                g_framework->is_game_data_intialized(), sdk::UGameEngine::get() != nullptr,
+                g_hook->has_seen_stable_slate_draw(),
+                engine_texture != nullptr && engine_texture == rtm->get_render_target() &&
+                    ue58_dx12_has_proven_native_accessor(reinterpret_cast<uintptr_t>(engine_texture)),
+                width, height}))
+        {
+            rtm->request_dedicated_ui_target(width, height);
+        }
+    }
+
     if (supports_naruto_ue416_dedicated_ui_target()) {
         // The first valid provider texture is Naruto's desktop-sized Slate
         // destination. Capture its extent before FSceneViewport replaces the
@@ -38956,7 +39081,8 @@ void VRRenderTargetManager_Base::calculate_render_target_size(const sdk::FViewpo
         return;
     }
 
-    if ((is_ue_5_7_or_newer() || uevr::nascar::uses_legacy_dedicated_ui(g_framework->is_dx12())) && x > 0 && y > 0) {
+    if (!pbz_ue574_dx12_runtime() &&
+        (is_ue_5_7_or_newer() || uevr::nascar::uses_legacy_dedicated_ui(g_framework->is_dx12())) && x > 0 && y > 0) {
         // Preserve the pre-VR window extent before replacing it with the packed
         // scene size. NASCAR25 reaches this callback too, but is UE5.5 rather than UE5.7.
         this->request_dedicated_ui_target(x, y);
@@ -40528,9 +40654,13 @@ bool VRRenderTargetManager_Base::publish_scene_capture_target_snapshot(
         snapshot->swgr_owned_resource = swgr_owned->identity;
     }
     if (ue58_owned_resource != nullptr) {
-        if (!uevr::ue58_owned_ui::resource_matches(reinterpret_cast<uintptr_t>(owner_texture),
-                *ue58_owned_resource, expected_width, expected_height,
-                [](uintptr_t address, auto& out) { return safe_read_value(address, out); }))
+        const auto read = [](uintptr_t address, auto& out) { return safe_read_value(address, out); };
+        const bool owned_matches = pbz_ue574_dx12_runtime()
+            ? uevr::pbz_ui::resource_matches(reinterpret_cast<uintptr_t>(owner_texture),
+                *ue58_owned_resource, expected_width, expected_height, read)
+            : uevr::ue58_owned_ui::resource_matches(reinterpret_cast<uintptr_t>(owner_texture),
+                *ue58_owned_resource, expected_width, expected_height, read);
+        if (!owned_matches)
         {
             return false;
         }
@@ -40765,7 +40895,7 @@ bool VRRenderTargetManager_Base::create_ue58_ui_texture() {
 
     UE58UITextureOwner::servicing_enabled.store(true, std::memory_order_release);
     ue58_ui_initialization_enabled.store(true, std::memory_order_release);
-    const auto source = g_hook->has_seen_prerender_viewfamily()
+    const auto source = !pbz_ue574_dx12_runtime() && g_hook->has_seen_prerender_viewfamily()
         ? uevr::ue58_ui::Source::PreRender : uevr::ue58_ui::Source::Slate;
     const auto width = dedicated_ui_width;
     const auto height = dedicated_ui_height;
@@ -40818,11 +40948,21 @@ void VRRenderTargetManager_Base::service_ue58_ui_game_thread() {
             fail("KismetRenderingLibrary is not ready");
             return;
         }
+        auto* world_context = static_cast<sdk::UObject*>(world);
+        if (pbz_ue574_dx12_runtime()) {
+            world_context = engine->get_property<sdk::UObject*>(L"GameInstance");
+            if (world_context == nullptr) {
+                fail("persistent GameInstance is not ready");
+                return;
+            }
+        }
         auto owner = std::shared_ptr<UE58UITextureOwner>{new UE58UITextureOwner{}, &UE58UITextureOwner::retire};
         const float clear_color[4]{};
-        // Preserve the existing automatic DX12 path's Outer, format and flags.
+        // Use PBZ's persistent context across map changes; retain other titles'
+        // existing Outer, format and flags.
         // This engine call can flush rendering, so no lifecycle/worker lock is held.
-        auto* texture = kismet->create_render_target_2d(world, ticket->width, ticket->height, 2, clear_color, false);
+        auto* texture = kismet->create_render_target_2d(
+            reinterpret_cast<sdk::UWorld*>(world_context), ticket->width, ticket->height, 2, clear_color, false);
         if (texture == nullptr) {
             fail("CreateRenderTarget2D returned no texture");
             return;
@@ -40863,12 +41003,15 @@ void VRRenderTargetManager_Base::service_ue58_ui_initialization(uevr::ue58_ui::S
         FRHITexture2D* ready_texture{};
         std::optional<UE58OwnedTextureResource> validated{};
         const char* reason{};
-        if (is_validated_ue58_slate_ui_runtime() && is_ue58_dx12_backend()) {
+        if (pbz_ue574_dx12_runtime()) {
+            validated = pbz_validate_owned_texture(
+                owner.texture.get(), get_render_target(), ticket->width, ticket->height, reason);
+        } else if (is_validated_ue58_slate_ui_runtime() && is_ue58_dx12_backend()) {
             validated = ue58_dx12_validate_owned_resource(
                 owner.texture.get(), get_render_target(), ticket->width, ticket->height, reason,
                 &owner.recognized_stock_layout);
         }
-        if (uses_ue58_pooled_ui_owned_resource_path() || owner.recognized_stock_layout || validated) {
+        if (pbz_ue574_dx12_runtime() || uses_ue58_pooled_ui_owned_resource_path() || owner.recognized_stock_layout || validated) {
             if (!validated) {
                 owner.stability.observe(std::nullopt);
                 retry(reason);
@@ -40920,7 +41063,12 @@ void VRRenderTargetManager_Base::service_ue58_ui_initialization(uevr::ue58_ui::S
                 ticket->generation, ticket->width, ticket->height, uevr::ue58_ui::to_string(source));
             if (validated) {
                 SPDLOG_INFO("[UE5.8][SlateUI][Init] Validated owned resource at owner+0x{:x}, "
-                    "FRenderTarget+0x40; no global texture offset updates", validated->identity.private_resource_offset);
+                    "FRenderTarget+0x{:x}; no global texture offset updates", validated->identity.private_resource_offset,
+                    pbz_ue574_dx12_runtime() ? uevr::pbz_ui::render_target_offset : uevr::ue58_owned_ui::render_target_offset);
+            }
+            if (pbz_ue574_dx12_runtime()) {
+                SPDLOG_INFO("[PBZ][SlateUI] Published owned full-window UI target {}x{}; scene-family bootstrap was not required",
+                    ticket->width, ticket->height);
             }
         }
     } catch (...) {
@@ -41650,6 +41798,10 @@ bool VRRenderTargetManager_Base::can_attempt_dedicated_ui_creation() {
     const bool stable_slate_draw = g_hook != nullptr && g_hook->has_seen_stable_slate_draw();
     if (!slate_hook_valid || !stable_slate_draw) {
         return false;
+    }
+
+    if (pbz_ue574_dx12_runtime()) {
+        return g_pbz_slate_ui_inputs_proven.load(std::memory_order_acquire);
     }
 
     if (swgr_ue574_dx12_runtime()) { return get_swgr_scene_snapshot() != nullptr; }
@@ -43030,7 +43182,23 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
                     return false;
                 }
             }
-            if (is_validated_ue58_slate_ui_runtime() && is_ue58_dx12_backend()) {
+            if (pbz_ue574_dx12_runtime()) {
+                const char* reason{};
+                recognized_stock_layout = true;
+                ue58_owned = pbz_validate_owned_texture(tgt.get(), get_render_target(),
+                    static_cast<uint32_t>(VR::get()->get_hmd_width()),
+                    static_cast<uint32_t>(VR::get()->get_hmd_height()), reason);
+                if (!ue58_owned) {
+                    stability.observe(std::nullopt);
+                    SPDLOG_INFO_EVERY_N_SEC(2, "[PBZ][NativeStereoFix] Waiting for owned capture resource: {}", reason);
+                    return false;
+                }
+                if (!stability.observe(uevr::ue58_owned_ui::Observation{
+                        generation, ue58_owned->identity, reinterpret_cast<uintptr_t>(ue58_owned->native.Get())}))
+                {
+                    return false;
+                }
+            } else if (is_validated_ue58_slate_ui_runtime() && is_ue58_dx12_backend()) {
                 const char* reason{};
                 ue58_owned = ue58_dx12_validate_owned_resource(tgt.get(), get_render_target(),
                     static_cast<uint32_t>(VR::get()->get_hmd_width()),
@@ -43107,7 +43275,8 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
                 // selects this path. Keep it local to this capture generation.
                 rsrc = reinterpret_cast<sdk::FTextureRenderTargetResource*>(ue58_owned->identity.resource);
                 frt = reinterpret_cast<sdk::FRenderTarget*>(
-                    ue58_owned->identity.resource + uevr::ue58_owned_ui::render_target_offset);
+                    ue58_owned->identity.resource + (pbz_ue574_dx12_runtime()
+                        ? uevr::pbz_ui::render_target_offset : uevr::ue58_owned_ui::render_target_offset));
                 rhi_texture = reinterpret_cast<FRHITexture2D*>(ue58_owned->identity.rhi_texture);
                 sdk::FRenderTarget::update_offsets(frt);
             } else if (use_stalker2_capture_layout || use_bodycam_capture_layout || use_storm_escape_capture_layout) {
@@ -43269,9 +43438,11 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
             }
             if (ue58_owned) {
                 SPDLOG_INFO(
-                    "[UE5.8][NativeStereoFix] Validated capture generation {}: owner+0x{:x}, "
-                    "FRenderTarget+0x40, RHI={:x}; no global texture offset updates",
-                    generation, ue58_owned->identity.private_resource_offset, ue58_owned->identity.rhi_texture);
+                    "[{}][NativeStereoFix] Validated capture generation {}: owner+0x{:x}, "
+                    "FRenderTarget+0x{:x}, RHI={:x}; no global texture offset updates",
+                    pbz_ue574_dx12_runtime() ? "PBZ" : "UE5.8", generation, ue58_owned->identity.private_resource_offset,
+                    pbz_ue574_dx12_runtime() ? uevr::pbz_ui::render_target_offset : uevr::ue58_owned_ui::render_target_offset,
+                    ue58_owned->identity.rhi_texture);
             }
 
             RHIThreadWorker::get().enqueue([this, tgt, generation]() {
