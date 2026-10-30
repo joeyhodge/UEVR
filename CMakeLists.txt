@@ -715,7 +715,6 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 
 	list(APPEND prospi-camera-trace-tests_SOURCES
 		"tests/ProSpiCameraTraceTests.cpp"
-	"src/mods/vr/PhantomBladeZeroUI.hpp"
 		"src/mods/vr/ProSpiCameraTrace.cpp"
 	)
 
@@ -1972,6 +1971,7 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/IXRTrackingSystemHook.cpp"
 	"src/mods/vr/KtjLOpenXRFactory.cpp"
 	"src/mods/vr/OverlayComponent.cpp"
+	"src/mods/vr/PhantomBladeZeroUI.hpp"
 	"src/mods/vr/ProSpiCameraProbe.cpp"
 	"src/mods/vr/ProSpiCameraTrace.cpp"
 	"src/mods/vr/ProSpiRoofVisibility.cpp"
