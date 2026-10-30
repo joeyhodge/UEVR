@@ -15,6 +15,7 @@
 
 #include "../../Mod.hpp"
 #include "CVarDiagnostics.hpp"
+#include "CVarExistingPriority.hpp"
 #include "Stalker2NativePolicy.hpp"
 #include "SatisfactoryModular.hpp"
 
@@ -98,9 +99,25 @@ public:
         uevr::cvar_diagnostics::WriteObservation get_write_observation() const;
         void poll_write_observation(int64_t now_ms);
         void draw_write_observation() const;
+        void draw_existing_priority_action();
+
+        struct PriorityAction {
+            uint64_t attempt{};
+            uint64_t edit{};
+            uevr::cvar_existing_priority::Result result{};
+        };
+        PriorityAction get_priority_action() const;
 
         void unfreeze() {
             m_frozen = false;
+            cancel_existing_priority_action();
+        }
+
+        void cancel_existing_priority_action() {
+            std::scoped_lock lock{m_write_observation_mutex};
+            if (m_priority_action.result.state == uevr::cvar_existing_priority::State::queued) {
+                m_priority_action.result.state = uevr::cvar_existing_priority::State::stale_request;
+            }
         }
 
         bool is_frozen() const {
@@ -130,6 +147,7 @@ public:
         }
 
     protected:
+        void queue_existing_priority_action(const uevr::cvar_diagnostics::WriteObservation& edit);
         bool update_satisfactory_interface(sdk::IConsoleVariable*& variable);
         uint64_t begin_ui_write(double requested);
         void finish_ui_write(uint64_t request_id, bool callable);
@@ -164,6 +182,7 @@ public:
         uevr::satisfactory::ConsoleRetry m_satisfactory_interface_retry{};
         mutable std::mutex m_write_observation_mutex{};
         uevr::cvar_diagnostics::WriteObservation m_write_observation{};
+        PriorityAction m_priority_action{};
     };
 
     class CVarStandard : public CVar {
