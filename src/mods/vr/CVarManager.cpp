@@ -34,6 +34,37 @@ constexpr std::string_view cvars_data_txt_name = "cvars_data.txt";
 constexpr std::string_view user_script_txt_name = "user_script.txt";
 
 namespace {
+uevr::cvar_existing_priority::Memory existing_priority_memory() {
+    return {nullptr,
+        [](void*, uintptr_t address, void* out, size_t size) {
+            SIZE_T copied{};
+            return address >= 0x10000 && size <= UINTPTR_MAX - address &&
+                ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(address), out, size, &copied) &&
+                copied == size;
+        },
+        [](void*, uintptr_t address, size_t size, bool executable) {
+            const auto module = utility::get_module_within(address);
+            const auto base = module ? reinterpret_cast<uintptr_t>(*module) : 0;
+            const auto extent = module ? utility::get_module_size(*module).value_or(0) : 0;
+            if (!base || address < base || address - base > extent ||
+                size > extent - (address - base)) { return false; }
+            MEMORY_BASIC_INFORMATION region{};
+            return VirtualQuery(reinterpret_cast<const void*>(address), &region, sizeof(region)) &&
+                region.State == MEM_COMMIT && !(region.Protect & (PAGE_GUARD | PAGE_NOACCESS)) &&
+                reinterpret_cast<uintptr_t>(region.AllocationBase) == base &&
+                address - reinterpret_cast<uintptr_t>(region.BaseAddress) <= region.RegionSize &&
+                size <= region.RegionSize - (address - reinterpret_cast<uintptr_t>(region.BaseAddress)) &&
+                (!executable || (region.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ |
+                    PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)));
+        }};
+}
+
+bool existing_priority_binding(std::wstring_view name, uintptr_t object) {
+    const auto manager = sdk::FConsoleManager::get();
+    return manager && uevr::cvar_existing_priority::registry_matches(existing_priority_memory(),
+        reinterpret_cast<uintptr_t>(manager), name, object);
+}
+
 bool invoke_stalker_flags(void* function, sdk::IConsoleVariable* variable, uint32_t& flags) {
     __try {
         flags = reinterpret_cast<uint32_t(__fastcall*)(sdk::IConsoleVariable*)>(function)(variable);
@@ -615,6 +646,125 @@ uevr::cvar_diagnostics::WriteObservation CVarManager::CVar::get_write_observatio
     return m_write_observation;
 }
 
+CVarManager::CVar::PriorityAction CVarManager::CVar::get_priority_action() const {
+    std::scoped_lock lock{m_write_observation_mutex};
+    return m_priority_action;
+}
+
+void CVarManager::CVar::draw_existing_priority_action() {
+    namespace priority = uevr::cvar_existing_priority;
+    const auto edit = get_write_observation();
+    if (!edit.request_id || !sdk::should_use_ue57_console_manager_interface()) { return; }
+    const auto action = get_priority_action();
+    const bool queued = action.edit == edit.request_id && action.result.state == priority::State::queued;
+    const bool retryable = !edit.pending && (edit.state == uevr::cvar_diagnostics::WriteState::not_observed ||
+        edit.state == uevr::cvar_diagnostics::WriteState::changed_after_observed);
+    ImGui::PushID(this);
+    if (retryable && !queued && ImGui::SmallButton("Apply requested at existing priority")) {
+        queue_existing_priority_action(edit);
+    }
+    if (retryable && !queued && ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "One explicit game-thread write using this CVar's existing priority (UE5.7/5.8 validated interfaces only).\n"
+            "Does not raise priority, clear flags, save an override, or change normal freeze enforcement.\n"
+            "Read-only/cheat variables and changed bindings are rejected. The game may override the value again.");
+    }
+    if (action.attempt && action.edit == edit.request_id) {
+        ImGui::TextDisabled("  Existing-priority action: %s", priority::name(action.result.state));
+        if (action.result.priority) {
+            ImGui::TextDisabled("  Used existing priority: 0x%08X (one shot)", action.result.priority);
+            if (action.result.state == priority::State::dispatched && !action.result.after_flags) {
+                ImGui::TextDisabled("  Flags readback unavailable; no retry or enforcement.");
+            } else if (action.result.after_flags &&
+                ((*action.result.after_flags & priority::priority_mask) != action.result.priority ||
+                 (*action.result.after_flags & priority::protected_flags))) {
+                ImGui::TextDisabled("  Engine changed flags/priority afterward; left unchanged.");
+            }
+        }
+    }
+    ImGui::PopID();
+}
+
+void CVarManager::CVar::queue_existing_priority_action(
+    const uevr::cvar_diagnostics::WriteObservation& edit)
+{
+    namespace priority = uevr::cvar_existing_priority;
+    const bool floating = m_type == Type::FLOAT;
+    const priority::Request request{true, sdk::should_use_ue57_console_manager_interface(), floating,
+        edit.requested, floating ? double(m_min_float_value) : double(m_min_int_value),
+        floating ? double(m_max_float_value) : double(effective_max_int_value())};
+    uint64_t attempt{};
+    {
+        std::scoped_lock lock{m_write_observation_mutex};
+        if (m_write_observation.request_id != edit.request_id || m_write_observation.pending ||
+            (m_write_observation.state != uevr::cvar_diagnostics::WriteState::not_observed &&
+             m_write_observation.state != uevr::cvar_diagnostics::WriteState::changed_after_observed) ||
+            m_priority_action.result.state == priority::State::queued) { return; }
+        attempt = m_priority_action.attempt + 1;
+        m_priority_action = {attempt, edit.request_id, {priority::State::queued}};
+    }
+    try {
+        GameThreadWorker::get().enqueue(
+            [sft = shared_from_this(), request, attempt, edit_id = edit.request_id]() {
+                const auto current = [&]() {
+                    std::scoped_lock lock{sft->m_write_observation_mutex};
+                    return sft->m_write_observation.request_id == edit_id &&
+                        sft->m_priority_action.attempt == attempt &&
+                        sft->m_priority_action.result.state == priority::State::queued;
+                };
+                priority::Result result{priority::State::setter_unavailable};
+                try {
+                    priority::Backend backend{
+                        current,
+                        [&]() -> uintptr_t {
+                            auto* variable = sdk::find_validated_cvar_cached_only(sft->m_name);
+                            const auto address = reinterpret_cast<uintptr_t>(variable);
+                            return variable && existing_priority_binding(sft->m_name, address) &&
+                                variable->is_validated_ue57_variable() ? address : 0;
+                        },
+                        [](uintptr_t object) { return priority::read_flags(existing_priority_memory(), object); },
+                        [&](uintptr_t object) { return existing_priority_binding(sft->m_name, object); },
+                        [&](uintptr_t object, double value, uint32_t flags) {
+                            const auto text = request.floating ? std::to_wstring(static_cast<float>(value))
+                                : std::to_wstring(static_cast<int32_t>(value));
+                            return reinterpret_cast<sdk::IConsoleVariable*>(object)->Set(text.c_str(), flags);
+                        }};
+                    result = priority::apply_once(request, backend);
+                } catch (...) {}
+                bool readback{};
+                {
+                    std::scoped_lock lock{sft->m_write_observation_mutex};
+                    if (sft->m_priority_action.attempt != attempt) { return; }
+                    if (sft->m_write_observation.request_id != edit_id ||
+                        sft->m_priority_action.result.state != priority::State::queued) {
+                        sft->m_priority_action.result = {priority::State::stale_request};
+                        return;
+                    }
+                    sft->m_priority_action.result = result;
+                    if (result.state == priority::State::dispatched) {
+                        const auto id = sft->m_write_observation.begin(request.value, request.floating);
+                        sft->m_priority_action.edit = id;
+                        readback = sft->m_write_observation.dispatched(id, true, diagnostic_now_ms());
+                    }
+                }
+                if (readback) {
+                    s_pending_ui_readbacks.store(true, std::memory_order_release);
+                    CVarManager::record_global_change(sft->m_name,
+                        request.floating ? std::to_wstring(request.value) : std::to_wstring(int32_t(request.value)),
+                        "ui_existing_priority_once");
+                }
+                SPDLOG_INFO("[CVarExistingPriority] {} requested={} priority=0x{:08x} result={} after_flags={}",
+                    utility::narrow(sft->m_name), request.value, result.priority, priority::name(result.state),
+                    result.after_flags ? fmt::format("0x{:08x}", *result.after_flags) : "unavailable");
+            });
+    } catch (...) {
+        std::scoped_lock lock{m_write_observation_mutex};
+        if (m_priority_action.attempt == attempt) {
+            m_priority_action.result = {priority::State::setter_unavailable};
+        }
+    }
+}
+
 void CVarManager::CVar::poll_write_observation(int64_t now_ms) {
     const auto before = get_write_observation();
     if (!before.due(now_ms)) {
@@ -695,12 +845,21 @@ void CVarManager::process_diagnostics() try {
     // Only already-resolved getters are sampled; support export never starts a CVar scan.
     nlohmann::json snapshot{{"sampled", true}, {"sample_steady_ms", now_ms},
         {"read_only", true}, {"ui_edits", nlohmann::json::array()}, {"values", nlohmann::json::object()},
-        {"note", "UI edits are session-local. Missing values mean not previously resolved/readable, not absent from the game. Owner priority is not sampled."}};
+        {"note", "UI edit readbacks are session-local. Missing values mean not previously resolved/readable, not absent from the game. Owner priority is sampled only by an explicit existing-priority action."}};
     for (auto& cvar : m_all_cvars) {
         const auto observation = cvar->get_write_observation();
         if (observation.request_id != 0) {
             auto edit = uevr::cvar_diagnostics::to_json(observation);
             edit["name"] = utility::narrow(cvar->get_name());
+            const auto action = cvar->get_priority_action();
+            if (action.attempt && action.edit == observation.request_id) {
+                edit["existing_priority_action"] = {
+                    {"state", uevr::cvar_existing_priority::name(action.result.state)},
+                    {"attempt", action.attempt}, {"one_shot", true},
+                    {"priority", action.result.priority},
+                    {"after_flags", action.result.after_flags
+                        ? nlohmann::json(*action.result.after_flags) : nlohmann::json(nullptr)}};
+            }
             snapshot["ui_edits"].push_back(std::move(edit));
         }
     }
@@ -934,6 +1093,7 @@ void CVarManager::on_draw_ui() {
         for (auto& cvar : m_displayed_cvars) {
             cvar->draw_ui();
             cvar->draw_write_observation();
+            cvar->draw_existing_priority_action();
         }
 
         refresh_frozen_cvar_state();
@@ -1261,6 +1421,8 @@ int CVarManager::CVar::effective_max_int_value() const {
 void CVarManager::CVar::load_internal(const std::string& filename, bool set_defaults) try {
     ZoneScopedN(__FUNCTION__);
 
+    cancel_existing_priority_action();
+
     spdlog::info("[CVarManager] Loading {}...", filename);
 
     const auto cvars_txt = Framework::get_persistent_dir(filename);
@@ -1302,6 +1464,8 @@ void CVarManager::CVar::load_internal(const std::string& filename, bool set_defa
 
 void CVarManager::CVar::load_from_config_internal(const utility::Config& cfg, bool set_defaults) {
     ZoneScopedN(__FUNCTION__);
+
+    cancel_existing_priority_action();
 
     const auto value = cfg.get(get_key_name());
 
