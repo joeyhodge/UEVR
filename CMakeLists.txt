@@ -1517,6 +1517,7 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/IXRTrackingSystemHook.cpp"
 	"src/mods/vr/KtjLOpenXRFactory.cpp"
 	"src/mods/vr/OverlayComponent.cpp"
+	"src/mods/vr/PhantomBladeZeroNative.hpp"
 	"src/mods/vr/PhantomBladeZeroUI.hpp"
 	"src/mods/vr/RenderTargetPoolHook.cpp"
 	"src/mods/vr/SatisfactoryRuntime.cpp"
