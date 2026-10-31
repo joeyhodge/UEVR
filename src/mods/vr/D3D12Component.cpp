@@ -4793,10 +4793,27 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
         draw_2d_view(m_openvr.ui_tex.commands, nullptr);
 
+        bool stupid_never_dies_ui_copy_blocked = false;
+        if (!use_2d_screen && ffsr->get_render_target_manager()->get_stupid_never_dies_ui_extent()) {
+            auto* const source = native_ui_resource();
+            const auto destination_desc = m_openvr.ui_tex.texture->GetDesc();
+            const auto source_desc = source ? source->GetDesc() : D3D12_RESOURCE_DESC{};
+            stupid_never_dies_ui_copy_blocked = !source ||
+                !uevr::stupid_never_dies_ui::copy_target_matches(source_desc, destination_desc);
+            if (source && uevr::stupid_never_dies_ui::ui_target(source_desc,
+                static_cast<uint32_t>(source_desc.Width), source_desc.Height) &&
+                uevr::stupid_never_dies_ui::request_resize_once(m_stupid_never_dies_openvr_ui_resize_pending,
+                    destination_desc, {static_cast<uint32_t>(source_desc.Width), source_desc.Height})) {
+                ffsr->set_should_recreate_textures(true);
+                SPDLOG_INFO("[StupidNeverDies][OpenVR] Queued one UI destination rebuild [{}x{}]->[{}x{}]; mismatched copy blocked",
+                    destination_desc.Width, destination_desc.Height, source_desc.Width, source_desc.Height);
+            }
+        }
+
         if (is_right_eye_frame) {
             if (use_2d_screen) {
                 m_openvr.ui_tex.commands.copy(m_2d_screen_tex[0].texture.Get(), m_openvr.ui_tex.texture.Get(), ENGINE_SRC_COLOR);
-            } else if (ui_target != nullptr && !pre57_ui_rejected) {
+            } else if (ui_target != nullptr && !pre57_ui_rejected && !stupid_never_dies_ui_copy_blocked) {
                 m_openvr.ui_tex.commands.copy(native_ui_resource(), m_openvr.ui_tex.texture.Get(), ENGINE_SRC_COLOR);
             }
         } else if (use_2d_screen) {

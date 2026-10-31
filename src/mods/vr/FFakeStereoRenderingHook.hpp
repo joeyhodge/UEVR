@@ -206,6 +206,16 @@ public:
         return buffered_rt_texture_call.load(std::memory_order_acquire);
     }
     FRHITexture2D* get_buffered_rt_ui_target() const { return buffered_rt_ui_owner.get(); }
+    std::optional<uevr::stupid_never_dies_ui::Extent> get_stupid_never_dies_ui_extent() const {
+        return uevr::stupid_never_dies_ui::extent_from_key(stupid_never_dies_ui_extent.load(std::memory_order_acquire));
+    }
+    void set_stupid_never_dies_ui_extent(uevr::stupid_never_dies_ui::Extent extent) {
+        stupid_never_dies_ui_extent.store(uevr::stupid_never_dies_ui::extent_key(extent), std::memory_order_release);
+    }
+    bool request_stupid_never_dies_ui_resize(const D3D12_RESOURCE_DESC& current,
+        uevr::stupid_never_dies_ui::Extent wanted) {
+        return uevr::stupid_never_dies_ui::request_resize_once(stupid_never_dies_ui_resize_pending, current, wanted);
+    }
 
     FRHITexture2D* get_dedicated_ui_target() {
         if (uevr::nascar::is_target()) { return get_ui_target(); }
@@ -502,6 +512,8 @@ protected:
     std::vector<uint8_t> texture_create_insn_bytes2{};
     std::atomic<std::shared_ptr<const uevr::buffered_rt::TextureCall>> buffered_rt_texture_call{nullptr};
     std::unique_ptr<FRHITexture2D, uevr::buffered_rt::ReleaseTexture> buffered_rt_ui_owner{nullptr, {}};
+    std::atomic_uint64_t stupid_never_dies_ui_extent{};
+    std::atomic_uint64_t stupid_never_dies_ui_resize_pending{};
 
     std::optional<size_t> m_viewport_force_separate_rt_offset{};
     bool m_attempted_find_force_separate_rt{false};
