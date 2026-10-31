@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -43,6 +44,28 @@ struct Inputs {
 };
 static_assert(sizeof(Inputs) == 0x50 && offsetof(Inputs, min_x) == 0x38 && offsetof(Inputs, scale) == 0x48);
 
+struct Extent {
+    uint32_t width{}, height{};
+    bool operator==(const Extent&) const = default;
+};
+
+inline std::optional<Extent> slate_extent(const Inputs& in) {
+    const auto width = int64_t{in.max_x} - in.min_x;
+    const auto height = int64_t{in.max_y} - in.min_y;
+    if (width <= 0 || height <= 0 || width > 16384 || height > 16384) { return {}; }
+    return Extent{static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
+}
+
+inline uint64_t extent_key(Extent extent) {
+    if (!extent.width || !extent.height || extent.width > 16384 || extent.height > 16384) { return 0; }
+    return uint64_t{extent.width} | (uint64_t{extent.height} << 32);
+}
+
+inline std::optional<Extent> extent_from_key(uint64_t key) {
+    const Extent extent{static_cast<uint32_t>(key), static_cast<uint32_t>(key >> 32)};
+    return extent_key(extent) ? std::optional{extent} : std::nullopt;
+}
+
 template<class Read, class IsObject>
 std::optional<Inputs> inputs(uintptr_t renderer, uintptr_t address, Read&& read, IsObject&& is_object) {
     Inputs in{};
@@ -53,9 +76,7 @@ std::optional<Inputs> inputs(uintptr_t renderer, uintptr_t address, Read&& read,
         in.request_count < 0 || in.request_count > 256 ||
         (in.request_count != 0 && !in.post_process_requests) ||
         !std::isfinite(in.scale) || in.scale < -1 || in.scale > 8) { return {}; }
-    const auto width = int64_t{in.max_x} - in.min_x;
-    const auto height = int64_t{in.max_y} - in.min_y;
-    if (width <= 0 || height <= 0 || width > 16384 || height > 16384) { return {}; }
+    if (!slate_extent(in)) { return {}; }
     return in;
 }
 
@@ -163,5 +184,20 @@ inline bool ui_target(const D3D12_RESOURCE_DESC& desc, uint32_t width, uint32_t 
         desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM || desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
     return color_target(desc) && width != 0 && height != 0 && desc.Width == width && desc.Height == height &&
         (desc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) == 0 && bgra;
+}
+
+inline bool request_resize_once(std::atomic_uint64_t& pending, const D3D12_RESOURCE_DESC& desc, Extent extent) {
+    const auto key = extent_key(extent);
+    if (!key || !ui_target(desc, static_cast<uint32_t>(desc.Width), desc.Height)) { return false; }
+    if (ui_target(desc, extent.width, extent.height)) {
+        pending.store(0, std::memory_order_relaxed);
+        return false;
+    }
+    return pending.exchange(key, std::memory_order_relaxed) != key;
+}
+
+inline bool copy_target_matches(const D3D12_RESOURCE_DESC& source, const D3D12_RESOURCE_DESC& destination) {
+    return ui_target(source, static_cast<uint32_t>(source.Width), source.Height) &&
+        ui_target(destination, static_cast<uint32_t>(source.Width), source.Height);
 }
 }

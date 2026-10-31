@@ -33790,7 +33790,7 @@ void FFakeStereoRenderingHook::stupid_never_dies_ui_hook(safetyhook::Context& ct
     const bool original_valid = valid_resource(original_native, original_desc, original_device);
     if (!ui_valid || !original_valid || ui_native == original_native || !d3d12 ||
         ui_device.Get() != d3d12->get_device() || original_device.Get() != ui_device.Get() ||
-        !uevr::stupid_never_dies_ui::ui_target(ui_desc, scope.width, scope.height)) {
+        !uevr::stupid_never_dies_ui::ui_target(ui_desc, static_cast<uint32_t>(ui_desc.Width), ui_desc.Height)) {
         const auto* reason = !ui_valid ? ui_rejection : !original_valid ? rejection :
             ui_native == original_native ? "same resource" : !d3d12 || ui_device.Get() != d3d12->get_device() ||
             original_device.Get() != ui_device.Get() ? "device identity" : "UI extent/format";
@@ -33804,10 +33804,16 @@ void FFakeStereoRenderingHook::stupid_never_dies_ui_hook(safetyhook::Context& ct
         return;
     }
     const auto vr = VR::get();
-    const bool scene = original == rtm->get_render_target() &&
+    const bool scene = vr && original == rtm->get_render_target() &&
         original_desc.Width == uint64_t(vr->get_hmd_width()) * 2 && original_desc.Height == vr->get_hmd_height();
     const bool window = original_desc.Width == scope.width && original_desc.Height == scope.height;
     if (!scene && !window) { return; }
+    if (rtm->request_stupid_never_dies_ui_resize(ui_desc, {scope.width, scope.height})) {
+        g_hook->set_should_recreate_textures(true);
+        SPDLOG_INFO("[StupidNeverDies][SlateUI] Queued one UI rebuild for Slate canvas {}x{} (retained={}x{}); original draw retained until ready",
+            scope.width, scope.height, ui_desc.Width, ui_desc.Height);
+    }
+    if (!uevr::stupid_never_dies_ui::ui_target(ui_desc, scope.width, scope.height)) { return; }
     // Only the existing engine call consumes the replacement. RDG/pooled refs
     // retain it normally; the scene target, input packet and present output stay intact.
     scope.validated_original = ctx.rdx;
@@ -37526,13 +37532,18 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             SPDLOG_INFO_EVERY_N_SEC(10, "[StupidNeverDies][SlateUI] Waiting for validated inputs and matching immediate command list");
             return g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
         }
-        g_hook->get_slate_thread_worker()->execute(reinterpret_cast<FRHICommandListImmediate*>(commands));
         const auto vr = VR::get();
-        const auto extent = g_framework->get_d3d12_rt_size();
-        if (vr && vr->is_hmd_active() && !vr->is_stereo_emulation_enabled() && !vr->is_extreme_compatibility_mode_enabled() &&
-            extent.x > 0 && extent.x <= 16384 && extent.y > 0 && extent.y <= 16384) {
+        const auto extent = uevr::stupid_never_dies_ui::slate_extent(*in);
+        const bool redirect_ui = vr && vr->is_hmd_active() && !vr->is_stereo_emulation_enabled() &&
+            !vr->is_extreme_compatibility_mode_enabled() && extent;
+        if (redirect_ui) {
+            // The game's Slate canvas can differ from the resized presentation backbuffer.
+            rtm->set_stupid_never_dies_ui_extent(*extent);
+        }
+        g_hook->get_slate_thread_worker()->execute(reinterpret_cast<FRHICommandListImmediate*>(commands));
+        if (redirect_ui) {
             g_hook->note_stable_slate_draw();
-            g_stupid_never_dies_slate_scope = {reinterpret_cast<uintptr_t>(a2), uint32_t(extent.x), uint32_t(extent.y)};
+            g_stupid_never_dies_slate_scope = {reinterpret_cast<uintptr_t>(a2), extent->width, extent->height};
             g_hook->m_inside_slate_draw_window = true;
             g_hook->m_slate_draw_window_thread_id = GetCurrentThreadId();
         }
@@ -39423,7 +39434,12 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
 
         alignas(16) std::array<uint8_t, 0x100> descriptor{};
         std::memcpy(descriptor.data(), reinterpret_cast<const void*>(ctx.r9), descriptor.size());
-        const auto size = g_framework->is_dx11() ? g_framework->get_d3d11_rt_size() : g_framework->get_d3d12_rt_size();
+        auto size = g_framework->is_dx11() ? g_framework->get_d3d11_rt_size() : g_framework->get_d3d12_rt_size();
+        if (stupid_never_dies_dx12_runtime()) {
+            if (const auto extent = rtm->get_stupid_never_dies_ui_extent()) {
+                size = {static_cast<float>(extent->width), static_cast<float>(extent->height)};
+            }
+        }
         if (size.x <= 0 || size.y <= 0) {
             rtm->texture_hook_ref = reinterpret_cast<FTexture2DRHIRef*>(ctx.rdx);
             SPDLOG_WARN_ONCE("[BufferedRT] UI backbuffer extent is not ready; preserving original engine texture creation");
