@@ -275,10 +275,70 @@ void test_ui_resource_format() {
     value = desc; value.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
     expect(!ui::ui_target(value, 1920, 1080), "only 2D color render targets are supported");
 }
+
+void test_slate_canvas_resize() {
+    namespace ui = uevr::stupid_never_dies_ui;
+    ui::Inputs in{};
+    in.min_x = 8; in.min_y = 31; in.max_x = 1928; in.max_y = 1111; in.scale = -1;
+    expect(ui::slate_extent(in) == ui::Extent{1920, 1080},
+        "the frame's Slate canvas, not a 1904x1041 window backbuffer, owns the UI extent");
+    expect(in.min_x == 8 && in.min_y == 31 && in.scale == -1,
+        "extent discovery preserves offsets, mouse coordinates and the application scale sentinel");
+    for (auto extent : {ui::Extent{1920,1080}, ui::Extent{1904,1041}, ui::Extent{3840,1080}, ui::Extent{2560,1440}}) {
+        in.max_x = in.min_x + static_cast<int32_t>(extent.width);
+        in.max_y = in.min_y + static_cast<int32_t>(extent.height);
+        expect(ui::slate_extent(in) == extent && ui::extent_from_key(ui::extent_key(extent)) == extent,
+            "demo/full, windowed, borderless and SBS canvas sizes publish as one coherent extent");
+    }
+    expect(!ui::extent_from_key(0) && !ui::extent_from_key(UINT64_MAX) &&
+        !ui::extent_key({0,1080}) && !ui::extent_key({16385,1080}),
+        "unset, oversized and malformed canvas requests cannot drive an allocation");
+    in.min_x = INT32_MIN; in.max_x = INT32_MAX;
+    expect(!ui::slate_extent(in), "canvas subtraction cannot overflow into a plausible small target");
+    in.min_x = 0; in.max_x = 0;
+    expect(!ui::slate_extent(in), "an empty/minimized canvas cannot overwrite the last validated request");
+
+    D3D12_RESOURCE_DESC desc{};
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width = 1920; desc.Height = 1080;
+    desc.DepthOrArraySize = 1; desc.MipLevels = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_TYPELESS;
+    desc.SampleDesc.Count = 1;
+    desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    std::atomic_uint64_t pending{};
+    expect(!ui::request_resize_once(pending, desc, {1920,1080}) && pending.load() == 0,
+        "a valid canvas/target pair never requests a reset merely because the desktop backbuffer differs");
+    expect(ui::request_resize_once(pending, desc, {1904,1041}), "a real canvas resize queues one recovery");
+    for (int i = 0; i < 1000; ++i) {
+        expect(!ui::request_resize_once(pending, desc, {1904,1041}),
+            "a stale target cannot trigger a render-target reset on every frame");
+    }
+    const auto saved = pending.load();
+    auto bad = desc; bad.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
+    expect(!ui::request_resize_once(pending, bad, {2560,1440}) && pending.load() == saved,
+        "an unconverted format cannot be repaired by blindly reallocating repeatedly");
+    expect(!ui::request_resize_once(pending, desc, {0,1041}) && pending.load() == saved,
+        "an invalid canvas leaves the pending recovery unchanged");
+    desc.Width = 1904; desc.Height = 1041;
+    expect(!ui::request_resize_once(pending, desc, {1904,1041}) && pending.load() == 0,
+        "only an accepted matching target clears the recovery latch");
+    expect(ui::request_resize_once(pending, desc, {1920,1080}),
+        "a later windowed-to-borderless change can recover independently");
+
+    auto destination = desc; destination.Width = 3840; destination.Height = 1080;
+    expect(!ui::copy_target_matches(desc, destination),
+        "OpenVR must compare against its destination, not its source wrapper which always matches itself");
+    destination.Width = desc.Width; destination.Height = desc.Height;
+    destination.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    expect(ui::copy_target_matches(desc, destination), "BGRA typeless-to-typed matching OpenVR copies remain valid");
+    destination.DepthOrArraySize = 2;
+    expect(!ui::copy_target_matches(desc, destination), "a matching width/height does not authorize a mismatched array copy");
+}
 }
 
 int test_buffered_rt_texture_call() {
     failures = 0;
     test_discovery(); test_descriptor_and_binding(); test_memory(); test_retirement(); test_dedicated_ui(); test_ui_resource_format();
+    test_slate_canvas_resize();
     return failures;
 }

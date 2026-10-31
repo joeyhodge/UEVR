@@ -253,6 +253,7 @@ private:
     std::unique_ptr<DirectX::DX12::SpriteBatch> m_ui_batch_alpha_invert{};
 
     ID3D12Resource* m_last_checked_native{nullptr};
+    std::atomic_uint64_t m_stupid_never_dies_openvr_ui_resize_pending{};
 
     // Mimicking what OpenXR does.
     struct OpenVR {
