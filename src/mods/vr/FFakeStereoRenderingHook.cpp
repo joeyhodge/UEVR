@@ -57,6 +57,7 @@
 #include <sdk/KingdomHearts3Runtime.hpp>
 #include <sdk/ObjectLivenessPolicy.hpp>
 #include <sdk/RtmDiscovery.hpp>
+#include <sdk/AvowedStereoDiscovery.hpp>
 #include <sdk/Slate.hpp>
 #include <sdk/DynamicRHI.hpp>
 #include <sdk/FViewportInfo.hpp>
@@ -1545,12 +1546,6 @@ void dune_record_final_view_observation(const DuneFinalViewObservation& observat
     }
 }
 
-constexpr uint32_t AVOWED_NATIVE_FIX_STABLE_FRAMES = 180;
-constexpr uint32_t AVOWED_NATIVE_FIX_FAST_REACQUIRE_STABLE_FRAMES = 45;
-constexpr auto AVOWED_NATIVE_FIX_RENDER_GAP = std::chrono::milliseconds(250);
-constexpr auto AVOWED_NATIVE_FIX_TRANSITION_HOLD = std::chrono::seconds(10);
-constexpr auto AVOWED_NATIVE_FIX_FAST_REACQUIRE_HOLD = std::chrono::milliseconds(1500);
-constexpr auto AVOWED_NATIVE_FIX_FAST_REACQUIRE_MAX_MISSING = std::chrono::seconds(60);
 // DIBR is explicitly opt-in and still falls back immediately when its output
 // stops being valid. A short verified warmup avoids keeping slow UE5.7 titles
 // in the expensive two-view preview path long enough to prevent activation.
@@ -1649,27 +1644,7 @@ sdk::APawn* resolve_acknowledged_pawn_for_aim(sdk::APlayerController* controller
     return controller->get_acknowledged_pawn();
 }
 
-struct AvowedNativeFixGateState {
-    uintptr_t scene{};
-    uintptr_t render_target{};
-    uintptr_t scene_capture_render_target{};
-    uintptr_t scene_capture_native{};
-    uintptr_t last_ready_scene{};
-    uintptr_t last_ready_render_target{};
-    std::chrono::steady_clock::time_point last_update{};
-    std::chrono::steady_clock::time_point hold_until{};
-    std::chrono::steady_clock::time_point missing_since{};
-    uint32_t stable_frames{};
-    uint32_t required_stable_frames{AVOWED_NATIVE_FIX_STABLE_FRAMES};
-    bool ready{};
-    bool has_baseline{};
-    bool had_ready_baseline{};
-    bool targets_missing{};
-    bool fast_reacquire{};
-};
 
-std::mutex g_avowed_native_fix_gate_mutex{};
-AvowedNativeFixGateState g_avowed_native_fix_gate{};
 std::mutex g_ue56_rt_probe_mutex{};
 std::unordered_map<uintptr_t, bool> g_ue56_native_resource_probe_cache{};
 
@@ -5415,299 +5390,6 @@ std::optional<uintptr_t> windrose_resolve_hfsm_symbol(
 
     SPDLOG_WARN("[Windrose][HFSM] Failed to resolve {} by update-proof signature (expected old RVA {:x}, not hooking stale RVA)", label, expected_rva);
     return std::nullopt;
-}
-
-void avowed_native_fix_gate_reset(const char* reason) {
-    if (!avowed_is_current_game()) {
-        return;
-    }
-
-    std::scoped_lock _{g_avowed_native_fix_gate_mutex};
-
-    if (g_avowed_native_fix_gate.has_baseline || g_avowed_native_fix_gate.ready || g_avowed_native_fix_gate.stable_frames != 0) {
-        SPDLOG_INFO_EVERY_N_SEC(
-            2,
-            "[Avowed][NativeStereoFix] Resetting render transition gate: {}",
-            reason != nullptr ? reason : "<unknown>");
-    }
-
-    g_avowed_native_fix_gate = {};
-}
-
-uintptr_t avowed_try_get_native_resource(FRHITexture2D* texture) {
-    if (!avowed_is_current_game() || texture == nullptr || IsBadReadPtr(texture, sizeof(void*))) {
-        return 0;
-    }
-
-    try {
-        const auto native = texture->get_native_resource();
-
-        if (native == nullptr || IsBadReadPtr(native, sizeof(void*))) {
-            return 0;
-        }
-
-        return (uintptr_t)native;
-    } catch (...) {
-        return 0;
-    }
-}
-
-bool avowed_native_fix_gate_update(
-    uintptr_t scene,
-    uintptr_t render_target,
-    uintptr_t scene_capture_render_target,
-    uintptr_t scene_capture_native,
-    bool prerequisites_ready,
-    uint32_t* out_stable_frames = nullptr,
-    uint32_t* out_required_stable_frames = nullptr)
-{
-    if (!avowed_is_current_game()) {
-        return true;
-    }
-
-    std::scoped_lock _{g_avowed_native_fix_gate_mutex};
-
-    if (out_stable_frames != nullptr) {
-        *out_stable_frames = g_avowed_native_fix_gate.stable_frames;
-    }
-
-    if (out_required_stable_frames != nullptr) {
-        *out_required_stable_frames = g_avowed_native_fix_gate.required_stable_frames != 0
-            ? g_avowed_native_fix_gate.required_stable_frames
-            : AVOWED_NATIVE_FIX_STABLE_FRAMES;
-    }
-
-    const auto now = std::chrono::steady_clock::now();
-
-    if (g_avowed_native_fix_gate.last_update.time_since_epoch().count() != 0) {
-        const auto render_gap = now - g_avowed_native_fix_gate.last_update;
-
-        if (render_gap > AVOWED_NATIVE_FIX_RENDER_GAP) {
-            const auto can_fast_reacquire = g_avowed_native_fix_gate.had_ready_baseline || g_avowed_native_fix_gate.ready;
-            g_avowed_native_fix_gate.ready = false;
-            g_avowed_native_fix_gate.stable_frames = 0;
-            g_avowed_native_fix_gate.required_stable_frames =
-                can_fast_reacquire ? AVOWED_NATIVE_FIX_FAST_REACQUIRE_STABLE_FRAMES : AVOWED_NATIVE_FIX_STABLE_FRAMES;
-            g_avowed_native_fix_gate.fast_reacquire = can_fast_reacquire;
-            const auto requested_hold_duration = can_fast_reacquire
-                ? std::chrono::steady_clock::duration{AVOWED_NATIVE_FIX_FAST_REACQUIRE_HOLD}
-                : std::chrono::steady_clock::duration{AVOWED_NATIVE_FIX_TRANSITION_HOLD};
-            g_avowed_native_fix_gate.hold_until = std::max(
-                g_avowed_native_fix_gate.hold_until,
-                now + requested_hold_duration);
-
-            SPDLOG_INFO_EVERY_N_SEC(
-                2,
-                "[Avowed][NativeStereoFix] Render gap {:.0f}ms detected; holding one view for transition safety fast_reacquire={}",
-                std::chrono::duration<double, std::milli>(render_gap).count(),
-                can_fast_reacquire);
-        }
-    }
-
-    g_avowed_native_fix_gate.last_update = now;
-
-    if (!prerequisites_ready || scene == 0 || render_target == 0 || scene_capture_render_target == 0) {
-        if (g_avowed_native_fix_gate.has_baseline || g_avowed_native_fix_gate.ready || g_avowed_native_fix_gate.stable_frames != 0) {
-            SPDLOG_INFO_EVERY_N_SEC(
-                2,
-                "[Avowed][NativeStereoFix] Holding one view while render targets are unavailable scene={:x} target={:x} capture_rt={:x} capture_native={:x} prereqs={}",
-                scene,
-                render_target,
-                scene_capture_render_target,
-                scene_capture_native,
-                prerequisites_ready);
-        }
-
-        if (g_avowed_native_fix_gate.had_ready_baseline || g_avowed_native_fix_gate.ready) {
-            if (!g_avowed_native_fix_gate.targets_missing) {
-                g_avowed_native_fix_gate.missing_since = now;
-            }
-
-            // Inventory/menu transitions briefly remove Avowed's capture target. Keep the last
-            // known-good gameplay baseline so reacquiring the same path can use a short gate.
-            g_avowed_native_fix_gate.targets_missing = true;
-            g_avowed_native_fix_gate.ready = false;
-            g_avowed_native_fix_gate.stable_frames = 0;
-            g_avowed_native_fix_gate.fast_reacquire = false;
-            g_avowed_native_fix_gate.required_stable_frames = AVOWED_NATIVE_FIX_STABLE_FRAMES;
-        } else {
-            g_avowed_native_fix_gate = {};
-        }
-
-        if (out_stable_frames != nullptr) {
-            *out_stable_frames = g_avowed_native_fix_gate.stable_frames;
-        }
-
-        if (out_required_stable_frames != nullptr) {
-            *out_required_stable_frames = g_avowed_native_fix_gate.required_stable_frames != 0
-                ? g_avowed_native_fix_gate.required_stable_frames
-                : AVOWED_NATIVE_FIX_STABLE_FRAMES;
-        }
-
-        return false;
-    }
-
-    const auto baseline_changed =
-        !g_avowed_native_fix_gate.has_baseline ||
-        g_avowed_native_fix_gate.scene != scene ||
-        g_avowed_native_fix_gate.render_target != render_target ||
-        g_avowed_native_fix_gate.scene_capture_render_target != scene_capture_render_target ||
-        g_avowed_native_fix_gate.scene_capture_native != scene_capture_native;
-
-    if (baseline_changed) {
-        const auto missing_duration = g_avowed_native_fix_gate.missing_since.time_since_epoch().count() != 0
-            ? now - g_avowed_native_fix_gate.missing_since
-            : std::chrono::steady_clock::duration{};
-        const auto matches_last_ready_path =
-            g_avowed_native_fix_gate.had_ready_baseline &&
-            g_avowed_native_fix_gate.last_ready_scene == scene &&
-            g_avowed_native_fix_gate.last_ready_render_target == render_target;
-        const auto can_fast_reacquire =
-            g_avowed_native_fix_gate.targets_missing &&
-            matches_last_ready_path &&
-            missing_duration <= AVOWED_NATIVE_FIX_FAST_REACQUIRE_MAX_MISSING;
-
-        g_avowed_native_fix_gate.scene = scene;
-        g_avowed_native_fix_gate.render_target = render_target;
-        g_avowed_native_fix_gate.scene_capture_render_target = scene_capture_render_target;
-        g_avowed_native_fix_gate.scene_capture_native = scene_capture_native;
-        const auto requested_hold_duration = can_fast_reacquire
-            ? std::chrono::steady_clock::duration{AVOWED_NATIVE_FIX_FAST_REACQUIRE_HOLD}
-            : std::chrono::steady_clock::duration{AVOWED_NATIVE_FIX_TRANSITION_HOLD};
-        const auto requested_hold_until = now + requested_hold_duration;
-        g_avowed_native_fix_gate.hold_until = can_fast_reacquire
-            ? requested_hold_until
-            : std::max(g_avowed_native_fix_gate.hold_until, requested_hold_until);
-        g_avowed_native_fix_gate.stable_frames = 0;
-        g_avowed_native_fix_gate.required_stable_frames =
-            can_fast_reacquire ? AVOWED_NATIVE_FIX_FAST_REACQUIRE_STABLE_FRAMES : AVOWED_NATIVE_FIX_STABLE_FRAMES;
-        g_avowed_native_fix_gate.ready = false;
-        g_avowed_native_fix_gate.has_baseline = true;
-        g_avowed_native_fix_gate.targets_missing = false;
-        g_avowed_native_fix_gate.missing_since = {};
-        g_avowed_native_fix_gate.fast_reacquire = can_fast_reacquire;
-
-        SPDLOG_INFO_EVERY_N_SEC(
-            2,
-            "[Avowed][NativeStereoFix] Render transition detected; holding one view scene={:x} target={:x} capture_rt={:x} capture_native={:x} fast_reacquire={} stable_required={}",
-            scene,
-            render_target,
-            scene_capture_render_target,
-            scene_capture_native,
-            can_fast_reacquire,
-            g_avowed_native_fix_gate.required_stable_frames);
-
-        if (out_required_stable_frames != nullptr) {
-            *out_required_stable_frames = g_avowed_native_fix_gate.required_stable_frames;
-        }
-
-        return false;
-    }
-
-    if (g_avowed_native_fix_gate.targets_missing) {
-        const auto missing_duration = g_avowed_native_fix_gate.missing_since.time_since_epoch().count() != 0
-            ? now - g_avowed_native_fix_gate.missing_since
-            : std::chrono::steady_clock::duration{};
-        const auto matches_last_ready_path =
-            g_avowed_native_fix_gate.had_ready_baseline &&
-            g_avowed_native_fix_gate.last_ready_scene == scene &&
-            g_avowed_native_fix_gate.last_ready_render_target == render_target;
-        const auto can_fast_reacquire =
-            matches_last_ready_path &&
-            missing_duration <= AVOWED_NATIVE_FIX_FAST_REACQUIRE_MAX_MISSING;
-
-        const auto requested_hold_duration = can_fast_reacquire
-            ? std::chrono::steady_clock::duration{AVOWED_NATIVE_FIX_FAST_REACQUIRE_HOLD}
-            : std::chrono::steady_clock::duration{AVOWED_NATIVE_FIX_TRANSITION_HOLD};
-        const auto requested_hold_until = now + requested_hold_duration;
-        g_avowed_native_fix_gate.hold_until = can_fast_reacquire
-            ? requested_hold_until
-            : std::max(g_avowed_native_fix_gate.hold_until, requested_hold_until);
-        g_avowed_native_fix_gate.ready = false;
-        g_avowed_native_fix_gate.stable_frames = 0;
-        g_avowed_native_fix_gate.required_stable_frames =
-            can_fast_reacquire ? AVOWED_NATIVE_FIX_FAST_REACQUIRE_STABLE_FRAMES : AVOWED_NATIVE_FIX_STABLE_FRAMES;
-        g_avowed_native_fix_gate.targets_missing = false;
-        g_avowed_native_fix_gate.missing_since = {};
-        g_avowed_native_fix_gate.fast_reacquire = can_fast_reacquire;
-
-        SPDLOG_INFO_EVERY_N_SEC(
-            2,
-            "[Avowed][NativeStereoFix] Render targets reacquired on existing baseline fast_reacquire={} stable_required={}",
-            can_fast_reacquire,
-            g_avowed_native_fix_gate.required_stable_frames);
-    }
-
-    if (g_avowed_native_fix_gate.hold_until > now) {
-        if (out_stable_frames != nullptr) {
-            *out_stable_frames = 0;
-        }
-
-        if (out_required_stable_frames != nullptr) {
-            *out_required_stable_frames = g_avowed_native_fix_gate.required_stable_frames;
-        }
-
-        g_avowed_native_fix_gate.ready = false;
-        g_avowed_native_fix_gate.stable_frames = 0;
-
-        SPDLOG_INFO_EVERY_N_SEC(
-            2,
-            "[Avowed][NativeStereoFix] Holding one view during transition grace window remaining={:.1f}s",
-            std::chrono::duration<double>(g_avowed_native_fix_gate.hold_until - now).count());
-
-        return false;
-    }
-
-    if (!g_avowed_native_fix_gate.ready) {
-        const auto required_stable_frames = g_avowed_native_fix_gate.required_stable_frames != 0
-            ? g_avowed_native_fix_gate.required_stable_frames
-            : AVOWED_NATIVE_FIX_STABLE_FRAMES;
-
-        if (g_avowed_native_fix_gate.stable_frames < required_stable_frames) {
-            ++g_avowed_native_fix_gate.stable_frames;
-        }
-
-        if (out_stable_frames != nullptr) {
-            *out_stable_frames = g_avowed_native_fix_gate.stable_frames;
-        }
-
-        if (out_required_stable_frames != nullptr) {
-            *out_required_stable_frames = required_stable_frames;
-        }
-
-        if (g_avowed_native_fix_gate.stable_frames >= required_stable_frames) {
-            g_avowed_native_fix_gate.ready = true;
-            g_avowed_native_fix_gate.had_ready_baseline = true;
-            g_avowed_native_fix_gate.last_ready_scene = scene;
-            g_avowed_native_fix_gate.last_ready_render_target = render_target;
-            SPDLOG_INFO(
-                "[Avowed][NativeStereoFix] Render transition stabilized after {} frames; enabling two-view native fix fast_reacquire={}",
-                g_avowed_native_fix_gate.stable_frames,
-                g_avowed_native_fix_gate.fast_reacquire);
-        }
-    }
-
-    return g_avowed_native_fix_gate.ready;
-}
-
-bool avowed_native_fix_gate_ready(uint32_t* out_stable_frames = nullptr, uint32_t* out_required_stable_frames = nullptr) {
-    if (!avowed_is_current_game()) {
-        return true;
-    }
-
-    std::scoped_lock _{g_avowed_native_fix_gate_mutex};
-
-    if (out_stable_frames != nullptr) {
-        *out_stable_frames = g_avowed_native_fix_gate.stable_frames;
-    }
-
-    if (out_required_stable_frames != nullptr) {
-        *out_required_stable_frames = g_avowed_native_fix_gate.required_stable_frames != 0
-            ? g_avowed_native_fix_gate.required_stable_frames
-            : AVOWED_NATIVE_FIX_STABLE_FRAMES;
-    }
-
-    return g_avowed_native_fix_gate.ready;
 }
 
 bool is_ue_5_7_or_newer() {
@@ -18675,6 +18357,10 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
 }
 
 bool FFakeStereoRenderingHook::nonstandard_create_stereo_device_hook() {
+    if (avowed_is_current_game()) {
+        SPDLOG_ERROR("[Avowed][Stereo] Engine-owned stereo discovery did not validate; refusing the incompatible legacy stereo ABI");
+        return false;
+    }
     // This may only work on one game for now, but it should be a good placeholder
     // for creating a stereo device for games that don't have one.
     // We can figure out how to make it work for other games when we run into one
@@ -18785,11 +18471,6 @@ bool FFakeStereoRenderingHook::nonstandard_create_stereo_device_hook() {
 
     auto stereo_rendering_device_offset = sdk::UEngine::get_stereo_rendering_device_offset();
     if (!stereo_rendering_device_offset) {
-        if (avowed_is_current_game()) {
-            SPDLOG_ERROR("[Avowed] StereoRenderingDevice offset discovery failed; refusing legacy 0xAC8 nonstandard fallback");
-            return false;
-        }
-
         stereo_rendering_device_offset = 0xAC8; // fallback for the engine this was originally made for.
     }
 
@@ -25704,7 +25385,6 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
 
     if (!vr->is_hmd_active() ||
         (!native_stereo_fix_enabled && !dibr_single_view_eligible && !split_screen_enabled)) {
-        avowed_native_fix_gate_reset("hmd inactive or native stereo fix disabled");
         if (!native_stereo_fix_enabled) {
             g_hook->invalidate_native_stereo_frame_packet(NativeStereoFixState::Off, nullptr);
             g_hook->m_native_stereo_ue57_capability_failure_generation.store(0, std::memory_order_release);
@@ -26905,7 +26585,6 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         auto* const rt_texture_ref = rtfrt != nullptr ? rtfrt->get_render_target_texture() : nullptr;
         scene_capture_rhi = rt_texture_ref != nullptr ? *rt_texture_ref : nullptr;
     }
-    const auto scene_capture_native = avowed_try_get_native_resource(scene_capture_rhi);
     const bool capture_transaction_valid =
         native_capture_snapshot != nullptr && rt != nullptr && rtfrt != nullptr &&
         reinterpret_cast<uintptr_t>(rt) == native_capture_snapshot->owner_texture &&
@@ -26913,28 +26592,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         native_capture_snapshot->generation == rtm->get_scene_capture_generation() &&
         native_capture_snapshot->native_resource != nullptr;
 
-    if (avowed_is_current_game()) {
-        SPDLOG_INFO_EVERY_N_SEC(
-            2,
-            "[Avowed][NativeStereoFix] BeginRenderViewFamilyReal: uses_tarrayview={} views={} scene_utexture={} resource={} render_target={} capture_rhi={:x} capture_native={:x} fixed_localplayer={}",
-            uses_tarrayview,
-            views.count,
-            rt != nullptr,
-            rtrsrc != nullptr,
-            rtfrt != nullptr,
-            (uintptr_t)scene_capture_rhi,
-            scene_capture_native,
-            g_hook->m_fixed_localplayer_view_count);
-    }
-
     if (!capture_transaction_valid) {
-        avowed_native_fix_gate_update(
-            (uintptr_t)view_family->get_scene_interface(),
-            0,
-            (uintptr_t)scene_capture_rhi,
-            scene_capture_native,
-            false);
-
         g_hook->invalidate_native_stereo_frame_packet(
             NativeStereoFixState::WaitingForTarget,
             "capture UObject/FRenderTarget/RHI generation did not match");
@@ -26947,40 +26605,9 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     const auto view_family_scene = view_family->get_scene_interface();
 
     if (view_family_target == nullptr) {
-        avowed_native_fix_gate_update(
-            (uintptr_t)view_family_scene,
-            0,
-            (uintptr_t)scene_capture_rhi,
-            scene_capture_native,
-            false);
-
         g_hook->invalidate_native_stereo_frame_packet(
             NativeStereoFixState::LearningMainFamily,
             "selected family lost its render target");
-        call_original();
-        return;
-    }
-
-    uint32_t avowed_gate_stable_frames = 0;
-    uint32_t avowed_gate_required_frames = AVOWED_NATIVE_FIX_STABLE_FRAMES;
-    const auto avowed_gate_ready = avowed_native_fix_gate_update(
-        (uintptr_t)view_family_scene,
-        (uintptr_t)view_family_target,
-        (uintptr_t)scene_capture_rhi,
-        scene_capture_native,
-        rtfrt != nullptr && scene_capture_rhi != nullptr,
-        &avowed_gate_stable_frames,
-        &avowed_gate_required_frames);
-
-    if (avowed_is_current_game() && !avowed_gate_ready) {
-        g_hook->invalidate_native_stereo_frame_packet(
-            NativeStereoFixState::TransitionHold,
-            "Avowed render transition is not stable");
-        SPDLOG_INFO_EVERY_N_SEC(
-            2,
-            "[Avowed][NativeStereoFix] Preserving the original two-view render during transition stabilization stable={}/{}",
-            avowed_gate_stable_frames,
-            avowed_gate_required_frames);
         call_original();
         return;
     }
@@ -30633,6 +30260,26 @@ std::optional<uintptr_t> FFakeStereoRenderingHook::locate_fake_stereo_rendering_
     return *fake_stereo_rendering_constructor;
 }
 
+std::optional<uintptr_t> avowed_engine_owned_stereo_table(uintptr_t constructor) {
+    if (!avowed_is_current_game()) { return {}; }
+    const auto engine = reinterpret_cast<uintptr_t>(sdk::UEngine::get());
+    const auto offset = sdk::UEngine::get_stereo_rendering_device_offset();
+    const auto range = get_runtime_function_range(constructor);
+    const auto memory = sdk::discovery::process_memory();
+    if (!engine || !offset || !range || range->begin != constructor || range->end <= range->begin) { return {}; }
+    const auto proof = sdk::avowed_stereo::engine_owned_table(memory, engine, *offset, constructor,
+        range->end - range->begin, [&](uintptr_t address) {
+            const auto owner = utility::get_module_within(address);
+            return owner && reinterpret_cast<uintptr_t>(*owner) == range->image_base;
+        });
+    if (!proof || !looks_like_virtual_function_table(proof->table)) { return {}; }
+    // The engine constructed and owns this object. Never call the interior
+    // allocation block or replace its shared-pointer/refcounting contract.
+    SPDLOG_INFO("[Avowed][Stereo] Validated engine-owned inlined stereo constructor at {:x}, table={:x}, member={:x}",
+        proof->assignment.store, proof->table, *offset);
+    return proof->table;
+}
+
 std::optional<uintptr_t> FFakeStereoRenderingHook::locate_fake_stereo_rendering_vtable() {
     static std::optional<uintptr_t> cached_result{};
 
@@ -30748,6 +30395,11 @@ std::optional<uintptr_t> FFakeStereoRenderingHook::locate_fake_stereo_rendering_
             legacy_candidate);
     } else {
         SPDLOG_WARN("Failed to find FFakeStereoRendering VTable Reference through legacy pattern");
+    }
+
+    if (const auto table = avowed_engine_owned_stereo_table(*fake_stereo_rendering_constructor)) {
+        cached_result = *table;
+        return table;
     }
 
     SPDLOG_ERROR("Failed to find a validated FFakeStereoRendering VTable");
