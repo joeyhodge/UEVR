@@ -58,6 +58,7 @@
 #include <sdk/ObjectLivenessPolicy.hpp>
 #include <sdk/RtmDiscovery.hpp>
 #include <sdk/AvowedStereoDiscovery.hpp>
+#include <sdk/AvowedCapture.hpp>
 #include <sdk/Slate.hpp>
 #include <sdk/DynamicRHI.hpp>
 #include <sdk/FViewportInfo.hpp>
@@ -42926,6 +42927,7 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
             std::optional<UE58OwnedTextureResource> ue58_owned{};
             std::optional<SwgrOwnedTexture> swgr_owned{};
             std::optional<HellraiserOwnedCapture> hellraiser_owned{};
+            std::optional<ValidatedNativeFixTextureChain> avowed_owned{};
             if (swgr_ue574_dx12_runtime()) {
                 swgr_owned = swgr_validate_owned_texture(tgt.get(),
                     static_cast<uint32_t>(VR::get()->get_hmd_width()),
@@ -42981,7 +42983,38 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
             const bool use_hellraiser_capture_layout =
                 hellraiser_owned_generation;
 
-            if (use_hellraiser_capture_layout) {
+            if (avowed_is_current_game()) {
+                namespace layout = sdk::avowed_capture;
+                if (g_framework == nullptr || !g_framework->is_dx12()) { return false; }
+                const auto expected_width = static_cast<uint32_t>(VR::get()->get_hmd_width());
+                const auto expected_height = static_cast<uint32_t>(VR::get()->get_hmd_height());
+                const auto game = utility::get_executable();
+                const auto owned = layout::inspect(sdk::discovery::process_memory(),
+                    reinterpret_cast<uintptr_t>(tgt.get()), reinterpret_cast<uintptr_t>(FRHITexture2D::get_vtable()),
+                    expected_width, expected_height, [&](uintptr_t address) {
+                        return utility::get_module_within(address) == game;
+                    });
+                if (!owned) {
+                    SPDLOG_INFO_EVERY_N_SEC(2,
+                        "[Avowed][NativeStereoFix] Waiting for owned capture resource; no speculative offset scan");
+                    return false;
+                }
+                avowed_owned = validate_native_fix_texture_chain(tgt.get(), expected_width, expected_height,
+                    NativeFixTextureLayout{layout::private_resource, layout::texture_rhi, layout::render_target});
+                if (!avowed_owned || reinterpret_cast<uintptr_t>(avowed_owned->rhi_texture) != owned->rhi ||
+                    generation != scene_capture_generation.load(std::memory_order_acquire)) { return false; }
+                rsrc = avowed_owned->texture_resource;
+                frt = avowed_owned->render_target;
+                rhi_texture = avowed_owned->rhi_texture;
+                if (!already_updated &&
+                    (!sdk::FRenderTarget::commit_validated_avowed_capture_indices(frt) ||
+                     !sdk::UTexture::commit_validated_render_resource_offsets_texture2d(
+                         tgt.get(), layout::private_resource, layout::texture_rhi) ||
+                     !sdk::FTextureRenderTargetResource::commit_validated_render_target_vtable_offset(
+                         rsrc, layout::render_target))) { return false; }
+                if (sdk::FRenderTarget::get_render_target_texture_index() != layout::texture_slot ||
+                    sdk::FRenderTarget::get_display_gamma_index() != layout::gamma_slot) { return false; }
+            } else if (use_hellraiser_capture_layout) {
                 namespace layout = uevr::hellraiser_capture;
                 const char* reason{};
                 hellraiser_owned = hellraiser_validate_owned_capture(tgt.get(),
@@ -43153,7 +43186,7 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
             // If publication is deferred, restore the stock table so the next
             // observation can prove its code again. Successful captures retain
             // the established viewport-matching gamma hook.
-            const bool restore_pending_table = ue58_owned.has_value() || hellraiser_owned.has_value();
+            const bool restore_pending_table = ue58_owned.has_value() || hellraiser_owned.has_value() || avowed_owned.has_value();
             uintptr_t original_owned_table{};
             if (restore_pending_table && !safe_read_value(reinterpret_cast<uintptr_t>(frt), original_owned_table)) {
                 return false;
@@ -43175,7 +43208,8 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
                     generation,
                     ue58_owned ? &ue58_owned->identity : nullptr,
                     ue58_owned ? ue58_owned->native.Get() :
-                        hellraiser_owned ? hellraiser_owned->chain.native_resource.Get() : nullptr))
+                        hellraiser_owned ? hellraiser_owned->chain.native_resource.Get() :
+                            avowed_owned ? avowed_owned->native_resource.Get() : nullptr))
             {
                 SPDLOG_INFO_EVERY_N_SEC(
                     2,
@@ -43184,6 +43218,10 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
                 return false;
             }
             keep_owned_gamma_hook = true;
+            if (avowed_owned) {
+                SPDLOG_INFO("[Avowed][NativeStereoFix] Published validated capture generation {}: PrivateResource=0x110, "
+                    "TextureRHI=0x10, FRenderTarget=0x50; texture slot 2 / gamma slot 5", generation);
+            }
             if (hellraiser_owned) {
                 SPDLOG_INFO(
                     "[Hellraiser][UE5.6.1][NativeStereoFix] Validated capture generation {}: "
