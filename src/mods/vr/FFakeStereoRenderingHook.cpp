@@ -25914,6 +25914,15 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     }
 
     if (native_stereo_fix_enabled) {
+        if (avowed_is_current_game() &&
+            !sdk::FScene::update_offsets(reinterpret_cast<sdk::FScene*>(view_family->get_scene_interface()))) {
+            g_hook->invalidate_native_stereo_frame_packet(
+                NativeStereoFixState::FailedClosed,
+                "Avowed scene-frame counter did not validate");
+            call_original();
+            return;
+        }
+
         if (g_hook->m_native_stereo_localplayer_bootstrap_failed.load(std::memory_order_acquire)) {
             g_hook->invalidate_native_stereo_frame_packet(
                 NativeStereoFixState::FailedClosed,
