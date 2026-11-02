@@ -93,6 +93,7 @@
 #include "mods/UObjectHook.hpp"
 #include "mods/GameSpecific.hpp"
 #include "StellarBladeRendererEntry.hpp"
+#include "StellarBladeSlate.hpp"
 #include "HiFiRushRendererEntry.hpp"
 #include "SifuRendererEntry.hpp"
 #include "B1RendererEntry.hpp"
@@ -5426,6 +5427,16 @@ bool is_ue_4_26_runtime() {
     }
 
     return HIWORD(disk_version.dwFileVersionMS) == 4 && LOWORD(disk_version.dwFileVersionMS) == 26;
+}
+
+std::atomic_uint32_t g_stellar_blade_slate_provider_offset{};
+
+bool stellar_blade_ue426_dx12_runtime() {
+    static const bool executable_matches = [] {
+        const auto path = utility::get_module_pathw(utility::get_executable());
+        return path && uevr::games::should_use_stellar_blade_callable_renderer_entry(*path, true, true, true);
+    }();
+    return executable_matches && g_framework != nullptr && g_framework->is_dx12() && is_ue_4_26_runtime();
 }
 
 bool is_ue_4_25_runtime() {
@@ -15422,6 +15433,27 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
         }
 
         SPDLOG_INFO("Found FSlateRHIRenderer::DrawWindow_RenderThread with alternative return address method: {:x}", *func);
+    }
+
+    if (stellar_blade_ue426_dx12_runtime()) {
+        const auto executable = utility::get_executable();
+        const auto size = utility::get_module_size(executable);
+        const auto base = reinterpret_cast<uintptr_t>(executable);
+        std::array<uint8_t, uevr::stellar_blade::slate_window_bytes> code{};
+        const auto field = size && *size <= std::numeric_limits<uintptr_t>::max() - base &&
+            utility::get_module_within(*func).value_or(nullptr) == executable &&
+            is_executable_process_range(*func, code.size()) && safe_read_value(*func, code)
+            ? uevr::stellar_blade::discover_provider_field(code, *func, base, base + *size,
+                [](uintptr_t address, void* output, size_t bytes) {
+                    return is_executable_process_range(address, bytes) &&
+                        sdk::discovery::read_process(nullptr, address, output, bytes);
+                }) : std::nullopt;
+        if (field) {
+            g_stellar_blade_slate_provider_offset.store(*field, std::memory_order_release);
+            SPDLOG_INFO("[StellarBlade][SlateUI] Verified provider field +0x{:x} from two original getter callsites; no emulation needed", *field);
+        } else {
+            SPDLOG_WARN("[StellarBlade][SlateUI] Getter contract not verified; retaining existing provider discovery");
+        }
     }
 
     m_slate_thread_hook = safetyhook::create_inline((void*)*func, &FFakeStereoRenderingHook::slate_draw_window_render_thread, safetyhook::InlineHook::StartDisabled);
@@ -31893,7 +31925,8 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
             g_framework != nullptr &&
             g_framework->is_dx12();
         const auto unavailable_view_count =
-            (hellblade_preserve_native_pair_while_warming || swgr_ue574_dx12_runtime()) ? 2u : 1u;
+            uevr::stellar_blade::warming_view_count(stellar_blade_ue426_dx12_runtime(),
+                hellblade_preserve_native_pair_while_warming || swgr_ue574_dx12_runtime());
 
         if (g_hook->m_native_stereo_localplayer_bootstrap_failed.load(std::memory_order_acquire)) {
             g_hook->invalidate_native_stereo_frame_packet(
@@ -31932,6 +31965,9 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
             if (hellblade_preserve_native_pair_while_warming) {
                 SPDLOG_INFO_ONCE(
                     "[Hellblade][NativeStereoFix] Preserving the engine's two-view transaction while renderer hooks warm up");
+            }
+            if (stellar_blade_ue426_dx12_runtime()) {
+                SPDLOG_INFO_ONCE("[StellarBlade][NativeStereoFix] Preserving both native views until renderer hooks and capture ownership are ready");
             }
             return unavailable_view_count;
         }
@@ -38691,10 +38727,27 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 "[UE5.6][RT] Skipping FViewportInfo::GetRenderTargetProvider probing because the known texture cannot expose a stable native resource; deferring to D3D12 hooks");
         }
 
-        const auto viewport_rt_provider =
-            provider_resource == nullptr && known_texture != nullptr && known_texture_is_safe
-                ? viewport_info->get_rt_provider(known_texture)
-                : nullptr;
+        sdk::IViewportRenderTargetProvider* viewport_rt_provider{};
+        if (provider_resource == nullptr && known_texture != nullptr && known_texture_is_safe) {
+            const auto stellar_blade_offset = g_stellar_blade_slate_provider_offset.load(std::memory_order_acquire);
+            if (stellar_blade_offset != 0 && stellar_blade_ue426_dx12_runtime()) {
+                // A window may legitimately have no provider during startup.
+                // Do not emulate unrelated virtuals or cache a guessed offset.
+                sdk::IViewportRenderTargetProvider* candidate{};
+                uintptr_t table{}, getter{};
+                const auto memory = sdk::discovery::process_memory();
+                if (safe_read_value(reinterpret_cast<uintptr_t>(viewport_info) + stellar_blade_offset, candidate) &&
+                    candidate != nullptr && sdk::FSlateResource::resource_offset == sizeof(uintptr_t) &&
+                    safe_read_value(reinterpret_cast<uintptr_t>(candidate), table) &&
+                    utility::get_module_within(table).value_or(nullptr) == utility::get_executable() &&
+                    sdk::discovery::read_slot(memory, table, 0, getter) &&
+                    utility::get_module_within(getter).value_or(nullptr) == utility::get_executable()) {
+                    viewport_rt_provider = candidate;
+                }
+            } else {
+                viewport_rt_provider = viewport_info->get_rt_provider(known_texture);
+            }
+        }
 
         if (viewport_rt_provider != nullptr) {
             provider_resource = viewport_rt_provider->get_viewport_render_target_texture();
