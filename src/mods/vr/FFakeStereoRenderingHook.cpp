@@ -31323,11 +31323,12 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
             is_ue_4_25_runtime() &&
             g_framework != nullptr &&
             g_framework->is_dx12();
+        const auto bootstrap_failed = g_hook->m_native_stereo_localplayer_bootstrap_failed.load(std::memory_order_acquire);
         const auto unavailable_view_count =
             uevr::stellar_blade::warming_view_count(stellar_blade_ue426_dx12_runtime(),
-                hellblade_preserve_native_pair_while_warming || swgr_ue574_dx12_runtime());
+                hellblade_preserve_native_pair_while_warming || swgr_ue574_dx12_runtime(), bootstrap_failed);
 
-        if (g_hook->m_native_stereo_localplayer_bootstrap_failed.load(std::memory_order_acquire)) {
+        if (bootstrap_failed) {
             g_hook->invalidate_native_stereo_frame_packet(
                 NativeStereoFixState::FailedClosed,
                 "source-validated LocalPlayer ViewStates bootstrap failed");
