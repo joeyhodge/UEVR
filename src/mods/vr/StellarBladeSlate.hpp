@@ -88,8 +88,9 @@ std::optional<uint32_t> discover_provider_field(std::span<const uint8_t> draw, u
     return matches >= 2 ? field : std::nullopt;
 }
 
-inline unsigned warming_view_count(bool guarded_stellar_blade, bool preserve_other_pair) {
-    return guarded_stellar_blade || preserve_other_pair ? 2u : 1u;
+inline unsigned warming_view_count(bool guarded_stellar_blade, bool preserve_other_pair, bool bootstrap_failed) {
+    // Never request a second eye after its source-backed state allocation failed.
+    return (guarded_stellar_blade ? !bootstrap_failed : preserve_other_pair) ? 2u : 1u;
 }
 
 } // namespace uevr::stellar_blade
