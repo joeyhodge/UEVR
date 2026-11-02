@@ -1,5 +1,7 @@
 #include "mods/vr/ProSpiCameraFraming.hpp"
 #include "mods/vr/ProSpiNativeFocusGuard.hpp"
+#include "mods/vr/ProSpiAuthoredTargetGuard.hpp"
+#include "ProSpiAuthoredFramingTests.hpp"
 #include "mods/vr/ProSpiCameraCutGuard.hpp"
 
 #include <nlohmann/json.hpp>
@@ -655,6 +657,185 @@ trace::NativeSource read_native_source(const Json& value) {
     return out;
 }
 
+void captured_interview_crossings(const Json& fixture) {
+    namespace cg = uevr::prospi::cut_guard;
+    namespace shot = uevr::prospi::shot;
+    size_t corrected{}, unchanged{}, marked_good{}, mirrored{};
+    require(fixture.at("samples").size()==68, "Recorded interview/control coverage changed");
+    for(const auto& sample : fixture.at("samples")) {
+        const auto offsets=sample.at("base_offsets").get<trace::Vector>();
+        fg::Request r{
+            .camera=read_trace_pose(sample.at("camera")),.camera_manager=sample.at("camera_manager"),
+            .now_ns=sample.at("time_ns"),.mode=3,.zone=1,
+            .enabled=true,.prospi=true,.dolly_enabled=true,.sequencer_enabled=true,.safety_enabled=true,
+            .automatic_source=sample.at("automatic"),.dolly=sample.at("dolly"),.lift=sample.at("lift"),
+            .floor=sample.at("floor"),.max_lift=sample.at("max_lift"),.base_fov=sample.at("base_fov"),
+            .forward_offset=offsets[0],.right_offset=offsets[1],.up_offset=offsets[2],
+        };
+        const auto native=read_native_source(sample.at("native_source"));
+        const auto input=read_trace_pose(sample.at("view"));
+        const auto now=sample.at("time_ns").get<uint64_t>();
+        const auto play=sample.at("play_mode").get<int>();
+        const bool admitted=fg::crossing_candidate(r,play==0 || play==1 || play==2 || play==5,
+            fg::AuthoredScope::near_home_crossing);
+        const shot::Identity identity{{0x40000,0x100,1,7},{r.camera_manager,0x200,2,8},
+            {0x60000,0x300,3,9},native.object,native.camera_actor,true,true,false};
+        const cg::Snapshot packet{.camera=r.camera,.dolly=r.dolly,.lift=r.lift,.time_ns=now,.automatic=true,
+            .identity=identity,.presentation_request=r,.presentation=admitted,.scope=fg::AuthoredScope::near_home_crossing};
+        const auto before=cg::evaluate(packet,input,now);
+        const auto after=admitted ? cg::evaluate_current(packet,input,now,identity,native,4) : before;
+        const auto name="Recorded cut "+std::to_string(sample.at("cut").get<int>())+
+            " sequence "+std::to_string(sample.at("sequence").get<int>());
+        if(!sample.at("marked_bad").get<bool>()) {
+            require(after.dolly==before.dolly && after.lift==before.lift && after.status==before.status,
+                name+": unrelated/good recorded framing changed");
+            ++unchanged;
+            if(sample.at("marked_good").get<bool>()){++marked_good;}
+            continue;
+        }
+        require(sample.at("soft_protected").get<bool>() && sample.at("recorded_source_matches").get<bool>(),
+            name+": marked failure lost its protected/matching-source evidence");
+        const auto original=trace::target_framing(read_trace_pose(sample.at("recorded_neutral")),native.look_at);
+        require(original.valid && original.behind && after.status==cg::Status::authored_window &&
+            after.dolly<before.dolly && after.current_source.object==native.object,
+            name+": a recorded crossed target was not repaired using the current native source");
+        auto actual=r; actual.camera=input; actual.camera.fov=native.pose.fov;
+        const auto endpoint=focus_endpoint(actual,{.dolly=after.dolly,.lift=after.lift},native.pose.aspect);
+        const auto framed=trace::target_framing(endpoint,native.look_at);
+        require(framed.valid && !framed.behind && framed.clip_estimate_valid && !framed.offscreen_estimate &&
+            endpoint.location[2]>=r.floor-.003f && after.lift>=0 && after.lift<=r.max_lift,
+            name+": recovered target lost framing, floor or lift limits");
+        auto reflected=actual; reflected.camera.location[0]*=-1;
+        reflected.camera.rotation[1]=std::remainder(180.0f-reflected.camera.rotation[1],360.0f);
+        reflected.camera.rotation[2]*=-1;
+        auto reflected_source=native; reflected_source.pose=reflected.camera;
+        reflected_source.pose.aspect=native.pose.aspect; reflected_source.pose.aspect_valid=true;
+        reflected_source.look_at[0]*=-1;
+        const auto mirror=fg::bound_authored_window(reflected,reflected_source,true,4,fg::AuthoredScope::near_home_crossing);
+        require(mirror.applied() && std::abs(mirror.dolly-after.dolly)<.01f && std::abs(mirror.lift-after.lift)<.01f,
+            name+": mirrored baseline changed the authored-geometry solution");
+        ++corrected; ++mirrored;
+    }
+    require(corrected==18 && unchanged==50 && marked_good==11 && mirrored==18,
+        "Recorded bad/good/control interview cases were not all exercised");
+    std::cout<<"Captured interview: repaired="<<corrected<<" unchanged="<<unchanged<<
+        " marked-good="<<marked_good<<" mirrored="<<mirrored<<'\n';
+}
+
+void crossing_focus_guards() {
+    namespace cg = uevr::prospi::cut_guard;
+    // Synthetic validated targets exercise the missing presentation envelopes;
+    // the Oct 27 normal log did not record an interview player's exact target.
+    for (const float side : {-1.0f, 1.0f}) {
+        auto r = focus_request();
+        r.camera = {{side * 2000, 1000, 200}, {0, -90, 0}, 15, 0, 0, true};
+        r.dolly = 800; r.lift = 0; r.predicted_z = 200;
+        auto source = focus_source(r, 500);
+        require(!fg::eligible(r) && fg::crossing_candidate(r, true),
+            "Presentation backstop changed admission to the existing calibrated guards");
+        const auto result = fg::bound_crossing(r, source, true);
+        require(result.status == fg::Status::target_capped && result.dolly >= 0 && result.dolly < 500 &&
+            result.lift == r.lift && result.end_z == 200 && std::abs(result.ndc_y) < .001f,
+            "Mirrored presentation target was passed, lifted, or reframed vertically");
+        const auto endpoint = focus_endpoint(r, result, source.pose.aspect);
+        const auto framing = trace::target_framing(endpoint, source.look_at);
+        require(framing.valid && !framing.behind && framing.clip_estimate_valid &&
+            std::abs(framing.ndc_x) <= .5f && std::abs(framing.ndc_y) <= .5f,
+            "Crossing cap did not keep the authored point in front and framed");
+        cg::Snapshot snapshot{.camera = r.camera, .dolly = r.dolly, .lift = r.lift, .time_ns = r.now_ns,
+            .automatic = true, .view_focus = {source.pose, result.dolly, result.lift, true}};
+        auto input = r.camera; input.fov = 0;
+        const auto left = cg::evaluate(snapshot, input, r.now_ns + 1'000'000);
+        const auto right = cg::evaluate(snapshot, input, r.now_ns + 2'000'000);
+        require(left.status == cg::Status::authored_focus && left.dolly == result.dolly &&
+            right.dolly == left.dolly && right.lift == left.lift && snapshot.dolly == 800,
+            "Crossing backstop changed global dolly or published a different cap to each eye");
+        input.location[0] += 1.01f;
+        require(cg::evaluate(snapshot, input, r.now_ns).dolly == r.dolly,
+            "Unmatched view consumed a presentation correction");
+        snapshot.automatic = false;
+        require(cg::evaluate(snapshot, r.camera, r.now_ns).dolly == r.dolly,
+            "Presentation cap replaced a saved/manual override");
+        auto good = r; good.dolly = 350;
+        const auto unchanged = fg::bound_crossing(good, source, true);
+        require(unchanged.status == fg::Status::unchanged && unchanged.dolly == good.dolly && unchanged.lift == good.lift,
+            "Already-good close framing was retuned by the crossing backstop");
+        auto translated = r; translated.camera.location[0] += 18000; translated.camera.location[1] -= 12000;
+        const auto moved = fg::bound_crossing(translated, focus_source(translated, 500), true);
+        require(moved.dolly == result.dolly && moved.lift == result.lift,
+            "Presentation backstop depends on a guessed stadium/podium world coordinate");
+        for (int change = 0; change < 14; ++change) {
+            auto bad = r; auto s = source;
+            switch (change) {
+            case 0: bad.enabled = false; break;
+            case 1: bad.mode = 2; break;
+            case 2: bad.prospi = false; break;
+            case 3: bad.protected_camera = true; break;
+            case 4: bad.automatic_source = false; break;
+            case 5: bad.forward_offset = 1; break;
+            case 6: bad.safety_enabled = false; break;
+            case 7: s.time_ns -= 50'000'001; break;
+            case 8: s.time_ns += 1; break;
+            case 9: s.camera_manager += 0x100; break;
+            case 10: s.pose.rotation[1] += .11f; break;
+            case 11: s.pose.fov += .11f; break;
+            case 12: s.look_at[0] += 100; break;
+            case 13: s.status = trace::SourceStatus::bridge_mismatch; break;
+            }
+            const auto rejected = fg::bound_crossing(bad, s, true);
+            require(!rejected.applied() && rejected.dolly == bad.dolly && rejected.lift == bad.lift,
+                "Unproven/protected presentation evidence changed its endpoint");
+        }
+        require(!fg::crossing_candidate(r, false) && !fg::bound_crossing(r, source, false).applied(),
+            "Pitching, ball-follow, aerial or crowd-camera exclusions were ignored");
+        for (const auto zone : {0, 3, 4}) {
+            auto protected_zone = r; protected_zone.zone = zone;
+            require(!fg::bound_crossing(protected_zone, source, true).applied(),
+                "An outfield/crowd/unclassified safety zone admitted a new presentation correction");
+        }
+        auto below = r; below.camera.location[2] = 100;
+        require(!fg::bound_crossing(below, focus_source(below, 500), true).applied(),
+            "Crossing backstop lowered the existing field-height requirement");
+        auto boundary = r; boundary.camera.location[2] = 99.986f; boundary.lift = 70.014f;
+        const auto at_floor = fg::bound_crossing(boundary, focus_source(boundary, 500), true);
+        require(at_floor.applied() && at_floor.end_z >= boundary.floor - .001f && at_floor.lift == boundary.lift,
+            "Float-rounded field-floor lift could not retain its height during a target-crossing repair");
+        auto upward = r; upward.camera.rotation[0] = 10; upward.camera.location[2] = 90;
+        require(!fg::bound_crossing(upward, focus_source(upward, 500), true).applied(),
+            "Shortening an upward dolly dropped its endpoint below the floor");
+    }
+    std::mt19937 random{0x28cafe};
+    const auto draw = [&](float lo, float hi) { return std::uniform_real_distribution<float>{lo, hi}(random); };
+    size_t applied{};
+    for (size_t i = 0; i < 5000; ++i) {
+        auto r = focus_request();
+        r.camera = {{draw(-4000, 4000), draw(-4000, 4000), draw(150, 600)},
+            {draw(-15, 15), draw(-179, 179), 0}, draw(5, 35), 0, 0, true};
+        const auto distance = draw(200, 6000);
+        r.dolly = distance + draw(1, 1200);
+        r.predicted_z = r.camera.location[2] + trace::forward(r.camera)[2] * r.dolly;
+        r.lift = std::clamp(r.floor - r.predicted_z, 0.0f, r.max_lift);
+        const auto source = focus_source(r, distance);
+        const auto result = fg::bound_crossing(r, source, true);
+        if (result.applied()) {
+            ++applied;
+            const auto after = trace::target_framing(focus_endpoint(r, result, source.pose.aspect), source.look_at);
+            require(result.dolly < r.dolly && result.lift == r.lift && result.end_z >= r.floor - .001f &&
+                after.valid && !after.behind && after.clip_estimate_valid &&
+                std::abs(after.ndc_x) <= .5001f && std::abs(after.ndc_y) <= .5001f,
+                "Randomized crossing repair lost target, floor or unchanged lift");
+        } else {
+            require(result.dolly == r.dolly && result.lift == r.lift,
+                "Rejected presentation repair changed its endpoint");
+        }
+        r.dolly = distance * .5f;
+        const auto good = fg::bound_crossing(r, source, true);
+        require(good.status == fg::Status::unchanged && good.dolly == r.dolly && good.lift == r.lift,
+            "Randomized already-in-front shot changed under the crossing backstop");
+    }
+    require(applied > 1000, "Randomized presentation suite did not exercise enough accepted repairs");
+}
+
 void view_focus_guards() {
     namespace cg = uevr::prospi::cut_guard;
     auto r = focus_request();
@@ -769,6 +950,14 @@ void baseline_pan_fixtures(const Json& fixture) {
         const cg::Snapshot old{.camera = r.camera, .dolly = r.dolly, .lift = r.lift, .time_ns = r.now_ns, .automatic = true};
         auto proposed = old; proposed.view_focus = fg::prepare_view(r, source);
         const auto before = cg::evaluate(old, input, now), after = cg::evaluate(proposed, input, now);
+        uevr::prospi::shot::Identity identity{{0x40000,0x100,1,7},
+            {r.camera_manager,0x200,2,8},{0x60000,0x300,3,9},source.object,source.camera_actor,true,true,false};
+        auto extended = proposed;
+        extended.identity = identity; extended.presentation_request = r;
+        extended.presentation = !proposed.view_focus.valid;
+        const auto current = cg::evaluate_current(extended, input, now, identity, source, 3.3f);
+        require(current.dolly == after.dolly && current.lift == after.lift && current.status == after.status,
+            "Current-source framing changed an already-covered baseline shot: " + sample.at("label").get<std::string>());
         if (sample.at("expected_before") == "cut") {
             require(before.status == cg::Status::discontinuity && after.status == before.status && after.dolly == 0 && after.lift == 0,
                 "Publisher candidate bypassed the previous-shot rejection");
@@ -1010,7 +1199,10 @@ int main(int argc, char** argv) {
         captured_fixtures(fixtures); guards(fixtures); native_focus_guards(); current_near_home_height_guards(); close_focus_guards(); baseline_focus_guards(); cut_guards();
         current_marked_height_fixtures(read_json(std::filesystem::path{argv[1]}.parent_path() / "prospi-20261009-marked-height.json"));
         hokkaido_fixtures(read_json(std::filesystem::path{argv[1]}.parent_path() / "prospi-hokkaido-cut-framing.json"));
-        view_focus_guards();
+        view_focus_guards(); crossing_focus_guards();
+        prospi_authored_framing_tests::run([](bool passed, const char* message) { require(passed, message); });
+        captured_interview_crossings(read_json(std::filesystem::path{argv[1]}.parent_path() / "prospi-20261101-interview-crossing.json"));
+        std::cout << "Authored framing: 5000 geometry trials, per-eye margin and shot-identity preservation passed\n";
         baseline_pan_fixtures(read_json(std::filesystem::path{argv[1]}.parent_path() / "prospi-20261010-baseline-pan.json"));
         std::cout << "ProSpi calibrated-framing guards passed\n";
         return 0;

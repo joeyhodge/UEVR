@@ -537,6 +537,10 @@ void native_trace_serialization() {
     view.hmd_pose_valid = true; view.hmd_rotation = {0, 0, 0, 1}; view.head_translation = {1, 2, 3};
     view.head_translation_applied = view.hmd_rotation_applied = true;
     view.assist_offset_status = 3;
+    view.current_source = c.native_source;
+    view.current_source.frame++;
+    view.current_source.focus_distance = 2000;
+    view.current_source.look_at = {2010, 30, 20};
     view.output.rotation[1] = 100;
     r.finish_view(ticket); r.mark(Marker::good, "keep context", 1);
     r.stop(); settle(r);
@@ -552,6 +556,10 @@ void native_trace_serialization() {
             "Focus-guard decision not associated with its camera/view");
         require(e["view"]["hmd"]["head_translation_cm"] == nlohmann::json::array({1, 2, 3}), "HMD offsets lost");
         require(e["view"]["assist_offset_status"] == 3, "Cut-offset rejection status lost");
+        require(e["view"]["current_native_source"]["look_at"] == nlohmann::json::array({2010, 30, 20}) &&
+            e["view"]["current_native_source"]["focus_cm"] == 2000 &&
+            e["view"]["target_framing"]["source"]["depth_cm"] == 2000,
+            "Current-view source replaced/lost the original assist source or used a previous-cut focus for framing");
         require(e["view"]["target_framing"]["hmd"]["behind"].get<bool>() &&
             !e["view"]["target_framing"]["neutral"]["behind"].get<bool>(), "head/assist framing mixed");
         require(e["suspects"] == 0, "headset-only movement became a bad-cut flag");

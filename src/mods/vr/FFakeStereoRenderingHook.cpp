@@ -31189,7 +31189,7 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
         vr->set_pre_flattened_rotation(glm::identity<glm::quat>());
     }
 
-    const auto camera_offsets = vr->uses_prospi_camera_cut_guard() ? vr->get_camera_view_offsets(trace_pose()) :
+    const auto camera_offsets = vr->uses_prospi_camera_cut_guard() ? vr->get_camera_view_offsets(trace_pose(), g_frame_count) :
         VR::CameraViewOffsets{vr->get_camera_forward_offset(), vr->get_camera_right_offset(), vr->get_camera_up_offset()};
     const auto camera_forward_offset = camera_offsets.forward;
     const auto camera_right_offset = camera_offsets.right;
@@ -31216,10 +31216,14 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
     if (trace_view) {
         auto& e = trace_view->event;
         auto& v = e.view;
+        v.current_source = camera_offsets.current_source;
+        const auto& source = uevr::prospi::trace::valid_source(v.current_source) ? v.current_source : e.camera.native_source;
+        v.source_matches_input = uevr::prospi::trace::source_matches_input(source, v.input, e.camera.camera_manager,
+            uevr::prospi::trace::Recorder::clock_ns());
         v.neutral = trace_pose();
         v.neutral.fov = e.camera.dolly_enabled ? e.camera.base_fov : e.camera.effective_fov;
-        v.neutral.aspect = e.camera.native_source.pose.aspect;
-        v.neutral.aspect_valid = e.camera.native_source.pose.aspect_valid;
+        v.neutral.aspect = source.pose.aspect;
+        v.neutral.aspect_valid = source.pose.aspect_valid;
         v.neutral_valid = v.neutral.valid;
         v.forward_offset = {camera_forward.x, camera_forward.y, camera_forward.z};
         v.right_offset = {camera_right.x, camera_right.y, camera_right.z};

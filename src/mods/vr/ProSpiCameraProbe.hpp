@@ -1,6 +1,7 @@
 #pragma once
 #include "ProSpiCameraTrace.hpp"
 #include "ProSpiNativeCameraSource.hpp"
+#include "ProSpiShotIdentity.hpp"
 #include <sdk/ObjectIdentity.hpp>
 
 namespace sdk { class UObjectBase; }
@@ -11,6 +12,9 @@ class CameraProbe {
 public:
     bool capture(sdk::UObjectBase* pcm, Camera& camera) noexcept;
     NativeSource capture_native(uintptr_t pcm) noexcept;
+    std::optional<native::Layout> validated_native_layout() noexcept;
+    static NativeSource capture_native_view(const native::Layout& layout, uintptr_t pcm) noexcept;
+    bool capture_identity(sdk::UObjectBase* world, sdk::UObjectBase* pcm, shot::Identity& identity) noexcept;
     void post_tick(Recorder& recorder, uint32_t thread) noexcept;
     void reset() noexcept;
 private:

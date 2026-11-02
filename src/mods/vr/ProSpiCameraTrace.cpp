@@ -103,8 +103,9 @@ Json event_json(const Event& e) {
                 {"standing_delta_runtime_units", v.standing_delta}, {"head_translation_cm", v.head_translation},
                 {"eye_translation_cm", v.eye_translation}, {"head_translation_applied", v.head_translation_applied},
                 {"rotation_applied", v.hmd_rotation_applied}, {"mono", v.mono}}}};
-        if (v.source_matches_input && valid_source(e.camera.native_source)) {
-            const auto& s = e.camera.native_source;
+        const auto& s = valid_source(v.current_source) ? v.current_source : e.camera.native_source;
+        if (valid_source(v.current_source)) { out["view"]["current_native_source"] = source_json(v.current_source); }
+        if (v.source_matches_input && valid_source(s)) {
             out["view"]["target_framing"] = {{"source", framing_json(target_framing(s.pose, s.look_at))},
                 {"neutral", framing_json(v.neutral_valid ? target_framing(v.neutral, s.look_at) : TargetFraming{})},
                 {"hmd", framing_json(target_framing(v.output, s.look_at))},

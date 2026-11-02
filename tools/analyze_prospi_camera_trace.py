@@ -121,6 +121,8 @@ def catalogue(session, output):
                         bounds[0], bounds[1] = min(bounds[0], value), max(bounds[1], value)
                 view = e.get("view", {})
                 native = c.get("native_source", {})
+                if kind == "view" and view.get("current_native_source", {}).get("status") == "accepted":
+                    native = view["current_native_source"]
                 if kind == "observation":
                     native = e.get("observation", {}).get("native_source", {})
                 if kind in ("camera", "observation"):

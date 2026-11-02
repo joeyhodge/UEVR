@@ -41,17 +41,26 @@ void CameraProbe::reset() noexcept {
     m_last_post_session = m_last_post_camera = 0;
     m_native_layout = {}; m_native_attempted = m_native_supported = false;
 }
-NativeSource CameraProbe::capture_native(uintptr_t pcm) noexcept {
-    const auto started = Recorder::clock_ns();
-    // Only the recorder or the opt-in focus guard enters this read-only path.
+std::optional<native::Layout> CameraProbe::validated_native_layout() noexcept {
     if (!m_native_attempted) {
         m_native_attempted = true;
         m_native_supported = native_layout(m_native_layout);
     }
+    return m_native_supported ? std::optional{m_native_layout} : std::nullopt;
+}
+NativeSource CameraProbe::capture_native_view(const native::Layout& layout, uintptr_t pcm) noexcept {
+    const auto started = Recorder::clock_ns();
+    auto source = native::sample(read_memory, layout, pcm, Recorder::clock_ns());
+    source.capture_us = float(Recorder::clock_ns() - started) / 1000.0f;
+    return source;
+}
+NativeSource CameraProbe::capture_native(uintptr_t pcm) noexcept {
+    const auto started = Recorder::clock_ns();
+    const auto layout = validated_native_layout();
     NativeSource source{};
-    if (!m_native_supported) { source.status = SourceStatus::unsupported_layout; return source; }
-    source = native::sample(read_memory, m_native_layout, pcm, Recorder::clock_ns());
-    source.capture_us = (float)(Recorder::clock_ns() - started) / 1000.0f;
+    if (!layout) { source.status = SourceStatus::unsupported_layout; return source; }
+    source = capture_native_view(*layout, pcm);
+    source.capture_us = float(Recorder::clock_ns() - started) / 1000.0f;
     return source;
 }
 bool CameraProbe::resolve(sdk::UObjectBase* pcm) {
@@ -145,6 +154,31 @@ bool CameraProbe::capture(sdk::UObjectBase* pcm, Camera& c) noexcept {
         c.input.cache_timestamp = p.cache_timestamp; c.input.timestamp_valid = p.timestamp_valid;
         return true;
     } catch (...) { reset(); return false; }
+}
+bool CameraProbe::capture_identity(sdk::UObjectBase* world, sdk::UObjectBase* pcm, shot::Identity& identity) noexcept {
+    identity = {};
+    try {
+        Camera c{};
+        if (!world || !capture(pcm, c) || !m_identity || m_target < 0) { return false; }
+        const auto world_object = sdk::observe_uobject(world);
+        if (!world_object || !sdk::is_current_object(world_object->identity)) { return false; }
+        const auto object = [](const sdk::object_liveness::Identity& value) {
+            return shot::Object{value.object, value.vtable, value.index, value.serial};
+        };
+        identity.world = object(world_object->identity);
+        identity.manager = object(*m_identity);
+        if (c.view_target) {
+            const auto target = sdk::observe_uobject(reinterpret_cast<sdk::UObjectBase*>(c.view_target));
+            if (!target || !sdk::is_current_object(target->identity)) { return false; }
+            identity.view_target = object(target->identity);
+        }
+        uintptr_t target_after{};
+        if (!read_memory(m_identity->object + m_target, &target_after, sizeof(target_after)) ||
+            target_after != c.view_target || !sdk::is_current_object(*m_identity) ||
+            !sdk::is_current_object(world_object->identity)) { return false; }
+        identity.cut_known = c.cut_known; identity.cut = c.cut; identity.valid = true;
+        return true;
+    } catch (...) { identity = {}; return false; }
 }
 void CameraProbe::post_tick(Recorder& recorder, uint32_t thread) noexcept {
     if (!recorder.active()) { return; }

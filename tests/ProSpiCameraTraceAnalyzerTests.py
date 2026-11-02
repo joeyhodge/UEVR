@@ -11,6 +11,27 @@ SPEC.loader.exec_module(MODULE)
 
 
 class AnalyzerTests(unittest.TestCase):
+    def test_current_view_native_source_overrides_only_its_own_framing_sample(self):
+        import csv
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            session = root / "session"
+            session.mkdir()
+            (session / "metadata.json").write_text(json.dumps({"schema": 2, "session": 1}))
+            pose = {"location": [0, 0, 200], "rotation": [0, 0, 0], "fov": 8, "valid": True}
+            old = {"valid": True, "status": "accepted", "pose": pose, "focus_cm": 4000, "look_at": [4000, 0, 200]}
+            current = {**old, "focus_cm": 900, "look_at": [900, 0, 200]}
+            event = {"kind": "view", "sequence": 1, "time_ns": 1000, "epoch": 1, "cut_sequence": 1,
+                     "assist": {"input": pose, "native_source": old}, "view": {"input_matches_assist": False,
+                         "current_native_source": current, "source_matches_input": True, "neutral_valid": True,
+                         "neutral": pose, "output": pose, "eye": 0}}
+            (session / "events.jsonl").write_text(json.dumps(event))
+            MODULE.catalogue(session, root / "review")
+            with (root / "review/camera_paths.csv").open() as stream:
+                rows = list(csv.DictReader(stream))
+            self.assertEqual(float(rows[0]["native_focus_cm"]), 900)
+            self.assertEqual(float(rows[0]["look_at_x"]), 900)
+
     def test_light_two_second_shots_keep_eye_context_and_marks(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

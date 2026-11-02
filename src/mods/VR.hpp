@@ -452,9 +452,10 @@ public:
     struct CameraViewOffsets {
         float forward{}, right{}, up{};
         uevr::prospi::cut_guard::Status status{};
+        uevr::prospi::trace::NativeSource current_source{};
     };
     bool uses_prospi_camera_cut_guard() const;
-    CameraViewOffsets get_camera_view_offsets(const uevr::prospi::trace::Pose& input) const;
+    CameraViewOffsets get_camera_view_offsets(const uevr::prospi::trace::Pose& input, uint64_t frame) const;
 
     auto get_world_scale() const {
         return m_world_scale->value();
@@ -2463,6 +2464,11 @@ private:
     std::atomic<float> m_game_fov_base{0.0f};
     std::atomic<float> m_game_fov_dolly_offset{0.0f};
     uevr::prospi::cut_guard::Publication m_prospi_camera_cut_offsets;
+    mutable uevr::prospi::cut_guard::ViewCache m_prospi_camera_view_cache;
+    mutable uevr::prospi::trace::CameraProbe m_prospi_view_identity_probe;
+    mutable uevr::prospi::shot::Identity m_prospi_last_view_identity{};
+    mutable uint64_t m_prospi_last_view_identity_time{};
+    mutable std::atomic<int32_t> m_prospi_current_view_status{0};
     std::atomic<bool> m_game_fov_valid{false};
     std::atomic<int32_t> m_match_game_fov_prospi_preset{0};
     std::atomic<float> m_match_game_fov_prospi_actual_min_active{0.0f};

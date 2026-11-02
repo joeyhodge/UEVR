@@ -107,6 +107,7 @@ struct Camera {
 
 struct View {
     Pose input{}, neutral{}, output{};
+    NativeSource current_source{};
     Vector forward_offset{}, right_offset{}, up_offset{};
     Vector head_translation{}, eye_translation{}, standing_delta{};
     std::array<float, 4> hmd_rotation{}, eye_rotation{}, recenter_rotation{};
@@ -234,26 +235,28 @@ inline uint32_t camera_suspects(const Camera& c) noexcept {
 
 inline uint32_t view_suspects(const Camera& c, const View& v) noexcept {
     uint32_t flags{};
+    const auto& source = valid_source(v.current_source) ? v.current_source : c.native_source;
     if (v.snapshot_age_ms > 250.0f) { flags |= stale_assist_observation; }
     if (v.neutral_valid && c.safety_active && !v.decoupled_pitch &&
         std::abs(v.input.location[2] - c.input.location[2]) < 20.0f) {
         // A camera-local lift need not equal a world-Z lift. Compare measured output.
-        const auto estimate = c.safety_predicted_z + c.safety_up;
+        const auto estimate = valid_source(v.current_source) ? source.pose.location[2] +
+            v.forward_offset[2] + v.right_offset[2] + v.up_offset[2] : c.safety_predicted_z + c.safety_up;
         if (std::abs(v.neutral.location[2] - estimate) > 75.0f) {
             flags |= safety_estimate_disagrees;
         }
     }
-    if (v.source_matches_input && v.input_matches_assist && v.neutral_valid && valid_source(c.native_source)) {
-        const auto original = target_framing(c.native_source.pose, c.native_source.look_at);
-        const auto assisted = target_framing(v.neutral, c.native_source.look_at);
+    if (v.source_matches_input && (v.input_matches_assist || valid_source(v.current_source)) && v.neutral_valid && valid_source(source)) {
+        const auto original = target_framing(source.pose, source.look_at);
+        const auto assisted = target_framing(v.neutral, source.look_at);
         if (original.valid && !original.behind && assisted.valid) {
             if (assisted.behind) { flags |= target_behind; }
             if (original.clip_estimate_valid && !original.offscreen_estimate && assisted.offscreen_estimate) {
                 flags |= target_offscreen;
             }
             Vector travel{};
-            for (size_t i = 0; i < 3; ++i) { travel[i] = v.neutral.location[i] - c.native_source.pose.location[i]; }
-            if (dot(travel, forward(c.native_source.pose)) >= c.native_source.focus_distance) { flags |= dolly_past_target; }
+            for (size_t i = 0; i < 3; ++i) { travel[i] = v.neutral.location[i] - source.pose.location[i]; }
+            if (dot(travel, forward(source.pose)) >= source.focus_distance) { flags |= dolly_past_target; }
         }
         // Headset-only aim changes are recorded, never labelled as an assist failure.
     }
