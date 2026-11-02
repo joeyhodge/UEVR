@@ -30,6 +30,7 @@
 #include "PhantomBladeZeroUITests.hpp"
 #include "CVarExistingPriorityTests.hpp"
 #include "B1RendererTests.hpp"
+#include "StellarBladeSlateTests.hpp"
 
 namespace {
 
@@ -2644,6 +2645,7 @@ int main(int argc, char** argv) {
     test_mafia_discovery();
     test_family_snapshot_accessors();
     test_stellar_blade_callable_renderer_entry();
+    test_stellar_blade_slate_contract(expect);
     test_hifi_rush_callable_renderer_entry();
     test_sifu_callable_renderer_entry();
     test_sifu_native_mesh_commands();
