@@ -87,8 +87,11 @@ void test_stellar_blade_slate_contract(Expect&& expect) {
         base, std::numeric_limits<uintptr_t>::max(), reader), "overflowing caller span is rejected");
     for (bool target : {false, true}) {
         for (bool other : {false, true}) {
-            expect(warming_view_count(target, other) == (target || other ? 2u : 1u),
-                "only Stellar Blade and already-guarded titles preserve a pair while Native Fix warms up");
+            for (bool failed : {false, true}) {
+                const auto expected = (target ? !failed : other) ? 2u : 1u;
+                expect(warming_view_count(target, other, failed) == expected,
+                    "Stellar Blade preserves its pair while warming, but retains one view after failed state allocation");
+            }
         }
     }
 }
