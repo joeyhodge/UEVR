@@ -2573,8 +2573,11 @@ void test_ktjl_hook_contracts() {
 #include "FinchAimTests.hpp"
 #include "Pre57SlateDiscoveryTests.hpp"
 #include "Pre57UIResourceTests.hpp"
+#include "UE58NativeFixTests.hpp"
 
 int main(int argc, char** argv) {
+    ue58_native_tests::run(expect);
+    if (argc == 3 && std::string_view{argv[1]} == "--ue58-native-image") { ue58_native_tests::shipping_image(argv[2], expect); }
     glory_fname_tests::run(expect);
     pbz_ui_tests::run(expect);
     cvar_existing_priority_tests::run(expect);
