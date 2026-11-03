@@ -44,6 +44,7 @@
 #include <sdk/DiscoveryMemory.hpp>
 #include <sdk/GearsEDayDiscovery.hpp>
 #include <sdk/TheSinkingCity2Native.hpp>
+#include "UE58NativeFix.hpp"
 #include <sdk/FinalFantasyResonance.hpp>
 #include <sdk/PhantomBladeZeroObjectArray.hpp>
 #include <sdk/PhantomBladeZeroRenderTarget.hpp>
@@ -174,6 +175,9 @@ bool halloween_ue574_dx12_runtime();
 bool sinking_city_2_native_runtime();
 bool sinking_city_2_native_view_layout();
 std::optional<sdk::sinking_city_2::native::FamilyFunctions> sinking_city_2_family_functions();
+bool ue58_native_linked_runtime();
+bool ue58_native_view_layout();
+std::optional<uevr::ue58_native::FamilyFunctions> ue58_native_family_functions();
 bool looks_like_vtable_object(void* object);
 bool get_d3d12_resource_desc_guarded(ID3D12Resource* resource, D3D12_RESOURCE_DESC& out);
 bool get_d3d12_resource_device_guarded(ID3D12Resource* resource, ID3D12Device4** out);
@@ -6216,6 +6220,59 @@ bool sinking_city_2_native_view_layout() {
     if (!constructor) { return false; }
     static const bool proven = sdk::sinking_city_2::native::view_layout(sdk::discovery::process_memory(), constructor);
     return proven;
+}
+
+bool ue58_native_view_layout() {
+    if (!is_ue58_dx12_backend() || !g_hook || sinking_city_2_native_runtime()) { return false; }
+    const auto constructor = g_hook->get_scene_view_constructor_hook_target_address();
+    if (!constructor) { return false; }
+    static const bool proven = uevr::ue58_native::view_layout(sdk::discovery::process_memory(), constructor);
+    return proven;
+}
+
+bool ue58_native_linked_runtime() {
+    if (!is_ue58_dx12_backend() || sinking_city_2_native_runtime()) { return false; }
+    static const bool must_fail_closed = uevr::ue58_native::needs_guarded_fallback(
+        utility::get_module_pathw(utility::get_executable()).value_or(L""));
+    // Compatible stock builds qualify by original code, not by their advertised
+    // patch number. A changed Fatekeeper build must not re-enter the crashing path.
+    return must_fail_closed || ue58_native_view_layout();
+}
+
+std::optional<uevr::ue58_native::FamilyFunctions> ue58_native_family_functions() {
+    if (!ue58_native_view_layout()) { return {}; }
+    static const auto result = []() -> std::optional<uevr::ue58_native::FamilyFunctions> {
+        const auto module = utility::get_executable();
+        const auto base = reinterpret_cast<uintptr_t>(module);
+        const auto size = utility::get_module_size(module).value_or(0);
+        const auto function_size = [&](uintptr_t p) -> size_t {
+            const auto entry = utility::find_function_entry(p);
+            return entry && base + entry->BeginAddress == p && entry->EndAddress > entry->BeginAddress
+                ? entry->EndAddress - entry->BeginAddress : 0;
+        };
+        std::optional<uevr::ue58_native::FamilyFunctions> found{};
+        uintptr_t cursor = base;
+        size_t candidates{};
+        while (size && cursor >= base && cursor - base < size && candidates < 16) {
+            const auto match = utility::scan(cursor, size - (cursor - base),
+                "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 54 41 56 41 57 48 83 EC 40 48 8D 71 08 45 33 E4");
+            if (!match) { break; }
+            cursor = *match + 1;
+            ++candidates;
+            const auto contract = uevr::ue58_native::family_functions(
+                sdk::discovery::process_memory(), *match, base, size, function_size);
+            if (!contract) { continue; }
+            if (found) { return {}; }
+            found = contract;
+        }
+        if (candidates == 16) { return {}; }
+        if (found) {
+            SPDLOG_INFO("[UE5.8][NativeStereoFix] Validated independent-family copy={:x} base destructor={:x}; original arrays and five interface owners verified",
+                found->copy, found->destroy);
+        }
+        return found;
+    }();
+    return result;
 }
 
 std::optional<sdk::sinking_city_2::native::FamilyFunctions> sinking_city_2_family_functions() {
@@ -23964,6 +24021,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
             const bool dune_preserve_secondary_pass = dune_native_transaction_runtime();
             const bool goweday_preserve_secondary_pass = goweday_ue561_dx12_runtime();
             const bool sinking_preserve_secondary_pass = sinking_city_2_native_runtime();
+            const bool ue58_linked_preserve_secondary_pass = ue58_native_linked_runtime();
             const bool preserve_secondary_pass =
                 hellblade_preserve_secondary_pass ||
                 satisfactory_preserve_secondary_pass ||
@@ -23971,6 +24029,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                 dune_preserve_secondary_pass ||
                 goweday_preserve_secondary_pass ||
                 sinking_preserve_secondary_pass ||
+                ue58_linked_preserve_secondary_pass ||
                 (is_ue55_or_newer &&
                  vr->is_native_stereo_fix_preserve_secondary_pass_enabled() &&
                  !vr->should_force_native_stereo_fix_same_pass() &&
@@ -23982,6 +24041,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                 !dune_preserve_secondary_pass &&
                 !goweday_preserve_secondary_pass &&
                 !sinking_preserve_secondary_pass &&
+                !ue58_linked_preserve_secondary_pass &&
                 (force_primary_constructor_pass ||
                  (vr->is_native_stereo_fix_same_pass_enabled() && !preserve_secondary_pass));
 
@@ -24012,6 +24072,8 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                     "[GoWEDay][NativeStereoFix] Preserving authored constructor eye/exposure state; singleton adaptation is confined to one linked renderer call");
             } else if (sinking_preserve_secondary_pass) {
                 SPDLOG_INFO_ONCE("[TheSinkingCity2][NativeStereoFix] Preserving authored constructor/exposure identity and packed fallback rectangles");
+            } else if (ue58_linked_preserve_secondary_pass) {
+                SPDLOG_INFO_ONCE("[UE5.8][NativeStereoFix] Preserving the original constructor eye/exposure pair; singleton identity is adapted only inside the validated linked renderer call");
             } else if (preserve_secondary_pass) {
                 SPDLOG_INFO_ONCE(
                     "[NativeStereoFix] Preserving UE5.5+ SECONDARY pass identity for modern per-eye renderer paths");
@@ -26901,6 +26963,129 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             native_capture_snapshot->generation != rtm->get_scene_capture_generation()) {
             g_hook->invalidate_native_stereo_frame_packet(NativeStereoFixState::FailedClosed,
                 "linked eye ownership, restoration or capture generation changed");
+            return;
+        }
+        publish_native_packet();
+        return;
+    }
+
+    if (ue58_native_linked_runtime()) {
+        namespace n = uevr::ue58_native;
+        const auto fail_closed = [&](const char* reason) {
+            views.data[0] = original_first;
+            views.data[1] = original_second;
+            views.count = prev_count;
+            view_family->set_render_target(original_target);
+            g_hook->invalidate_native_stereo_frame_packet(NativeStereoFixState::FailedClosed, reason);
+            SPDLOG_WARNING_EVERY_N_SEC(2,
+                "[UE5.8][NativeStereoFix] Keeping the original packed eye pair: {}", reason);
+            call_original();
+        };
+        const auto memory = sdk::discovery::process_memory();
+        const auto layout = sdk::FSceneViewFamily::get_layout_snapshot();
+        static const bool renderer_proven = n::renderer_layout(
+            memory, g_hook->m_render_module_begin_render_viewfamily_hook.target_address());
+        if (!uses_tarrayview || !ue58_native_view_layout() || !layout ||
+            layout->views != 8 || layout->render_target != 0x30 || layout->scene_interface != 0x40 ||
+            !renderer_proven) {
+            fail_closed("original view/family layout or linked-renderer ABI is not proven"); return;
+        }
+        const auto functions = ue58_native_family_functions();
+        if (!functions) { fail_closed("native independent-family copy/destructor contract is not proven"); return; }
+
+        const auto left_address = reinterpret_cast<uintptr_t>(native_left_view);
+        const auto right_address = reinterpret_cast<uintptr_t>(native_right_view);
+        const auto identities_match = [&]() {
+            uintptr_t left_state{}, right_state{};
+            int32_t left_eye{-1}, right_eye{-1};
+            return memory.load(left_address + 0x10, left_state) &&
+                memory.load(right_address + 0x10, right_state) &&
+                memory.load(left_address + n::eye_index_offset, left_eye) &&
+                memory.load(right_address + n::eye_index_offset, right_eye) &&
+                left_state == reinterpret_cast<uintptr_t>(native_left_metadata.state) &&
+                right_state == reinterpret_cast<uintptr_t>(native_right_metadata.state) &&
+                left_eye == 0 && right_eye == 1;
+        };
+        if (!identities_match()) { fail_closed("original logical eyes or temporal-state identities changed"); return; }
+
+        n::FamilyClone clone;
+        const char* reason{};
+        if (!clone.initialize(memory, reinterpret_cast<uintptr_t>(view_family), expected_vtable, *functions, reason)) {
+            if (clone.original_render_safe()) { fail_closed(reason ? reason : "native family copy is unavailable"); }
+            else { g_hook->invalidate_native_stereo_frame_packet(NativeStereoFixState::FailedClosed,
+                "family already owns renderer/upscaler state; refusing a second submission"); }
+            return;
+        }
+        auto* const right_family = reinterpret_cast<sdk::FSceneViewFamily*>(clone.address());
+        auto* const right_views = right_family->get_views();
+        right_family->set_render_target(rtfrt);
+        if (!right_views || right_family->get_render_target() != rtfrt ||
+            right_family->get_scene_interface() != view_family_scene) {
+            fail_closed("cloned right-eye target, view storage or scene changed"); return;
+        }
+        std::array<sdk::FSceneViewFamily*, max_sane_view_families + 1> linked{};
+        const auto count = uevr::satisfactory::link_families(
+            std::span{view_families.begin(), view_families.size()}, view_family, right_family, linked);
+        if (!count) { fail_closed("selected family is not unique in the original renderer array"); return; }
+        const auto restore_backlink = [&]() {
+            return native_right_view->has_view_family(view_family) ||
+                (native_right_view->has_view_family(right_family) &&
+                    try_set_ue57_scene_view_family(native_right_view, right_family, view_family));
+        };
+        utility::ScopeGuard restore_family{[&]() { restore_backlink(); }};
+        if (!try_set_ue57_scene_view_family(native_right_view, view_family, right_family)) {
+            if (restore_backlink()) { fail_closed("right-eye Family backlink could not be redirected"); }
+            else { g_hook->invalidate_native_stereo_frame_packet(NativeStereoFixState::FailedClosed,
+                "right-eye Family backlink could not be restored"); }
+            return;
+        }
+        const auto eye_metadata = [](const NativeStereoViewMetadata& metadata) {
+            n::Eye eye{};
+            std::copy_n(metadata.view_rect.bounds, 4, eye.unconstrained.begin());
+            std::copy_n(metadata.constrained_view_rect.bounds, 4, eye.constrained.begin());
+            eye.pass = metadata.original_stereo_pass;
+            eye.primary_index = 0;
+            return eye;
+        };
+        const auto write_eye = [](void*, uintptr_t view, const n::Eye& eye) {
+            if (!is_writable_process_range(view + n::constrained_offset, sizeof(eye.constrained) + sizeof(eye.unconstrained)) ||
+                !is_writable_process_range(view + n::pass_offset, sizeof(eye.pass))) { return false; }
+            std::memcpy(reinterpret_cast<void*>(view + n::constrained_offset), eye.constrained.data(), sizeof(eye.constrained));
+            std::memcpy(reinterpret_cast<void*>(view + n::unconstrained_offset), eye.unconstrained.data(), sizeof(eye.unconstrained));
+            std::memcpy(reinterpret_cast<void*>(view + n::pass_offset), &eye.pass, sizeof(eye.pass));
+            return true;
+        };
+        n::EyeOverride right_eye;
+        if (!right_eye.initialize(memory, left_address, right_address,
+                eye_metadata(native_left_metadata), eye_metadata(native_right_metadata),
+                native_capture_snapshot->width, native_capture_snapshot->height, nullptr, write_eye)) {
+            const bool eye_restored = right_eye.restore();
+            const bool family_restored = restore_backlink();
+            if (eye_restored && family_restored) { fail_closed("right-eye singleton rectangles or primary identity did not validate"); }
+            else { g_hook->invalidate_native_stereo_frame_packet(NativeStereoFixState::FailedClosed,
+                "right-eye adaptation could not be restored"); }
+            return;
+        }
+        views.data[0] = native_left_view;
+        views.data[1] = native_right_view;
+        views.count = 1;
+        right_views->data[0] = native_right_view;
+        right_views->count = 1;
+        TArrayViewViewFamily families{linked.data(), static_cast<int32_t>(*count)};
+        SPDLOG_INFO_ONCE("[UE5.8][NativeStereoFix] Rendering independent linked eye families in one original call; physical PRIMARY right view retains logical eye/state/exposure");
+        g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(
+            render_module, canvas, reinterpret_cast<sdk::FSceneViewFamily*>(&families));
+        const bool independent = clone.finish(memory, reinterpret_cast<uintptr_t>(view_family));
+        const bool eye_restored = right_eye.restore();
+        const bool family_restored = restore_backlink();
+        views.data[0] = original_first;
+        views.data[1] = original_second;
+        views.count = prev_count;
+        view_family->set_render_target(original_target);
+        if (!independent || !eye_restored || !family_restored || !identities_match() ||
+            native_capture_snapshot->generation != rtm->get_scene_capture_generation()) {
+            g_hook->invalidate_native_stereo_frame_packet(NativeStereoFixState::FailedClosed,
+                "linked eye ownership, logical identity, restoration or capture generation changed");
             return;
         }
         publish_native_packet();
@@ -30943,7 +31128,7 @@ void FFakeStereoRenderingHook::adjust_view_rect(FFakeStereoRendering* stereo, in
     if (VR::get()->is_using_mono()) {
         *x = 0;
         *y = 0;
-    } else if (!VR::get()->is_native_stereo_fix_enabled() || swgr_ue574_dx12_runtime() || goweday_ue561_dx12_runtime() || sinking_city_2_native_runtime() || finch_native_fix_runtime()) {
+    } else if (!VR::get()->is_native_stereo_fix_enabled() || swgr_ue574_dx12_runtime() || goweday_ue561_dx12_runtime() || sinking_city_2_native_runtime() || ue58_native_linked_runtime() || finch_native_fix_runtime()) {
         *x += *w * true_index;
     }
 }
