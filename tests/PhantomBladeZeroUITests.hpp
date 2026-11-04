@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <limits>
@@ -7,8 +8,140 @@
 
 #include "mods/vr/PhantomBladeZeroUI.hpp"
 #include "mods/vr/PhantomBladeZeroNative.hpp"
+#include "fixtures/PhantomBladeZeroSlateFixtures.hpp"
+#include <vector>
 
 namespace pbz_ui_tests {
+
+struct SlateCode {
+    static constexpr uintptr_t base = 0x10000000, function = base + 0x100, helper = base + 0x900;
+    std::array<uint8_t, 0x1000> bytes{};
+    size_t length{}, first_call{};
+    bool helper_executable{true};
+
+    explicit SlateCode(std::span<const uint8_t> prefix) : length{prefix.size()}, first_call{prefix.size()} {
+        std::copy(prefix.begin(), prefix.end(), bytes.begin() + 0x100);
+        for (size_t at = 0; at < length;) {
+            INSTRUX ix{};
+            if (!ND_SUCCESS(NdDecodeEx(&ix, bytes.data() + 0x100 + at, length - at, ND_CODE_64, ND_DATA_64))) { break; }
+            if (ix.Length == 7 && bytes[0x100 + at] == 0x48 && bytes[0x101 + at] == 0x8b && bytes[0x102 + at] == 0x05) {
+                const auto displacement = int32_t(base + 0x800 - (function + at + ix.Length));
+                std::memcpy(bytes.data() + 0x100 + at + 3, &displacement, 4);
+            }
+            if (ix.Length == 5 && bytes[0x100 + at] == 0xe8) {
+                first_call = at;
+                const auto displacement = int32_t(helper - (function + at + ix.Length));
+                std::memcpy(bytes.data() + 0x100 + at + 1, &displacement, 4);
+                break;
+            }
+            at += ix.Length;
+        }
+        bytes[helper - base] = 0xc3;
+    }
+    sdk::discovery::Memory memory() {
+        return {this,
+            [](void* context, uintptr_t address, void* output, size_t count) {
+                const auto& self = *static_cast<SlateCode*>(context);
+                if (address < base || address - base > self.bytes.size() || count > self.bytes.size() - (address - base)) { return false; }
+                std::memcpy(output, self.bytes.data() + address - base, count);
+                return true;
+            },
+            [](void* context, uintptr_t address, size_t count) {
+                const auto& self = *static_cast<SlateCode*>(context);
+                return (address >= function && address - function <= self.length && count <= self.length - (address - function)) ||
+                    (self.helper_executable && address == helper && count == 1);
+            }};
+    }
+    bool proven() { return uevr::pbz_ui::slate_inputs_proven(memory(), function, base, bytes.size()); }
+};
+
+template <typename Expect>
+void test_slate_arguments(const Expect& expect) {
+    using namespace pbz_ui_test_fixtures;
+    for (const auto prefix : {std::span<const uint8_t>{old_prefix}, std::span<const uint8_t>{new_prefix}}) {
+        SlateCode code{prefix};
+        expect(code.proven(), "PBZ accepts original and updated Slate argument flow without register-byte matching");
+        const auto call_end = code.first_call + 5;
+        for (size_t length = 0; length < call_end; ++length) {
+            SlateCode truncated{prefix.first(length)};
+            expect(!truncated.proven(), "PBZ requires a complete original prologue and first direct call");
+        }
+        code.bytes[0x100 + 0x39] = 0x10;
+        expect(!code.proven(), "PBZ rejects a changed viewport-info field even if the rest of the prologue matches");
+        code = SlateCode{prefix}; code.bytes[0x100 + 0x38] ^= 1;
+        expect(!code.proven(), "PBZ rejects a viewport read from the graph instead of the original inputs argument");
+        code = SlateCode{prefix}; code.bytes[0x100 + 0x40] = 0x10;
+        expect(!code.proven(), "PBZ rejects a changed element-list field");
+        code = SlateCode{prefix}; code.bytes[0x100 + 0x54] = 0xc8;
+        expect(!code.proven(), "PBZ rejects a changed graph command-list field");
+        code = SlateCode{prefix}; code.bytes[0x100 + 0x53] ^= 1;
+        expect(!code.proven(), "PBZ requires the command-list read to originate at the graph argument");
+        code = SlateCode{prefix}; code.bytes[0x100 + 0x46] = 0x45;
+        expect(!code.proven(), "PBZ requires the original output pointer to remain retained");
+        code = SlateCode{prefix}; code.helper_executable = false;
+        expect(!code.proven(), "PBZ rejects a first call to non-executable memory");
+        code = SlateCode{prefix};
+        const auto outside = int32_t(0x3000 - (0x100 + code.first_call + 5));
+        std::memcpy(code.bytes.data() + 0x100 + code.first_call + 1, &outside, 4);
+        expect(!code.proven(), "PBZ rejects a first call outside the game image");
+        code = SlateCode{prefix}; code.bytes[0x100] = 0xe9;
+        expect(!code.proven(), "PBZ does not follow a patched entry or another function's thunk");
+        code = SlateCode{prefix.first(0x53)};
+        expect(!code.proven(), "PBZ refuses truncated instructions rather than reading past executable code");
+        code = SlateCode{prefix}; code.bytes[0x100 + 0x36] = 0x41;
+        expect(!code.proven(), "PBZ does not treat a 32-bit field read as a pointer ABI proof");
+        code = SlateCode{prefix};
+        expect(!uevr::pbz_ui::slate_inputs_proven(code.memory(), SlateCode::function, SlateCode::base, 0x200),
+            "PBZ bounds the complete decode window to the game image");
+        expect(!uevr::pbz_ui::slate_inputs_proven(code.memory(), UINTPTR_MAX - 15, SlateCode::base, 0x1000),
+            "PBZ rejects overflowing function addresses");
+    }
+    std::vector<uint8_t> padded{new_prefix.begin(), new_prefix.end()};
+    padded.insert(padded.begin(), 4, 0x90);
+    SlateCode code{padded};
+    expect(code.proven(), "PBZ tolerates padding and relocated prologue fields without a fixed +0x36 assumption");
+    padded.insert(padded.begin(), 64, 0x90);
+    code = SlateCode{padded};
+    expect(!code.proven(), "PBZ keeps prologue decoding instruction-bounded");
+    std::vector<uint8_t> early{old_prefix.begin(), old_prefix.end()};
+    early[0] = 0xe8;
+    code = SlateCode{early};
+    expect(!code.proven(), "PBZ refuses a call reached before the argument contract is established");
+    constexpr auto equivalent = std::to_array<uint8_t>({
+        0x56, 0x41, 0x54, 0x41, 0x57, 0x48, 0x83, 0xec, 0x28,
+        0x48, 0x8b, 0xf1, 0x48, 0x89, 0x54, 0x24, 0x20,
+        0x4d, 0x8b, 0xf8, 0x4d, 0x8b, 0xe1,
+        0x4d, 0x8b, 0x54, 0x24, 0x18, 0x49, 0x8b, 0x44, 0x24, 0x08,
+        0x33, 0xd2, 0x49, 0x8b, 0x8f, 0xc0, 0, 0, 0, 0xe8, 0, 0, 0, 0});
+    code = SlateCode{equivalent};
+    expect(code.proven(), "PBZ follows equivalent argument aliases through different nonvolatile registers");
+    code.bytes[0x100 + 16] = 0x18;
+    expect(!code.proven(), "PBZ does not retain arguments in the first callee's outgoing shadow space");
+    auto overwritten = std::vector<uint8_t>{equivalent.begin(), equivalent.end()};
+    const auto call_offset = overwritten.size() - 5;
+    overwritten.insert(overwritten.begin() + call_offset, {0x48, 0x8b, 0xc8});
+    code = SlateCode{overwritten};
+    expect(!code.proven(), "PBZ requires the graph's command-list pointer to reach the first call in RCX");
+    overwritten.assign(equivalent.begin(), equivalent.end());
+    overwritten.insert(overwritten.begin() + call_offset, {0x48, 0x8b, 0xd0});
+    code = SlateCode{overwritten};
+    expect(!code.proven(), "PBZ requires the original zero second argument at the first call");
+    overwritten.assign(equivalent.begin(), equivalent.end());
+    overwritten.insert(overwritten.begin() + call_offset, {0x89, 0x44, 0x24, 0x22});
+    code = SlateCode{overwritten};
+    expect(!code.proven(), "PBZ invalidates retained output pointers after overlapping partial stack stores");
+    code = SlateCode{equivalent};
+    auto failed_read = code.memory();
+    failed_read.read = [](void*, uintptr_t, void*, size_t) { return false; };
+    expect(!uevr::pbz_ui::slate_inputs_proven(failed_read, SlateCode::function, SlateCode::base, 0x1000),
+        "PBZ rejects unreadable original code");
+    expect(!uevr::pbz_ui::slate_inputs_proven(code.memory(), SlateCode::function, UINTPTR_MAX - 15, 0x1000),
+        "PBZ rejects overflowing image bounds");
+    std::vector<uint8_t> segmented{new_prefix.begin(), new_prefix.end()};
+    segmented.insert(segmented.begin() + 0x36, 0x65);
+    code = SlateCode{segmented};
+    expect(!code.proven(), "PBZ does not interpret a GS-relative read as a field in the inputs packet");
+}
 
 struct NativeMemory {
     uintptr_t base;
@@ -171,6 +304,7 @@ struct Memory {
 template <typename Expect>
 void run(const Expect& expect) {
     using namespace uevr;
+    test_slate_arguments(expect);
     test_native_layout(expect);
     test_native_copy_extent(expect);
     pbz_ui::Creation state{true, true, true, true, true, true, true, 1920, 1080};
