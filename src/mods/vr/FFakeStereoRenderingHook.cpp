@@ -15340,6 +15340,19 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
         }
     }
 
+    std::optional<bool> pbz_inputs_proven;
+    if (pbz_ue574_dx12_runtime()) {
+        g_pbz_slate_ui_inputs_proven.store(false, std::memory_order_release);
+        const auto executable = utility::get_executable();
+        const auto size = utility::get_module_size(executable);
+        pbz_inputs_proven = size && utility::get_module_within(*func).value_or(nullptr) == executable &&
+            uevr::pbz_ui::slate_inputs_proven(sdk::discovery::process_memory(), *func,
+                reinterpret_cast<uintptr_t>(executable), *size);
+        if (!*pbz_inputs_proven) {
+            SPDLOG_WARN("[PBZ][SlateUI] Original DrawWindow argument flow is unproven; dedicated UI remains disabled");
+        }
+    }
+
     m_slate_thread_hook = safetyhook::create_inline((void*)*func, &FFakeStereoRenderingHook::slate_draw_window_render_thread, safetyhook::InlineHook::StartDisabled);
     m_hooked_slate_thread = true;
 
@@ -15352,9 +15365,16 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
         attempt_hook_stupid_never_dies_ui();
     }
 
+    if (pbz_inputs_proven.has_value()) {
+        g_pbz_slate_ui_inputs_proven.store(*pbz_inputs_proven, std::memory_order_release);
+    }
     if (auto enable_result = m_slate_thread_hook.enable(); !enable_result.has_value()) {
+        if (pbz_inputs_proven.has_value()) { g_pbz_slate_ui_inputs_proven.store(false, std::memory_order_release); }
         SPDLOG_ERROR("Failed to enable FSlateRHIRenderer::DrawWindow_RenderThread hook! {}", (int)enable_result.error().type);
         return;
+    }
+    if (pbz_inputs_proven.value_or(false)) {
+        SPDLOG_INFO("[PBZ][SlateUI] Verified original DrawWindow argument origins and graph/input fields before hooking");
     }
 
     SPDLOG_INFO("Hooked FSlateRHIRenderer::DrawWindow_RenderThread @ 0x{:x}!", *func);
@@ -37362,18 +37382,6 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     // normally services RenderThreadWorker. DrawWindow is independently proven
     // to run on FRenderingThread, so service only the dedicated UE5.8 UI queue
     // here after Slate finishes. The general render-worker queue is untouched.
-    if (pbz_ue574_dx12_runtime() && !g_pbz_slate_ui_inputs_proven.load(std::memory_order_acquire)) {
-        std::array<uint8_t, uevr::pbz_ui::slate_inputs_contract.size()> code{};
-        const auto target = g_hook->m_slate_thread_hook.target_address();
-        if (utility::get_module_within(target).value_or(nullptr) == utility::get_executable() &&
-            is_executable_process_range(target + uevr::pbz_ui::slate_inputs_offset, code.size()) &&
-            safe_read_value(target + uevr::pbz_ui::slate_inputs_offset, code) &&
-            code == uevr::pbz_ui::slate_inputs_contract)
-        {
-            g_pbz_slate_ui_inputs_proven.store(true, std::memory_order_release);
-            SPDLOG_INFO("[PBZ][SlateUI] Verified DrawWindow inputs; UI initialization is independent of scene-family discovery");
-        }
-    }
     const bool pump_ue58_slate_ui_resource_worker =
         (is_validated_ue58_slate_ui_runtime() && is_ue58_dx12_backend()) ||
         (pbz_ue574_dx12_runtime() && g_pbz_slate_ui_inputs_proven.load(std::memory_order_acquire));
