@@ -1,5 +1,6 @@
 #include "mods/vr/ProSpiRoofVisibilityPolicy.hpp"
 #include "mods/vr/ProSpiRoofVisibilityCode.hpp"
+#include "ProSpiStadiumDiscoveryTests.hpp"
 #include <iostream>
 #include <fstream>
 #include <nlohmann/json.hpp>
@@ -99,6 +100,37 @@ void background_names() {
         const auto package = std::wstring{L"/Game/Stadiums/AnotherStadium/Meshes/Day/"} + mesh;
         require(geometry(name, mesh, package) == Geometry::rejected, "numbered/compound exclusions remain closed");
     }
+    for (const auto name : {L"p03_outfield_scoreboard", L"p03_outfield_scoreboard_off", L"p07_alpha_outfield__01_score1", L"p07_alpha_outfield__01_score2"}) {
+        const auto mesh = std::wstring{L"SM_"} + name;
+        const auto package = std::wstring{L"/Game/Stadiums/Fukuoka/Meshes/Day/"} + mesh;
+        require(geometry(std::wstring{name} + L".fbx(dfukuoka)", mesh, package) == Geometry::observed_background,
+            "captured display-support surface requires visible proof, never structural startup authorization");
+        require(geometry(name, mesh, std::wstring{L"/Game/Stadiums/Another/Meshes/Day/"} + mesh) == Geometry::rejected,
+            "Fukuoka surface evidence does not authorize another stadium's display variants");
+        require(geometry(name, mesh + L"_extra", package + L"_extra") == Geometry::rejected,
+            "display-surface exception still requires exact binding identity");
+    }
+    for (const auto name : {L"p02_infield_bench_1b_adv_roof1", L"p02_infield_benchRoof_ue_1st",
+            L"p06_alpha_infield__01_ceilingobj_1st_02", L"p02_infield_std_if_roofst_wside_1b",
+            L"p02_infield_rubber_benchroof_1st_ps5", L"p02_infield_cwnCeiling_ex1"}) {
+        const auto mesh = std::wstring{L"SM_"} + name;
+        const auto package = std::wstring{L"/Game/Stadiums/AnotherStadium/Meshes/Day/"} + mesh;
+        const auto kind = geometry(std::wstring{name} + L".fbx(dstadium)", mesh, package);
+        require(kind == Geometry::observed_background, "audited numbered and compound roof names require visible proof");
+        VisibilityProof proof{kind};
+        proof.sample_unforced(false); proof.game_request(false, false);
+        require(!proof.allows_override(), "new roof detail cannot reveal an unproven variant at startup");
+        proof.game_request(true, true);
+        require(proof.allows_override(), "successful game show authorizes this exact roof detail");
+        require(geometry(name, mesh, std::wstring{L"/Game/Stadiums/AnotherStadium/Meshes/Shadow/"} + mesh) == Geometry::rejected,
+            "shadow-only roof proxy is not eligible for broader name discovery");
+    }
+    for (const auto name : {L"p02_infield_cwnCeilingLight_ex", L"p02_infield_benchRoof_ue_1st_decal",
+            L"p02_infield_benchRoof_mask", L"p02_infield_benchRoof_extra1"}) {
+        const auto mesh = std::wstring{L"SM_"} + name;
+        require(geometry(name, mesh, std::wstring{L"/Game/Stadiums/AnotherStadium/Meshes/Day/"} + mesh) == Geometry::rejected,
+            "new roof-detail coverage does not authorize lighting, decals, masks or extras");
+    }
 }
 
 void visibility_proof() {
@@ -166,11 +198,31 @@ void maintenance() {
     require(maintenance_index(cursor, 3) < 3 && cursor < 3, "cache shrink or erase never indexes out of bounds");
     require(cached_targets_per_draw < max_targets, "maintenance never validates the entire capped cache in one Draw");
 }
+void asset_capacity(const std::filesystem::path& path) {
+    std::ifstream input{path};
+    require(input.good(), "all-stadium asset census fixture required");
+    const auto inventory = nlohmann::json::parse(input);
+    require(inventory.at("stadiums").size() == 21 && inventory.at("meshes_including_accessories") == 19614,
+        "complete captured asset census retained; this is not runtime visibility evidence");
+    size_t largest{};
+    for (const auto& lighting_sets : inventory.at("stadiums")) {
+        for (const auto& counts : lighting_sets) {
+            const auto candidates = counts.at("structural").get<size_t>() + counts.at("background").get<size_t>();
+            largest = (std::max)(largest, candidates);
+            require(candidates <= max_targets, "bounded cache covers the largest captured candidate-name set");
+        }
+    }
+    require(largest == 467 && largest == inventory.at("largest_candidate_name_set") && max_targets == 512,
+        "capacity increase follows the asset audit, not an unbounded guess");
+    require(cached_targets_per_draw == 8 && scan_objects_per_draw == 256,
+        "larger capacity must not raise per-Draw maintenance or fallback work budgets");
+}
 void captured_stadium(const char* path, size_t components, size_t changes, size_t hidden_variants) {
     std::ifstream file{path};
     require(file.good(), "captured stadium fixture readable");
     const auto fixture = nlohmann::json::parse(file);
     size_t changed{}, direct{}, backgrounds{}, preserved_hidden{}, covered{}, learned_changes{};
+    std::string uncovered;
     const auto widen = [](const std::string& value) { return std::wstring{value.begin(), value.end()}; };
     for (const auto& row : fixture.at("rows")) {
         const auto c = widen(row.at("component").get<std::string>());
@@ -197,7 +249,8 @@ void captured_stadium(const char* path, size_t components, size_t changes, size_
         }
         if (before != after) {
             if (kind == Geometry::rejected || !proof.allows_override()) {
-                throw std::runtime_error("captured camera-hidden background missed: " + row.at("component").get<std::string>());
+                uncovered += "\n" + row.at("component").get<std::string>();
+                continue;
             }
             require(!row.at("hidden_in_game").get<bool>(), "captured background must not be HiddenInGame");
             if (row.contains("actor_hidden")) { require(!row.at("actor_hidden").get<bool>(), "captured actor remains visible"); }
@@ -207,9 +260,10 @@ void captured_stadium(const char* path, size_t components, size_t changes, size_
             learned_changes += kind == Geometry::observed_background;
         }
     }
+    if (!uncovered.empty()) { throw std::runtime_error("captured camera-hidden backgrounds missed:" + uncovered); }
     require(fixture.at("rows").size() == components && changed == changes, "complete controlled native A/B fixture retained");
     require(covered == changes && preserved_hidden == hidden_variants, "every captured camera-hidden component covered, all never-visible variants preserved");
-    require(direct + backgrounds <= max_targets, "full captured stadium fits the unchanged bounded cache");
+    require(direct + backgrounds <= max_targets, "full captured stadium fits the bounded cache");
     std::cout << components << " components: " << covered << " camera changes covered (" << learned_changes
         << " require visible proof), " << preserved_hidden << " hidden variants preserved, "
         << direct << " direct / " << backgrounds << " background candidates\n";
@@ -378,8 +432,13 @@ int main(int argc, char** argv) {
     try {
         names(); background_names(); visibility_proof(); eligibility(); maintenance(); cuts_and_restore(); setter_validation(); bool_metadata(); viewport_dispatch();
         require(argc == 3, "both captured stadium fixture arguments required");
+        prospi_stadium_discovery_tests::run(std::filesystem::path{argv[1]}.parent_path() / "prospi-stadium-discovery.json");
         captured_stadium(argv[1], 366, 98, 32);
         captured_stadium(argv[2], 503, 185, 10);
+        const auto fixtures = std::filesystem::path{argv[1]}.parent_path();
+        asset_capacity(fixtures / "prospi-stadium-asset-coverage.json");
+        captured_stadium((fixtures / "prospi-stadium-fukuoka-ebaseball-visibility.json").string().c_str(), 408, 146, 7);
+        captured_stadium((fixtures / "prospi-stadium-fukuoka-2025-visibility.json").string().c_str(), 401, 145, 10);
         std::cout << "ProSpi stadium visibility classification, viewport dispatch, bounded maintenance, scope, cut/restore and native setter tests passed\n";
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

@@ -2,6 +2,7 @@
 #include "ProSpiRoofVisibility.hpp"
 #include "ProSpiRoofVisibilityPolicy.hpp"
 #include "ProSpiRoofVisibilityCode.hpp"
+#include "ProSpiStadiumDiscovery.hpp"
 
 #include <Windows.h>
 #include <sdk/UObjectArray.hpp>
@@ -161,6 +162,47 @@ std::optional<uintptr_t> resolve_setter(sdk::UFunction* fn, const Boolean& visib
     }
     return result;
 }
+
+std::optional<uint32_t> resolve_owned_components(sdk::UFunction* fn, uint32_t actor_size) {
+    if (!fn || !fn->is_native()) { return {}; }
+    const auto entry = reinterpret_cast<uintptr_t>(fn->get_native_function());
+    return discover_owned_components(entry, actor_size, [](uintptr_t address) -> std::optional<DiscoveryCode> {
+        MEMORY_BASIC_INFORMATION info{};
+        if (!VirtualQuery(reinterpret_cast<void*>(address), &info, sizeof(info)) ||
+            info.AllocationBase != GetModuleHandleW(nullptr) || info.Type != MEM_IMAGE || info.State != MEM_COMMIT ||
+            (info.Protect & (PAGE_GUARD | PAGE_NOACCESS)) ||
+            !(info.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) { return {}; }
+        const auto extent = discovery_extent(address, [](uintptr_t entry_address) -> std::optional<DiscoveryFunctionPart> {
+            DWORD64 image{};
+            const auto entry = RtlLookupFunctionEntry(entry_address, &image, nullptr);
+            if (!entry || image != reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)) ||
+                !module_data(reinterpret_cast<uintptr_t>(entry), sizeof(*entry)) ||
+                entry->BeginAddress >= entry->EndAddress || image + entry->BeginAddress != entry_address) { return {}; }
+            DiscoveryFunctionPart part{entry_address, image + entry->EndAddress,
+                {entry->BeginAddress, entry->EndAddress, entry->UnwindData}};
+            std::array<uint8_t, 4> unwind{};
+            const auto metadata = image + entry->UnwindData;
+            if (module_data(metadata, unwind.size()) && read_bytes(metadata, unwind.data(), unwind.size()) &&
+                (unwind[0] & 7) == 1 && (unwind[0] >> 3) == UNW_FLAG_CHAININFO) {
+                const auto offset = (4 + size_t(unwind[2]) * 2 + 3) & ~size_t{3};
+                RUNTIME_FUNCTION parent{};
+                if (module_data(metadata + offset, sizeof(parent)) && read(metadata + offset, parent)) {
+                    part.chained = DiscoveryUnwindRecord{parent.BeginAddress, parent.EndAddress, parent.UnwindData};
+                }
+            }
+            return part;
+        });
+        DWORD64 base{};
+        if (!extent && RtlLookupFunctionEntry(address, &base, nullptr)) { return {}; }
+        DiscoveryCode code;
+        code.original_entry = extent.has_value();
+        code.size = extent ? *extent : size_t{5};
+        const auto region = reinterpret_cast<uintptr_t>(info.BaseAddress);
+        if (address < region || address - region > info.RegionSize || code.size > info.RegionSize - (address - region) ||
+            !read_bytes(address, code.bytes.data(), code.size)) { return {}; }
+        return code;
+    });
+}
 }
 
 struct VisibilityGuard::Impl : std::enable_shared_from_this<Impl> {
@@ -189,6 +231,32 @@ struct VisibilityGuard::Impl : std::enable_shared_from_this<Impl> {
     Clock::time_point next_scan{};
     uint64_t override_count{};
     InitializationState initialization;
+    struct LocalActor {
+        Identity identity, level;
+        OwnedComponentSet storage{};
+        size_t cursor{};
+        Clock::time_point next_scan{};
+    };
+    std::optional<uint32_t> owned_components_offset;
+    std::vector<LocalActor> local_actors;
+    size_t local_level_cursor{}, local_actor_cursor{}, local_owner_cursor{};
+    Clock::time_point next_actor_scan{};
+    bool local_actor_scan_complete{}, local_actor_scan_failed{}, local_actor_overflow{};
+
+    void reset_local_discovery() {
+        local_actors.clear(); local_level_cursor = 0; local_actor_cursor = 0; local_owner_cursor = 0; next_actor_scan = {};
+        local_actor_scan_complete = false; local_actor_scan_failed = false; local_actor_overflow = false;
+    }
+
+    void remember_actor(const Identity& actor, const Identity& level) {
+        if (!owned_components_offset) { return; }
+        const auto found = std::find_if(local_actors.begin(), local_actors.end(), [&](const auto& item) {
+            return sdk::object_liveness::matches(item.identity, actor);
+        });
+        if (found != local_actors.end()) { return; }
+        if (local_actors.size() < 16) { local_actors.push_back(LocalActor{actor, level}); }
+        else { local_actor_overflow = true; }
+    }
 
     static void detour(sdk::UObjectBase* component, bool requested, uint8_t propagation) {
         auto self = active.load(std::memory_order_acquire);
@@ -302,8 +370,18 @@ struct VisibilityGuard::Impl : std::enable_shared_from_this<Impl> {
             hook.reset(); return reject("visibility hook enable");
         }
         initialization.supported = true;
+        local_actors.reserve(16);
+        const auto actor_size = klass(actor_class)->get_properties_size();
+        const auto level_size = klass(level_class)->get_properties_size();
+        if (actor_size > 0 && level_size >= level_actors_candidate_offset + 16) {
+            owned_components_offset = resolve_owned_components(klass(actor_class)->find_function(L"GetStadiumComponents"), actor_size);
+        }
         spdlog::info("[PROSPI_ROOF] Validated SceneComponent visibility setter at 0x{:x}; viewport dispatch +0x{:x}; all-stadium opt-in",
             *target, dispatch_offset);
+        if (owned_components_offset) {
+            spdlog::info("[PROSPI_ROOF] Native component-query code validates owned-component discovery at +0x{:x}; global sweep retained as fallback",
+                *owned_components_offset);
+        }
         return true;
     }
 
@@ -386,6 +464,9 @@ struct VisibilityGuard::Impl : std::enable_shared_from_this<Impl> {
         if (!owner || !runtime(*owner) || !has_class(*owner, actor_class)) { return nullptr; }
         const auto level = outer(*owner);
         if (!level || !runtime(*level) || !has_class(*level, level_class) || !level_in_world(level->object)) { return nullptr; }
+        // An original game visibility call or the fallback sweep can identify
+        // the owning stadium before the level's actor-array cursor reaches it.
+        remember_actor(*owner, *level);
         sdk::UObjectBase* mesh_ptr{};
         if (!read(id->object + mesh_offset, mesh_ptr)) { return nullptr; }
         const auto mesh = observe(mesh_ptr);
@@ -464,11 +545,94 @@ struct VisibilityGuard::Impl : std::enable_shared_from_this<Impl> {
             }
         }
         entries.clear(); levels.clear(); maintenance_cursor = 0; scan_cursor = 0; next_scan = {};
+        reset_local_discovery();
+    }
+
+    bool discover_local(Clock::time_point deadline) {
+        if (!owned_components_offset) { return false; }
+        const auto now = Clock::now();
+        const auto actor_deadline = (std::min)(deadline, now + std::chrono::microseconds{35});
+        if (now >= next_actor_scan && local_level_cursor == 0 && local_actor_cursor == 0) {
+            local_actor_scan_complete = false; local_actor_scan_failed = false; local_actor_overflow = false;
+        }
+        for (size_t n{}; now >= next_actor_scan && n < 64 && Clock::now() < actor_deadline; ++n) {
+            if (local_level_cursor >= levels.size()) {
+                local_actor_scan_complete = !local_actor_scan_failed && !local_actor_overflow;
+                local_level_cursor = 0; local_actor_cursor = 0; next_actor_scan = now + std::chrono::seconds{5}; break;
+            }
+            const auto level = observe(reinterpret_cast<sdk::UObjectBase*>(levels[local_level_cursor]));
+            sdk::TArrayLite<uintptr_t> before{}, after{};
+            if (!level || !runtime(*level) || !has_class(*level, level_class) ||
+                !read(level->object + level_actors_candidate_offset, before) ||
+                !valid_actor_array(reinterpret_cast<uintptr_t>(before.data), before.count, before.capacity)) {
+                local_actor_scan_failed = true;
+                ++local_level_cursor; local_actor_cursor = 0; continue;
+            }
+            if (local_actor_cursor >= static_cast<size_t>(before.count)) {
+                ++local_level_cursor; local_actor_cursor = 0; continue;
+            }
+            uintptr_t candidate{};
+            const auto position = local_actor_cursor++;
+            if (!read(reinterpret_cast<uintptr_t>(before.data) + position * sizeof(uintptr_t), candidate) ||
+                !read(level->object + level_actors_candidate_offset, after) || before.data != after.data ||
+                before.count != after.count || before.capacity != after.capacity) { local_actor_scan_failed = true; continue; }
+            const auto actor = observe(reinterpret_cast<sdk::UObjectBase*>(candidate));
+            if (!actor || !runtime(*actor) || !has_class(*actor, actor_class)) { continue; }
+            const auto parent = outer(*actor);
+            if (!parent || !sdk::object_liveness::matches(*parent, *level)) { continue; }
+            remember_actor(*actor, *level);
+        }
+
+        bool valid_source{};
+        size_t idle_visits{};
+        for (size_t n{}; n < 32 && !local_actors.empty() && Clock::now() < deadline; ++n) {
+            local_owner_cursor %= local_actors.size();
+            const auto owner_index = local_owner_cursor;
+            const auto actor = local_actors[owner_index].identity;
+            const auto level = local_actors[owner_index].level;
+            OwnedComponentSet before{};
+            const auto live_actor = runtime(actor) && has_class(actor, actor_class);
+            const auto parent = live_actor ? outer(actor) : std::nullopt;
+            if (!live_actor || !parent ||
+                !sdk::object_liveness::matches(*parent, level) || !level_in_world(level.object) ||
+                !runtime(level) || !has_class(level, level_class) ||
+                !read(actor.object + *owned_components_offset, before) || !before.valid()) {
+                local_actors.erase(local_actors.begin() + owner_index); continue;
+            }
+            valid_source |= before.slots > before.free_count;
+            if (!before.same_storage(local_actors[owner_index].storage)) {
+                local_actors[owner_index].storage = before;
+                local_actors[owner_index].cursor = 0;
+                local_actors[owner_index].next_scan = {};
+            }
+            if (now < local_actors[owner_index].next_scan || !before.slots) {
+                ++local_owner_cursor;
+                if (++idle_visits >= local_actors.size()) { break; }
+                continue;
+            }
+            idle_visits = 0;
+            const auto position = local_actors[owner_index].cursor++;
+            if (position >= static_cast<size_t>(before.slots)) {
+                local_actors[owner_index].cursor = 0;
+                local_actors[owner_index].next_scan = now + std::chrono::seconds{5}; ++local_owner_cursor; continue;
+            }
+            const auto component = read_owned_component(before, actor.object + *owned_components_offset, position,
+                [](uintptr_t address, auto& value) { return read(address, value); });
+            if (!component) { continue; }
+            const auto id = observe(reinterpret_cast<sdk::UObjectBase*>(*component));
+            const auto owner = id ? outer(*id) : std::nullopt;
+            if (!id || !owner || !sdk::object_liveness::matches(*owner, actor)) { continue; }
+            // All mutation eligibility, mesh/package identity, learning and
+            // restoration rules remain in the original path. No set iterator
+            // or cache reference survives a potentially reentrant game call.
+            if (auto entry = learn(object(*id))) { force(*entry); }
+        }
+        return valid_source && local_actor_scan_complete && !local_actor_overflow && !local_actors.empty() && current_world();
     }
     void update(sdk::UObjectBase* client, bool requested) {
         thread.store(GetCurrentThreadId(), std::memory_order_relaxed);
         if (!requested) {
-            if (!entries.empty() || enabled.load()) { release(); }
+            if (!entries.empty() || !local_actors.empty() || enabled.load()) { release(); }
             initialization.on_disabled(static_cast<bool>(hook));
             return;
         }
@@ -476,25 +640,27 @@ struct VisibilityGuard::Impl : std::enable_shared_from_this<Impl> {
         if (!initialization.supported) { return; }
         if (!sdk::is_current_object(viewport_class) ||
             std::any_of(classes.begin(), classes.end(), [](const Identity& id) { return !sdk::is_current_object(id); })) {
-            enabled.store(false, std::memory_order_release); entries.clear(); initialization.supported = false; return;
+            enabled.store(false, std::memory_order_release); entries.clear(); reset_local_discovery(); initialization.supported = false; return;
         }
         const auto client_id = current_viewport(client);
         sdk::UObjectBase* world_ptr{};
         const auto w = client_id && runtime(*client_id) && has_class(*client_id, viewport_class) &&
             read(client_id->object + world_offset, world_ptr) ? observe(world_ptr) : std::nullopt;
         if (!w || !runtime(*w) || !has_class(*w, world_class)) {
-            enabled.store(false, std::memory_order_release); entries.clear(); world = {}; viewport = {}; return;
+            enabled.store(false, std::memory_order_release); entries.clear(); levels.clear(); reset_local_discovery(); world = {}; viewport = {}; return;
         }
         if (!sdk::object_liveness::matches(world, *w) || !sdk::object_liveness::matches(viewport, *client_id)) {
             // Never restore/write into a previous or unloading world.
             entries.clear(); levels.clear(); maintenance_cursor = 0; scan_cursor = 0; next_scan = {};
+            reset_local_discovery();
             world = *w; viewport = *client_id;
         }
-        if (!read_levels(levels_scratch)) { enabled.store(false); return; }
-        if (levels_scratch != levels) { levels.swap(levels_scratch); scan_cursor = 0; next_scan = {}; }
+        if (!read_levels(levels_scratch)) { enabled.store(false); levels.clear(); reset_local_discovery(); return; }
+        if (levels_scratch != levels) { levels.swap(levels_scratch); scan_cursor = 0; next_scan = {}; reset_local_discovery(); }
         enabled.store(true, std::memory_order_release);
         const auto now = Clock::now();
         const auto deadline = now + std::chrono::microseconds{250};
+        const auto local_source = discover_local(now + std::chrono::microseconds{100});
         std::array<uintptr_t, max_targets> keys{};
         size_t key_count{};
         for (const auto& [key, _] : entries) { keys[key_count++] = key; }
@@ -502,6 +668,7 @@ struct VisibilityGuard::Impl : std::enable_shared_from_this<Impl> {
             const auto key = keys[maintenance_index(maintenance_cursor, key_count)];
             if (const auto it = entries.find(key); it != entries.end() && !force(it->second)) { entries.erase(key); }
         }
+        if (local_source) { return; }
         if (now < next_scan) { return; }
         const auto array = sdk::FUObjectArray::get();
         const auto count = array ? array->get_object_count() : 0;

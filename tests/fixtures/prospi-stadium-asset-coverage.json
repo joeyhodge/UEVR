@@ -1,0 +1,403 @@
+{
+  "scope": "2026-11-03 read-only mounted eBaseball asset-name census, current exe SHA256 4910484dcee164b85d27fa8575414f1914cf9bf1f437e7197c34f2371ab456c2. Asset candidates can include inactive variants; these counts are conservative capacity inputs, NOT runtime visibility proof or a guarantee that all these assets are loaded. 2025 shares the policy, but this inventory belongs to eBaseball only.",
+  "stadiums": {
+    "Aloe": {
+      "day": {
+        "background": 47,
+        "files": 183,
+        "rejected": 115,
+        "structural": 21
+      },
+      "night": {
+        "background": 51,
+        "files": 195,
+        "rejected": 123,
+        "structural": 21
+      },
+      "other": {
+        "background": 0,
+        "files": 8,
+        "rejected": 8,
+        "structural": 0
+      }
+    },
+    "Chiba": {
+      "day": {
+        "background": 119,
+        "files": 740,
+        "rejected": 545,
+        "structural": 76
+      },
+      "night": {
+        "background": 124,
+        "files": 734,
+        "rejected": 534,
+        "structural": 76
+      },
+      "other": {
+        "background": 0,
+        "files": 42,
+        "rejected": 32,
+        "structural": 10
+      }
+    },
+    "Crown": {
+      "day": {
+        "background": 44,
+        "files": 227,
+        "rejected": 156,
+        "structural": 27
+      },
+      "night": {
+        "background": 48,
+        "files": 237,
+        "rejected": 162,
+        "structural": 27
+      },
+      "other": {
+        "background": 0,
+        "files": 11,
+        "rejected": 11,
+        "structural": 0
+      }
+    },
+    "Fukuoka": {
+      "day": {
+        "background": 201,
+        "files": 886,
+        "rejected": 603,
+        "structural": 82
+      },
+      "other": {
+        "background": 0,
+        "files": 11,
+        "rejected": 11,
+        "structural": 0
+      }
+    },
+    "Hiroshima": {
+      "day": {
+        "background": 290,
+        "files": 950,
+        "rejected": 547,
+        "structural": 113
+      },
+      "night": {
+        "background": 351,
+        "files": 1056,
+        "rejected": 589,
+        "structural": 116
+      },
+      "other": {
+        "background": 0,
+        "files": 11,
+        "rejected": 11,
+        "structural": 0
+      }
+    },
+    "Hokkaido": {
+      "day": {
+        "background": 136,
+        "files": 573,
+        "rejected": 327,
+        "structural": 110
+      },
+      "night": {
+        "background": 136,
+        "files": 573,
+        "rejected": 327,
+        "structural": 110
+      },
+      "other": {
+        "background": 0,
+        "files": 17,
+        "rejected": 17,
+        "structural": 0
+      }
+    },
+    "Jingu": {
+      "day": {
+        "background": 167,
+        "files": 753,
+        "rejected": 493,
+        "structural": 93
+      },
+      "night": {
+        "background": 180,
+        "files": 774,
+        "rejected": 502,
+        "structural": 92
+      },
+      "other": {
+        "background": 0,
+        "files": 18,
+        "rejected": 16,
+        "structural": 2
+      }
+    },
+    "Kobe": {
+      "day": {
+        "background": 73,
+        "files": 429,
+        "rejected": 316,
+        "structural": 40
+      },
+      "night": {
+        "background": 82,
+        "files": 463,
+        "rejected": 339,
+        "structural": 42
+      },
+      "other": {
+        "background": 0,
+        "files": 16,
+        "rejected": 15,
+        "structural": 1
+      }
+    },
+    "Koshien": {
+      "day": {
+        "background": 89,
+        "files": 403,
+        "rejected": 289,
+        "structural": 25
+      },
+      "night": {
+        "background": 102,
+        "files": 428,
+        "rejected": 301,
+        "structural": 25
+      },
+      "other": {
+        "background": 0,
+        "files": 13,
+        "rejected": 13,
+        "structural": 0
+      }
+    },
+    "Kurashiki": {
+      "day": {
+        "background": 33,
+        "files": 277,
+        "rejected": 201,
+        "structural": 43
+      },
+      "night": {
+        "background": 36,
+        "files": 286,
+        "rejected": 207,
+        "structural": 43
+      },
+      "other": {
+        "background": 0,
+        "files": 15,
+        "rejected": 13,
+        "structural": 2
+      }
+    },
+    "Lily": {
+      "day": {
+        "background": 30,
+        "files": 189,
+        "rejected": 134,
+        "structural": 25
+      },
+      "night": {
+        "background": 32,
+        "files": 195,
+        "rejected": 138,
+        "structural": 25
+      },
+      "other": {
+        "background": 0,
+        "files": 14,
+        "rejected": 14,
+        "structural": 0
+      }
+    },
+    "Marlins": {
+      "day": {
+        "background": 85,
+        "files": 347,
+        "rejected": 202,
+        "structural": 60
+      },
+      "night": {
+        "background": 85,
+        "files": 347,
+        "rejected": 202,
+        "structural": 60
+      },
+      "other": {
+        "background": 0,
+        "files": 11,
+        "rejected": 10,
+        "structural": 1
+      }
+    },
+    "Matsuyama": {
+      "day": {
+        "background": 83,
+        "files": 367,
+        "rejected": 251,
+        "structural": 33
+      },
+      "night": {
+        "background": 97,
+        "files": 398,
+        "rejected": 268,
+        "structural": 33
+      },
+      "other": {
+        "background": 0,
+        "files": 34,
+        "rejected": 30,
+        "structural": 4
+      }
+    },
+    "Mint": {
+      "day": {
+        "background": 91,
+        "files": 380,
+        "rejected": 202,
+        "structural": 87
+      },
+      "night": {
+        "background": 100,
+        "files": 390,
+        "rejected": 203,
+        "structural": 87
+      },
+      "other": {
+        "background": 0,
+        "files": 15,
+        "rejected": 15,
+        "structural": 0
+      }
+    },
+    "Miyagi": {
+      "day": {
+        "background": 35,
+        "files": 502,
+        "rejected": 334,
+        "structural": 133
+      },
+      "night": {
+        "background": 43,
+        "files": 525,
+        "rejected": 347,
+        "structural": 135
+      },
+      "other": {
+        "background": 94,
+        "files": 1270,
+        "rejected": 1175,
+        "structural": 1
+      }
+    },
+    "Nagoya": {
+      "day": {
+        "background": 111,
+        "files": 445,
+        "rejected": 293,
+        "structural": 41
+      },
+      "other": {
+        "background": 0,
+        "files": 9,
+        "rejected": 9,
+        "structural": 0
+      }
+    },
+    "Osaka": {
+      "day": {
+        "background": 116,
+        "files": 449,
+        "rejected": 272,
+        "structural": 61
+      },
+      "other": {
+        "background": 0,
+        "files": 10,
+        "rejected": 10,
+        "structural": 0
+      }
+    },
+    "Seibu": {
+      "day": {
+        "background": 142,
+        "files": 514,
+        "rejected": 328,
+        "structural": 44
+      },
+      "night": {
+        "background": 152,
+        "files": 534,
+        "rejected": 336,
+        "structural": 46
+      },
+      "other": {
+        "background": 0,
+        "files": 10,
+        "rejected": 9,
+        "structural": 1
+      }
+    },
+    "Shimin": {
+      "day": {
+        "background": 80,
+        "files": 271,
+        "rejected": 154,
+        "structural": 37
+      },
+      "night": {
+        "background": 90,
+        "files": 295,
+        "rejected": 168,
+        "structural": 37
+      },
+      "other": {
+        "background": 0,
+        "files": 10,
+        "rejected": 9,
+        "structural": 1
+      }
+    },
+    "Tokyo": {
+      "day": {
+        "background": 95,
+        "files": 484,
+        "rejected": 347,
+        "structural": 42
+      },
+      "other": {
+        "background": 0,
+        "files": 10,
+        "rejected": 10,
+        "structural": 0
+      }
+    },
+    "Yokohama": {
+      "day": {
+        "background": 89,
+        "files": 444,
+        "rejected": 320,
+        "structural": 35
+      },
+      "night": {
+        "background": 96,
+        "files": 434,
+        "rejected": 303,
+        "structural": 35
+      },
+      "other": {
+        "background": 0,
+        "files": 12,
+        "rejected": 12,
+        "structural": 0
+      }
+    }
+  },
+  "meshes_including_accessories": 19614,
+  "largest_candidate_name_set": 467
+}

@@ -7,7 +7,10 @@
 #include <string_view>
 
 namespace uevr::prospi::roof {
-inline constexpr size_t max_targets = 256;
+// The mounted all-stadium asset census has up to 467 candidate names in one
+// lighting set (Hiroshima night). Keep capacity bounded without truncating it;
+// maintenance and discovery still use their separate per-Draw work budgets.
+inline constexpr size_t max_targets = 512;
 inline constexpr size_t max_levels = 256;
 inline constexpr size_t cached_targets_per_draw = 8;
 inline constexpr int32_t scan_objects_per_draw = 256;
@@ -137,11 +140,26 @@ inline bool stadium_geometry(std::wstring_view component, std::wstring_view mesh
 
 enum class Geometry : uint8_t { rejected, structural, observed_background };
 
+inline bool observed_roof_detail(std::wstring_view name, std::wstring_view package) {
+    const auto lower = lowercase(name);
+    if (excluded_geometry(name) || package.find(L"/meshes/shadow/") != std::wstring_view::npos ||
+        lower.starts_with(L"sm_cs_") || lower.starts_with(L"cs_")) { return false; }
+    const auto words = asset_words(name);
+    for (const auto role : {L"light", L"lights", L"lighting", L"lamp", L"decal", L"shadow"}) {
+        if (token(words, role)) { return false; }
+    }
+    // Real asset census examples: Chiba roof1, Nagoya benchRoof and Fukuoka
+    // ceilingobj. These broader names require game-visible proof; do not turn
+    // them into new structural permission for never-visible variants.
+    return token(words, L"roof") || token(words, L"ceiling") || token(words, L"roofst") ||
+        token(words, L"benchroof") || token(words, L"ceilingobj");
+}
+
 inline Geometry geometry(std::wstring_view component, std::wstring_view mesh,
     std::wstring_view mesh_package) {
     if (stadium_geometry(component, mesh, mesh_package)) { return Geometry::structural; }
     const auto package = lowercase(mesh_package);
-    if (!package.starts_with(L"/game/stadiums/") || excluded_geometry(component) || excluded_geometry(mesh)) {
+    if (!package.starts_with(L"/game/stadiums/")) {
         return Geometry::rejected;
     }
     auto c = lowercase(component);
@@ -153,6 +171,16 @@ inline Geometry geometry(std::wstring_view component, std::wstring_view mesh,
     if (slash == std::wstring::npos || package.substr(slash + 1) != m) { return Geometry::rejected; }
     if (m.starts_with(L"sm_")) { m.erase(0, 3); }
     if (c != m) { return Geometry::rejected; }
+    // These Fukuoka surfaces are genuinely shown in the respective editions'
+    // controlled normal-camera samples. They still require game-visible proof;
+    // this is not permission to reveal hidden scoreboard/display variants.
+    const auto observed_display_surface = package.starts_with(L"/game/stadiums/fukuoka/") &&
+        (c == L"p03_outfield_scoreboard" || c == L"p03_outfield_scoreboard_off" || c == L"p07_alpha_outfield__01_score1" ||
+            c == L"p07_alpha_outfield__01_score2");
+    if (!observed_display_surface && (excluded_geometry(component) || excluded_geometry(mesh))) {
+        return Geometry::rejected;
+    }
+    if (observed_roof_detail(component, package)) { return Geometry::observed_background; }
     if (c.starts_with(L"p00_soto_") || c.starts_with(L"p03_outfield_") || c.starts_with(L"p07_alpha_outfield_") ||
         c == L"p02_infield_cheering" || c.starts_with(L"p02_infield_cheering_")) {
         return Geometry::observed_background;

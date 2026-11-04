@@ -15825,10 +15825,11 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                 ImGui::TextWrapped(
                     "Default-off, all-stadium ProSpi option. Keeps validated roof/ceiling, structural outfield and game-confirmed background meshes visible across camera cuts, "
                     "including behind-pitcher and fielding views. Independent of Match Game FOV, camera assist and rendering mode. "
+                    "Uses validated current-stadium component ownership for bounded discovery, with the global scan as a safe fallback. "
                     "Additional exterior, glass and background pieces are learned only after the game shows them normally. "
                     "If enabled while they are already hidden, briefly use behind the plate or Wide/Live once, then return to the desired camera. "
                     "Learning also includes inactive variants that intentionally stay untouched. "
-                    "Does not change masks, lighting, LODs, scoreboards or alternate ads; turning off restores the game's latest visibility request. "
+                    "Protects hidden actors/components, masks, lighting, LODs, inactive display variants and alternate ads; turning off restores the game's latest visibility request. "
                     "Additional stadium geometry can increase GPU cost. Open-air stadiums remain open-air.");
                 if (m_prospi_show_stadium_roofs->value()) {
                     ImGui::Text("Stadium guard: %s | Targets: %u | Learning: %u | Overrides: %llu",
