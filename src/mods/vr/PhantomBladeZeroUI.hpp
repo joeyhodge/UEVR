@@ -2,8 +2,10 @@
 
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <optional>
+#include <sdk/BoundedDiscovery.hpp>
 
 #include "UE58OwnedUITexture.hpp"
 
@@ -25,11 +27,143 @@ inline constexpr auto native_resource_prefix = std::to_array<uint8_t>({
     0x33, 0xdb, 0x48, 0x85, 0xc0, 0x74, 0x09, 0x48, 0x8b, 0x58, 0x20,
     0x48, 0x85, 0xdb});
 
-// The hook's first instructions are patched; validate the untouched input ABI.
+// Historical fixture; runtime proof below follows argument origins before hooking.
 inline constexpr uintptr_t slate_inputs_offset = 0x36;
 inline constexpr auto slate_inputs_contract = std::to_array<uint8_t>({
     0x49, 0x8b, 0x59, 0x18, 0x4c, 0x8b, 0xf1, 0x49, 0x8b, 0x41, 0x08,
     0x49, 0x8b, 0xf9, 0x48, 0x89, 0x55, 0x28, 0x4d, 0x8b, 0xe8});
+
+inline bool slate_inputs_proven(const sdk::discovery::Memory& memory, uintptr_t function,
+    uintptr_t image, size_t image_size) {
+    constexpr size_t max_bytes = 0x180, max_instructions = 64;
+    const auto contains = [&](uintptr_t address, size_t count) {
+        return image >= 0x10000 && image_size <= UINTPTR_MAX - image && address >= image &&
+            address - image <= image_size && count <= image_size - (address - image);
+    };
+    if (!contains(function, max_bytes) || !memory.executable ||
+        !memory.executable(memory.context, function, 1)) { return false; }
+
+    enum class Origin : uint8_t { unknown, renderer, output, graph, inputs, stack, command_list, zero };
+    struct Value { Origin origin{}; int64_t offset{}; };
+    struct Slot { int64_t offset{}; size_t size{}; Value value{}; bool used{}; };
+    std::array<Value, 16> registers{};
+    registers[1].origin = Origin::renderer;
+    registers[2].origin = Origin::output;
+    registers[4].origin = Origin::stack;
+    registers[8].origin = Origin::graph;
+    registers[9].origin = Origin::inputs;
+    std::array<Slot, 32> slots{};
+    const auto gpr = [](const ND_OPERAND& op) {
+        return op.Type == ND_OP_REG && op.Info.Register.Type == ND_REG_GPR &&
+            op.Info.Register.Reg < 16 && !op.Info.Register.IsHigh8;
+    };
+    const auto plain_memory = [](const ND_OPERAND& op) {
+        return op.Type == ND_OP_MEM && op.Info.Memory.Seg != 4 && op.Info.Memory.Seg != 5;
+    };
+    const auto stack_address = [&](const ND_OPERAND& op) -> std::optional<int64_t> {
+        if (!plain_memory(op) || !op.Info.Memory.HasBase || op.Info.Memory.HasIndex ||
+            op.Info.Memory.IsRipRel || op.Info.Memory.Base >= registers.size() ||
+            op.Info.Memory.BaseSize != 8 || registers[op.Info.Memory.Base].origin != Origin::stack) { return {}; }
+        const auto displacement = static_cast<int64_t>(op.Info.Memory.Disp);
+        if (displacement < -0x4000 || displacement > 0x1000) { return {}; }
+        const auto offset = registers[op.Info.Memory.Base].offset + displacement;
+        return offset >= -0x4000 && offset <= 0x1000 ? std::optional{offset} : std::nullopt;
+    };
+    const auto store = [&](int64_t offset, size_t size, Value value) {
+        if (!size || size > 16 || offset < -0x4000 || offset > 0x1000) { return false; }
+        for (auto& slot : slots) {
+            if (slot.used && offset < slot.offset + int64_t(slot.size) && slot.offset < offset + int64_t(size)) { slot.used = false; }
+        }
+        if (value.origin == Origin::unknown) { return true; }
+        for (auto& slot : slots) {
+            if (!slot.used) { slot = {offset, size, value, true}; return true; }
+        }
+        return false;
+    };
+    const auto retained = [&](Origin origin) {
+        for (size_t reg : {size_t{3}, size_t{5}, size_t{6}, size_t{7}, size_t{12}, size_t{13}, size_t{14}, size_t{15}}) {
+            if (registers[reg].origin == origin) { return true; }
+        }
+        for (const auto& slot : slots) {
+            // The first callee owns [rsp, rsp+0x20), even if the caller stored a pointer there.
+            if (slot.used && slot.size == 8 && slot.value.origin == origin &&
+                registers[4].origin == Origin::stack && slot.offset >= registers[4].offset + 0x20) { return true; }
+        }
+        return false;
+    };
+
+    bool viewport{}, elements{}, command_list{};
+    auto ip = function;
+    for (size_t step = 0; step < max_instructions && ip - function < max_bytes; ++step) {
+        const auto instruction = sdk::discovery::decode(memory, ip);
+        if (!instruction || instruction->decoded.Length > max_bytes - (ip - function)) { return false; }
+        const auto& ix = instruction->decoded;
+        const auto& a = ix.Operands[0];
+        const auto& b = ix.Operands[1];
+        if (instruction->bytes[0] == 0xe8 && ix.Length == 5) {
+            int32_t displacement{};
+            std::memcpy(&displacement, instruction->bytes.data() + 1, 4);
+            const auto target = sdk::discovery::relative_address(ip + ix.Length, displacement);
+            return viewport && elements && command_list && retained(Origin::renderer) &&
+                retained(Origin::output) && retained(Origin::graph) && retained(Origin::inputs) &&
+                registers[1].origin == Origin::command_list && registers[2].origin == Origin::zero &&
+                target && contains(*target, 1) && memory.executable(memory.context, *target, 1);
+        }
+        if (sdk::discovery::padding(*instruction)) {
+            // Padding is allowed, but never a branch or a thunk to another body.
+        } else if (ix.Instruction == ND_INS_PUSH && ix.ExpOperandsCount == 1 && gpr(a) && a.Size == 8 && a.Info.Register.Reg != 4) {
+            if (registers[4].origin != Origin::stack || registers[4].offset < -0x3ff8) { return false; }
+            registers[4].offset -= 8;
+            if (!store(registers[4].offset, 8, registers[a.Info.Register.Reg])) { return false; }
+        } else if (ix.Instruction == ND_INS_SUB && ix.ExpOperandsCount == 2 && gpr(a) && a.Size == 8 &&
+            a.Info.Register.Reg == 4 && b.Type == ND_OP_IMM && b.Info.Immediate.Imm > 0 && b.Info.Immediate.Imm <= 0x1000) {
+            if (registers[4].origin != Origin::stack || registers[4].offset < -0x3000) { return false; }
+            registers[4].offset -= int64_t(b.Info.Immediate.Imm);
+        } else if (ix.Instruction == ND_INS_LEA && ix.ExpOperandsCount == 2 && gpr(a) && a.Size == 8) {
+            const auto offset = stack_address(b);
+            if (!offset) { return false; }
+            registers[a.Info.Register.Reg] = {Origin::stack, *offset};
+        } else if (ix.Instruction == ND_INS_XOR && ix.ExpOperandsCount == 2 && gpr(a) && gpr(b)) {
+            if (a.Info.Register.Reg == 4) { return false; }
+            registers[a.Info.Register.Reg] = a.Info.Register.Reg == b.Info.Register.Reg && a.Size >= 4
+                ? Value{Origin::zero} : Value{};
+        } else if (ix.Instruction == ND_INS_MOV && ix.ExpOperandsCount == 2 && gpr(a)) {
+            Value value{};
+            if (a.Size != 8) { return false; }
+            if (gpr(b) && b.Size == 8) {
+                value = registers[b.Info.Register.Reg];
+            } else if (plain_memory(b) && b.Size == 8) {
+                if (const auto offset = stack_address(b)) {
+                    for (const auto& slot : slots) {
+                        if (slot.used && slot.offset == *offset && slot.size == 8) { value = slot.value; break; }
+                    }
+                } else if (b.Info.Memory.IsRipRel) {
+                    const auto target = sdk::discovery::relative_address(ip + ix.Length, static_cast<int64_t>(b.Info.Memory.Disp));
+                    if (!target || !contains(*target, 8)) { return false; }
+                } else if (b.Info.Memory.HasBase && !b.Info.Memory.HasIndex && b.Info.Memory.Base < registers.size() &&
+                    b.Info.Memory.BaseSize == 8) {
+                    const auto origin = registers[b.Info.Memory.Base].origin;
+                    const auto displacement = b.Info.Memory.Disp;
+                    if (origin == Origin::inputs && (displacement == 8 || displacement == 0x18)) {
+                        elements |= displacement == 8; viewport |= displacement == 0x18;
+                    } else if (origin == Origin::graph && displacement == 0xc0) {
+                        command_list = true;
+                        value.origin = Origin::command_list;
+                    } else { return false; }
+                } else { return false; }
+            } else { return false; }
+            if (a.Info.Register.Reg == 4 && value.origin != Origin::stack) { return false; }
+            registers[a.Info.Register.Reg] = value;
+        } else if ((ix.Instruction == ND_INS_MOV || ix.Instruction == ND_INS_MOVAPS) && ix.ExpOperandsCount == 2 && a.Type == ND_OP_MEM) {
+            const auto offset = stack_address(a);
+            if (!offset || (ix.Instruction == ND_INS_MOVAPS && b.Type != ND_OP_REG)) { return false; }
+            const auto value = gpr(b) && b.Size == 8 && a.Size == 8 ? registers[b.Info.Register.Reg] : Value{};
+            if (!store(*offset, a.Size, value)) { return false; }
+        } else { return false; }
+        ip += ix.Length;
+    }
+    return false;
+}
 
 constexpr bool valid_extent(uint32_t width, uint32_t height) {
     return width >= 320 && height >= 240 && width <= 16384 && height <= 16384 &&
