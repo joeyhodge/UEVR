@@ -68,6 +68,14 @@
 namespace {
 bool is_stalker2_executable_cached();
 bool is_dune_awakening_executable_cached();
+
+// Only copies from a live game's native player callback. Unlike IsBadReadPtr,
+// this cannot turn a cached page check into authority over a later allocation.
+bool read_prospi_player_bytes(uintptr_t address, void* out, size_t size) noexcept {
+    if (address < 0x10000 || !size || address > 0x0000800000000000ull-size) { return false; }
+    __try { std::memcpy(out, reinterpret_cast<const void*>(address), size); return true; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
 }
 
 std::shared_ptr<VR>& VR::get() {
@@ -6407,6 +6415,38 @@ void VR::attempt_hook_prospi_player_visibility() {
 
     const auto module = utility::get_executable();
     const auto module_size = utility::get_module_size(module);
+    const auto module_base = reinterpret_cast<uintptr_t>(module);
+    IMAGE_DOS_HEADER dos{};
+    IMAGE_NT_HEADERS64 nt{};
+    if (module_size && read_prospi_player_bytes(module_base, &dos, sizeof(dos)) &&
+        dos.e_magic == IMAGE_DOS_SIGNATURE && dos.e_lfanew > 0 && dos.e_lfanew < 0x1000 &&
+        read_prospi_player_bytes(module_base+dos.e_lfanew, &nt, sizeof(nt)) &&
+        nt.Signature == IMAGE_NT_SIGNATURE && nt.OptionalHeader.SizeOfImage == *module_size) {
+        m_prospi_player_layout = uevr::prospi::players::verified_layout(
+            read_prospi_player_bytes, module_base, nt.OptionalHeader.SizeOfImage, nt.FileHeader.TimeDateStamp);
+    }
+    if (m_prospi_player_layout) {
+        const auto address = module_base+m_prospi_player_layout->handoff;
+        DWORD64 image{};
+        const auto function = RtlLookupFunctionEntry(address, &image, nullptr);
+        if (!function || image != module_base || address < image+function->BeginAddress ||
+            address+4 > image+function->EndAddress) {
+            m_prospi_player_layout.reset();
+        } else {
+            auto hook = safetyhook::create_mid(reinterpret_cast<void*>(address), &VR::prospi_player_visibility_hook);
+            if (!hook) {
+                m_prospi_player_visibility_hook_status.store(-4);
+                return;
+            }
+            m_prospi_player_visibility_hook = std::move(hook);
+            m_prospi_player_visibility_hook_address.store(address);
+            m_prospi_player_visibility_hook_status.store(1);
+            m_prospi_player_native_ready.store(true, std::memory_order_release);
+            SPDLOG_INFO("[PROSPI_PLAYER_VISIBILITY] Validated {} native player bounds/transform/enabled/handoff contract; fixed 256-state cache, no object scan (RVA 0x{:x})",
+                get_prospi_game_variant_name(), m_prospi_player_layout->handoff);
+            return;
+        }
+    }
     const auto sequence = utility::scan(module, PLAYER_VISIBILITY_HANDOFF_PATTERN);
     if (!module_size || !sequence) {
         m_prospi_player_visibility_hook_status.store(-1, std::memory_order_relaxed);
@@ -6414,7 +6454,6 @@ void VR::attempt_hook_prospi_player_visibility() {
         return;
     }
 
-    const auto module_base = reinterpret_cast<uintptr_t>(module);
     const auto module_end = module_base + *module_size;
     if (*sequence < module_base || *sequence + HOOK_OFFSET + EXPECTED_HOOK_BYTES.size() > module_end) {
         m_prospi_player_visibility_hook_status.store(-3, std::memory_order_relaxed);
@@ -6466,7 +6505,7 @@ void VR::prospi_player_visibility_hook(safetyhook::Context& ctx) {
     }
 
     auto* vr = g_framework->vr().get();
-    if (!vr->m_prospi_player_visibility_guard_enabled.load(std::memory_order_relaxed)) {
+    if (!vr->m_prospi_player_visibility_guard_enabled.load(std::memory_order_acquire)) {
         return;
     }
 
@@ -6493,7 +6532,7 @@ void VR::prospi_player_visibility_hook(safetyhook::Context& ctx) {
     };
     static thread_local PendingCounters pending{};
     static thread_local ProSpiPlayerVisibilityMode cached_mode{ProSpiPlayerVisibilityMode::OFF};
-    static thread_local std::array<uintptr_t, 8> aggressive_validated_states{};
+    static thread_local std::array<uintptr_t, 256> aggressive_validated_states{};
     static thread_local size_t aggressive_validated_state_next{};
     static thread_local std::array<RecentVisibleState, PROSPI_RECENT_PLAYER_HISTORY_COUNT>
         recent_visible_states{};
@@ -6529,7 +6568,8 @@ void VR::prospi_player_visibility_hook(safetyhook::Context& ctx) {
         flush_pending_counters();
     }
 
-    const auto visible = static_cast<uint8_t>(ctx.r12 & 0xff);
+    const auto layout = vr->m_prospi_player_native_ready.load(std::memory_order_acquire) ? vr->m_prospi_player_layout : std::nullopt;
+    const auto visible = static_cast<uint8_t>((layout && layout->r15 ? ctx.r15 : ctx.r12) & 0xff);
     if (visible > 1) {
         ++pending.rejected;
         return;
@@ -6545,6 +6585,73 @@ void VR::prospi_player_visibility_hook(safetyhook::Context& ctx) {
     const auto now_ms = vr->m_prospi_player_visibility_now_ms.load(std::memory_order_relaxed);
     const auto generation =
         vr->m_prospi_player_visibility_balanced_generation.load(std::memory_order_acquire);
+
+    if (layout) {
+        if (visible && mode == ProSpiPlayerVisibilityMode::AGGRESSIVE) { return; }
+        using namespace uevr::prospi::players;
+        static thread_local Cache cache;
+        static thread_local const VR* owner{};
+        static thread_local uint64_t scope{};
+        const auto current_scope = vr->m_prospi_player_scope.load(std::memory_order_acquire);
+        if (owner != vr || scope != current_scope) {
+            cache.clear(); owner = vr; scope = current_scope;
+        }
+        const auto time_ms = mode == ProSpiPlayerVisibilityMode::AGGRESSIVE ? now_ms : steady_clock_ms();
+        const auto state = read_state(read_prospi_player_bytes, *layout, state_address);
+        if (!state) { ++pending.rejected; return; }
+        const auto& id = state->identity;
+        const auto enabled = state->enabled;
+        std::optional<bool> in_view;
+        if (!visible && enabled == 1 && mode == ProSpiPlayerVisibilityMode::BALANCED) {
+            std::array<float, 6> bounds{};
+            Matrix matrix{}, after{};
+            if (!id.valid() || !read_prospi_player_bytes(state_address+layout->bounds, bounds.data(), sizeof(bounds)) ||
+                !read_prospi_player_bytes(id.transform+0x110, matrix.data(), sizeof(matrix))) {
+                ++pending.rejected; return;
+            }
+            const auto sphere = player_bounds(bounds, matrix);
+            if (!sphere || !read_prospi_player_bytes(id.transform+0x110, after.data(), sizeof(after)) || matrix != after) {
+                ++pending.rejected; return;
+            }
+            std::array<View, 2> views{};
+            {
+                std::unique_lock lock{vr->m_prospi_player_views_mutex, std::try_to_lock};
+                if (lock.owns_lock()) { views = vr->m_prospi_player_views; }
+            }
+            in_view = relevance(views, *sphere, time_ms, generation);
+        }
+        const auto decision = cache.consider(id, enabled, visible,
+            mode == ProSpiPlayerVisibilityMode::AGGRESSIVE, in_view, time_ms, generation);
+        if (decision == Decision::natural) { ++pending.learned; }
+        else if (decision == Decision::intentional_off) { ++pending.intentional_off; }
+        else if (decision == Decision::rejected) { ++pending.rejected; }
+        else if (decision == Decision::unchanged) { ++pending.skipped; }
+        if ((pending.observed & 63) == 0) { vr->m_prospi_player_tracked.store(static_cast<uint32_t>(cache.count(time_ms))); }
+        if (decision != Decision::restore) { return; }
+
+        // No game call occurs between sampling and this identity recheck. The
+        // hook owns no native objects and never retains permission to a page.
+        const auto current = read_state(read_prospi_player_bytes, *layout, state_address);
+        if (!current || *current != *state || current->enabled != 1 ||
+            !vr->m_prospi_player_visibility_guard_enabled.load(std::memory_order_acquire) ||
+            vr->m_prospi_player_scope.load(std::memory_order_acquire) != current_scope) {
+            ++pending.rejected; return;
+        }
+        restore_visibility(ctx, layout->r15);
+        ++pending.forced;
+        auto last = vr->m_prospi_player_visibility_last_log_ms.load(std::memory_order_relaxed);
+        if ((last == 0 || time_ms-last >= 5000) &&
+            vr->m_prospi_player_visibility_last_log_ms.compare_exchange_strong(last, time_ms, std::memory_order_relaxed)) {
+            flush_pending_counters();
+            SPDLOG_INFO("[PROSPI_PLAYER_VISIBILITY] native_players mode={} tracked={} restored={} observed={} intentional_off={} rejected={} outside_or_unproven={} callback_thread={} engine_thread={}",
+                mode == ProSpiPlayerVisibilityMode::BALANCED ? "balanced_hmd" : "heavy",
+                cache.count(time_ms), vr->m_prospi_player_visibility_forced_count.load(),
+                vr->m_prospi_player_visibility_call_count.load(), vr->m_prospi_player_visibility_intentional_off_count.load(),
+                vr->m_prospi_player_visibility_rejected_count.load(), vr->m_prospi_player_visibility_balanced_skipped_count.load(),
+                GetCurrentThreadId(), vr->m_prospi_player_thread.load());
+        }
+        return;
+    }
     ProSpiBalancedPlayerVisibilitySlot* balanced_slot = nullptr;
     RecentVisibleState* recent_visible_state = nullptr;
     bool promote_to_balanced_slot = false;
@@ -6755,9 +6862,9 @@ void VR::clear_prospi_balanced_player_visibility_cache() {
     m_prospi_player_visibility_balanced_generation.fetch_add(1, std::memory_order_acq_rel);
 }
 
-void VR::update_prospi_player_visibility_guard() {
+void VR::update_prospi_player_visibility_guard(sdk::UGameEngine* engine) {
     auto mode = ProSpiPlayerVisibilityMode::OFF;
-    if (is_prospi_executable()) {
+    if (is_prospi_executable() && get_runtime()->loaded && is_hmd_active() && !m_disable_vr && !is_using_2d_screen()) {
         // Preserve the existing config key and behavior as the explicit heavy
         // fallback. It wins if both default-off controls are selected.
         if (m_prospi_preserve_enabled_player_models->value()) {
@@ -6767,17 +6874,83 @@ void VR::update_prospi_player_visibility_guard() {
         }
     }
 
+    if (mode != ProSpiPlayerVisibilityMode::OFF) {
+        struct WorldFields {
+            const VR* owner{};
+            sdk::object_liveness::Identity engine_class{}, viewport_class{};
+            uint32_t viewport_offset{}, world_offset{};
+            int64_t retry_ms{};
+        };
+        static thread_local WorldFields fields;
+        if (fields.owner != this) { fields = {}; fields.owner = this; }
+        const auto now = steady_clock_ms();
+        // Cache positive field offsets by live class identity. The general
+        // GetWorld helper also probes an absent UE5.8-only field on UE4.27,
+        // which would otherwise cause a negative property walk every tick.
+        const auto object_field = [](sdk::UClass* cls, const wchar_t* name) -> uint32_t {
+            const auto prop = cls ? cls->find_property(name) : nullptr;
+            if (!prop || !prop->get_class() || prop->get_class()->get_name().to_string() != L"ObjectProperty") { return 0; }
+            const auto offset = prop->get_offset();
+            const auto size = cls->get_properties_size();
+            return offset >= 0x28 && !(offset & 7) && size > 0 && size <= 0x10000 && offset <= size-8
+                ? static_cast<uint32_t>(offset) : 0;
+        };
+        const auto engine_id = engine ? sdk::observe_uobject(engine) : std::nullopt;
+        const auto engine_class = engine_id ? sdk::observe_uobject(engine->get_class()) : std::nullopt;
+        sdk::UObject* viewport{};
+        if (engine_class) {
+            const auto changed = !sdk::object_liveness::matches(fields.engine_class, engine_class->identity);
+            if (changed || (!fields.viewport_offset && now >= fields.retry_ms)) {
+                fields.engine_class = engine_class->identity;
+                fields.viewport_offset = object_field(engine->get_class(), L"GameViewport");
+                fields.retry_ms = now+2000;
+                if (changed) { fields.viewport_class = {}; fields.world_offset = 0; }
+            }
+            if (fields.viewport_offset) {
+                if (!read_prospi_player_bytes(reinterpret_cast<uintptr_t>(engine)+fields.viewport_offset, &viewport, sizeof(viewport))) { viewport = nullptr; }
+            }
+        }
+        const auto viewport_id = sdk::observe_uobject(viewport);
+        const auto viewport_class = viewport_id ? sdk::observe_uobject(viewport->get_class()) : std::nullopt;
+        sdk::UObject* world_ptr{};
+        if (viewport_class) {
+            if (!sdk::object_liveness::matches(fields.viewport_class, viewport_class->identity) || (!fields.world_offset && now >= fields.retry_ms)) {
+                fields.viewport_class = viewport_class->identity;
+                fields.world_offset = object_field(viewport->get_class(), L"World");
+                fields.retry_ms = now+2000;
+            }
+            if (fields.world_offset) {
+                if (!read_prospi_player_bytes(reinterpret_cast<uintptr_t>(viewport)+fields.world_offset, &world_ptr, sizeof(world_ptr))) { world_ptr = nullptr; }
+            }
+        }
+        const auto world = sdk::observe_uobject(world_ptr);
+        if (!world || !sdk::is_current_object(world->identity)) {
+            mode = ProSpiPlayerVisibilityMode::OFF;
+        } else if (world->identity.object != m_prospi_player_world || world->identity.index != m_prospi_player_world_index ||
+                   world->identity.serial != m_prospi_player_world_serial) {
+            m_prospi_player_visibility_guard_enabled.store(false, std::memory_order_release);
+            m_prospi_player_world = world->identity.object;
+            m_prospi_player_world_index = world->identity.index;
+            m_prospi_player_world_serial = world->identity.serial;
+            m_prospi_player_scope.fetch_add(1, std::memory_order_acq_rel);
+            clear_prospi_balanced_player_visibility_cache();
+        }
+    }
+
     const auto mode_value = static_cast<uint8_t>(mode);
     const auto previous_mode = static_cast<ProSpiPlayerVisibilityMode>(
         m_prospi_player_visibility_mode.exchange(mode_value, std::memory_order_acq_rel));
     const auto enabled = mode != ProSpiPlayerVisibilityMode::OFF;
-    m_prospi_player_visibility_guard_enabled.store(enabled, std::memory_order_relaxed);
+    m_prospi_player_thread.store(enabled ? GetCurrentThreadId() : 0, std::memory_order_relaxed);
+    m_prospi_player_visibility_guard_enabled.store(enabled, std::memory_order_release);
 
     if (enabled) {
         m_prospi_player_visibility_now_ms.store(steady_clock_ms(), std::memory_order_relaxed);
     }
 
     if (previous_mode != mode) {
+        m_prospi_player_scope.fetch_add(1, std::memory_order_acq_rel);
+        m_prospi_player_tracked.store(0);
         if (previous_mode == ProSpiPlayerVisibilityMode::BALANCED ||
             mode == ProSpiPlayerVisibilityMode::BALANCED)
         {
@@ -6863,9 +7036,9 @@ void VR::update_prospi_player_visibility_guard() {
                 m_prospi_player_visibility_last_cache_reset_ms = now_ms;
                 const auto resets =
                     m_prospi_player_visibility_camera_reset_count.fetch_add(1, std::memory_order_relaxed) + 1;
-                SPDLOG_INFO(
-                    "[PROSPI_PLAYER_VISIBILITY] balanced cache reset for camera cut (count={})",
-                    resets);
+                if (!m_prospi_player_native_ready.load(std::memory_order_acquire) || resets == 1 || resets % 25 == 0) {
+                    SPDLOG_INFO("[PROSPI_PLAYER_VISIBILITY] balanced view generation reset for camera cut (count={})", resets);
+                }
             } else {
                 const auto debounced =
                     m_prospi_player_visibility_debounced_reset_count.fetch_add(
@@ -7613,6 +7786,7 @@ void VR::update_prospi_frame_pace_override(sdk::UGameEngine* engine) {
 void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     service_mono_transition_game_thread();
     ZoneScopedN(__FUNCTION__);
+    update_prospi_player_visibility_guard(engine);
 
     // Exact Native selection excludes optional Mono/DIBR modes on every branch.
     const auto letterbox_runtime = get_runtime();
@@ -7790,7 +7964,6 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     update_everspace2_cinematic_bars(engine);
 
     update_statistics_overlay(engine);
-    update_prospi_player_visibility_guard();
     update_prospi_frame_pace_override(engine);
 
     const auto prospi_world_cull_override =
@@ -13185,7 +13358,37 @@ bool VR::is_prospi_cut_cadence_guard_active() const {
     return until_ms > 0 && steady_clock_ms() < until_ms;
 }
 
-void VR::on_pre_calculate_stereo_view_offset(void* stereo_device, const int32_t view_index, Rotator<float>* view_rotation, 
+void VR::on_post_calculate_stereo_view_offset(void* stereo_device, int32_t view_index, Rotator<float>* rotation,
+    float world_to_meters, Vector3f* location, bool is_double) {
+    if (!m_prospi_player_visibility_guard_enabled.load(std::memory_order_acquire) ||
+        !m_prospi_player_native_ready.load(std::memory_order_acquire) || !rotation || !location || view_index < 0 ||
+        m_prospi_player_visibility_mode.load() != static_cast<uint8_t>(ProSpiPlayerVisibilityMode::BALANCED)) { return; }
+    const auto origin = is_double ? glm::vec3{*reinterpret_cast<Vector3d*>(location)} : *location;
+    const auto angles = is_double ? glm::vec3{*reinterpret_cast<glm::dvec3*>(rotation)} : *reinterpret_cast<glm::vec3*>(rotation);
+    uevr::prospi::players::Matrix left{}, right{};
+    const auto now = steady_clock_ms();
+    const auto generation = m_prospi_player_visibility_balanced_generation.load(std::memory_order_acquire);
+    {
+        std::unique_lock lock{m_prospi_player_views_mutex, std::try_to_lock};
+        if (!lock.owns_lock()) { return; }
+        for (size_t i{}; i < 2; ++i) {
+            if (!uevr::prospi::players::packet_current(m_prospi_player_projection_times[i],
+                    m_prospi_player_projection_generations[i], now, generation)) { return; }
+        }
+        left = m_prospi_player_projections[0]; right = m_prospi_player_projections[1];
+    }
+    const auto view = uevr::prospi::players::make_view({origin.x, origin.y, origin.z}, {angles.x, angles.y, angles.z},
+        left, right, now, generation);
+    if (!view) { return; }
+    std::unique_lock lock{m_prospi_player_views_mutex, std::try_to_lock};
+    if (!lock.owns_lock() || generation != m_prospi_player_visibility_balanced_generation.load(std::memory_order_acquire)) { return; }
+    // Keep the two latest rendered-eye poses. AFR may reuse physical view 0
+    // for alternating logical eyes; do not collapse that history by view index.
+    m_prospi_player_views[1] = m_prospi_player_views[0];
+    m_prospi_player_views[0] = *view;
+}
+
+void VR::on_pre_calculate_stereo_view_offset(void* stereo_device, const int32_t view_index, Rotator<float>* view_rotation,
                                              const float world_to_meters, Vector3f* view_location, bool is_double)
 {
     if (!is_hmd_active()) {
@@ -15848,16 +16051,17 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
 
                 ImGui::SeparatorText("Player Model Visibility");
                 ImGui::TextWrapped(
-                    "Balanced records naturally visible players in a cheap hashed history, then promotes only players "
-                    "that actually transition to camera-culled. At most four promoted states are preserved; the set is "
-                    "stable during a shot and clears on real camera cuts or PLAYEROFF. A bounded previous-shot handoff "
-                    "covers the first 500 ms after a cut, while duplicate cut signals are debounced. It remains "
-                    "substantially lighter than the fallback below."
+                    "On verified eBaseball/2025 builds, Balanced restores enabled native player bodies whose bounds "
+                    "intersect the corrected HMD view, not just the broadcast camera. Field and bench players share "
+                    "a fixed 256-state cache with no four-player limit or UObject scan. A short genuine-visible "
+                    "history covers camera handoffs when the new HMD view is not ready. PLAYEROFF stays respected. "
+                    "Unverified builds retain the original four-player Balanced path."
                 );
                 m_prospi_balanced_player_preservation->draw("Balanced Player Preservation");
                 ImGui::TextWrapped(
                     "Aggressive / Heavy preserves every enabled player rejected by the custom camera test. "
-                    "It is the original high-cost fallback and takes precedence if both options are checked."
+                    "Verified builds use native model-identity checks instead of the eight-state pointer-probe cache. "
+                    "Drawing additional off-screen players still costs CPU/GPU time. Heavy takes precedence if both options are checked."
                 );
                 m_prospi_preserve_enabled_player_models->draw("Aggressive / Heavy Player Preservation");
                 const auto player_visibility_status =
@@ -15880,6 +16084,8 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                     tracked_players +=
                         slot.state_address.load(std::memory_order_relaxed) != 0 ? 1U : 0U;
                 }
+                const auto native_players = m_prospi_player_native_ready.load(std::memory_order_acquire);
+                if (native_players) { tracked_players = m_prospi_player_tracked.load(); }
                 ImGui::Text(
                     "Status: %s | Hook: 0x%llx | Mode: %s",
                     player_visibility_status_text,
@@ -15892,11 +16098,13 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                     (unsigned long long)m_prospi_player_visibility_intentional_off_count.load(std::memory_order_relaxed),
                     (unsigned long long)m_prospi_player_visibility_rejected_count.load(std::memory_order_relaxed));
                 ImGui::Text(
-                    "Balanced tracked: %u/4 | Promoted: %llu | Evicted: %llu | Expired: %llu",
+                    "Tracked: %u/%u | Seen/promoted: %llu | Evicted: %llu | Expired: %llu",
                     tracked_players,
+                    native_players ? 256U : 4U,
                     (unsigned long long)m_prospi_player_visibility_balanced_learned_count.load(std::memory_order_relaxed),
                     (unsigned long long)m_prospi_player_visibility_balanced_evicted_count.load(std::memory_order_relaxed),
                     (unsigned long long)m_prospi_player_visibility_balanced_expired_count.load(std::memory_order_relaxed));
+                ImGui::Text("Player path: %s", native_players ? "verified native bodies / HMD bounds" : "legacy signature / recent history");
                 ImGui::Text(
                     "Balanced skipped: %llu | Camera resets: %llu | Debounced: %llu",
                     (unsigned long long)m_prospi_player_visibility_balanced_skipped_count.load(std::memory_order_relaxed),
@@ -17455,6 +17663,8 @@ Matrix4x4f VR::get_current_eye_transform(bool flip) {
 
 Matrix4x4f VR::get_projection_matrix(VRRuntime::Eye eye, bool flip) {
     ZoneScopedN(__FUNCTION__);
+    const auto player_generation = m_prospi_player_native_ready.load(std::memory_order_acquire)
+        ? m_prospi_player_visibility_balanced_generation.load(std::memory_order_acquire) : 0;
 
     if (!is_hmd_active()) {
         return glm::identity<Matrix4x4f>();
@@ -17478,6 +17688,21 @@ Matrix4x4f VR::get_projection_matrix(VRRuntime::Eye eye, bool flip) {
         }
     }
 
+    if (player_generation && player_generation == m_prospi_player_visibility_balanced_generation.load(std::memory_order_acquire) &&
+        m_prospi_player_visibility_guard_enabled.load(std::memory_order_acquire) &&
+        m_prospi_player_visibility_mode.load() == static_cast<uint8_t>(ProSpiPlayerVisibilityMode::BALANCED)) {
+        std::unique_lock lock{m_prospi_player_views_mutex, std::try_to_lock};
+        if (lock.owns_lock()) {
+            const auto index = static_cast<size_t>(eye);
+            if (index < 2) {
+                // Observe the exact result of the existing projection path. Do
+                // not call FOV matching/smoothing a second time from an observer.
+                std::memcpy(m_prospi_player_projections[index].data(), &out[0][0], sizeof(uevr::prospi::players::Matrix));
+                m_prospi_player_projection_times[index] = steady_clock_ms();
+                m_prospi_player_projection_generations[index] = player_generation;
+            }
+        }
+    }
     if (m_prospi_camera_trace.active()) {
         uevr::prospi::trace::Matrix projection{};
         std::memcpy(projection.data(), &out[0][0], sizeof(projection));

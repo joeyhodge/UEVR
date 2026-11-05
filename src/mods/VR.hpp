@@ -43,6 +43,8 @@
 #include "vr/ProSpiCameraMatching.hpp"
 #include "vr/ProSpiCameraReturnSmoothing.hpp"
 #include "vr/ProSpiRoofVisibility.hpp"
+#include "vr/ProSpiPlayerVisibility.hpp"
+#include "vr/ProSpiPlayerVisibilityCode.hpp"
 
 #undef max
 #include <tracy/Tracy.hpp>
@@ -205,6 +207,8 @@ public:
     void on_post_engine_tick(sdk::UGameEngine* engine, float delta) override;
     void on_pre_calculate_stereo_view_offset(void* stereo_device, const int32_t view_index, Rotator<float>* view_rotation, 
                                              const float world_to_meters, Vector3f* view_location, bool is_double) override;
+    void on_post_calculate_stereo_view_offset(void* stereo_device, int32_t view_index, Rotator<float>* view_rotation,
+                                             float world_to_meters, Vector3f* view_location, bool is_double) override;
     void on_pre_viewport_client_draw(void* viewport_client, void* viewport, void* canvas) override;
 
     void update_hmd_state(bool from_view_extensions = false, uint32_t frame_count = 0);
@@ -2139,7 +2143,7 @@ private:
     void publish_prospi_camera_calibrations();
     void update_prospi_camera_trace_control();
     void clear_prospi_balanced_player_visibility_cache();
-    void update_prospi_player_visibility_guard();
+    void update_prospi_player_visibility_guard(sdk::UGameEngine* engine);
     void attempt_hook_prospi_player_visibility();
     static void prospi_player_visibility_hook(safetyhook::Context& ctx);
     void update_prospi_frame_pace_override(sdk::UGameEngine* engine);
@@ -2674,6 +2678,18 @@ private:
     static constexpr int64_t PROSPI_BALANCED_CAMERA_RESET_DEBOUNCE_MS = 350;
     safetyhook::MidHook m_prospi_player_visibility_hook{};
     bool m_prospi_player_visibility_hook_attempted{false};
+    std::optional<uevr::prospi::players::Layout> m_prospi_player_layout;
+    std::atomic<bool> m_prospi_player_native_ready{};
+    std::mutex m_prospi_player_views_mutex;
+    std::array<uevr::prospi::players::View, 2> m_prospi_player_views{};
+    std::array<uevr::prospi::players::Matrix, 2> m_prospi_player_projections{};
+    std::array<int64_t, 2> m_prospi_player_projection_times{};
+    std::array<uint64_t, 2> m_prospi_player_projection_generations{};
+    uintptr_t m_prospi_player_world{};
+    int32_t m_prospi_player_world_index{-1}, m_prospi_player_world_serial{};
+    std::atomic<uint32_t> m_prospi_player_thread{};
+    std::atomic<uint64_t> m_prospi_player_scope{1};
+    std::atomic<uint32_t> m_prospi_player_tracked{};
     std::atomic<bool> m_prospi_player_visibility_guard_enabled{false};
     std::atomic<uint8_t> m_prospi_player_visibility_mode{
         static_cast<uint8_t>(ProSpiPlayerVisibilityMode::OFF)

@@ -31,6 +31,7 @@
 #include "CVarExistingPriorityTests.hpp"
 #include "B1RendererTests.hpp"
 #include "StellarBladeSlateTests.hpp"
+#include "ProSpiPlayerVisibilityTests.hpp"
 
 namespace {
 
@@ -2576,6 +2577,7 @@ void test_ktjl_hook_contracts() {
 #include "UE58NativeFixTests.hpp"
 
 int main(int argc, char** argv) {
+    prospi_player_tests::run(expect);
     ue58_native_tests::run(expect);
     if (argc == 3 && std::string_view{argv[1]} == "--ue58-native-image") { ue58_native_tests::shipping_image(argv[2], expect); }
     glory_fname_tests::run(expect);

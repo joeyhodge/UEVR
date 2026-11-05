@@ -496,8 +496,13 @@ struct VisibilityGuard::Impl : std::enable_shared_from_this<Impl> {
         return &entries.emplace(id->object, std::move(entry)).first->second;
     }
     bool force(Entry& entry, std::optional<bool> requested = {}) {
+        return eligible(entry) && force_eligible(entry, requested);
+    }
+    // learn() already validated this binding. Reuse that result only within
+    // this operation; after any native call, eligibility is checked again.
+    bool force_eligible(Entry& entry, std::optional<bool> requested = {}) {
         bool current{};
-        if (!eligible(entry) || !visible.get(entry.component, current)) { return false; }
+        if (!visible.get(entry.component, current)) { return false; }
         if (!entry.proof.allows_override()) {
             // New background groups must first be seen game-visible. A pending
             // entry has never been forced, so our own readback cannot train it.
@@ -533,7 +538,7 @@ struct VisibilityGuard::Impl : std::enable_shared_from_this<Impl> {
             cls != component_class.object) { return; }
         if (auto entry = learn(component, requested)) {
             entry->lease.game_request(requested);
-            force(*entry, requested);
+            force_eligible(*entry, requested);
         }
     }
     void release() {
@@ -625,7 +630,7 @@ struct VisibilityGuard::Impl : std::enable_shared_from_this<Impl> {
             // All mutation eligibility, mesh/package identity, learning and
             // restoration rules remain in the original path. No set iterator
             // or cache reference survives a potentially reentrant game call.
-            if (auto entry = learn(object(*id))) { force(*entry); }
+            if (auto entry = learn(object(*id))) { force_eligible(*entry); }
         }
         return valid_source && local_actor_scan_complete && !local_actor_overflow && !local_actors.empty() && current_world();
     }
@@ -681,7 +686,7 @@ struct VisibilityGuard::Impl : std::enable_shared_from_this<Impl> {
             uintptr_t cls{};
             if (component && read(reinterpret_cast<uintptr_t>(component) + sdk::UObjectBase::get_class_private_offset(), cls) &&
                 cls == component_class.object) {
-                if (auto entry = learn(component)) { force(*entry); }
+                if (auto entry = learn(component)) { force_eligible(*entry); }
             }
         }
         if (scan_cursor == 0) { next_scan = now + std::chrono::seconds{5}; }
