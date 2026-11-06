@@ -11871,9 +11871,21 @@ bool looks_like_virtual_function_table(uintptr_t table) {
         return false;
     }
 
-    return utility::validation::at_least<12, 6>([table](size_t i) {
+    auto regions = utility::validation::executable_regions<12>([](uintptr_t address)
+        -> std::optional<utility::validation::ExecutableRegion> {
+        MEMORY_BASIC_INFORMATION info{};
+        if (VirtualQuery(reinterpret_cast<void*>(address), &info, sizeof(info)) != sizeof(info) ||
+            info.State != MEM_COMMIT) { return std::nullopt; }
+        const auto protection = info.Protect & 0xff;
+        const auto executable = !(info.Protect & (PAGE_GUARD | PAGE_NOACCESS)) &&
+            (protection == PAGE_EXECUTE || protection == PAGE_EXECUTE_READ ||
+             protection == PAGE_EXECUTE_READWRITE || protection == PAGE_EXECUTE_WRITECOPY);
+        return utility::validation::ExecutableRegion{
+            reinterpret_cast<uintptr_t>(info.BaseAddress), info.RegionSize, executable};
+    });
+    return utility::validation::at_least<12, 6>([table, &regions](size_t i) {
         const auto fn = ((uintptr_t*)table)[i];
-        return fn != 0 && is_executable_process_range(fn, 1);
+        return fn != 0 && regions.check(fn, 1);
     });
 }
 

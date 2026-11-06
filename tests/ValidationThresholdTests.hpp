@@ -31,5 +31,35 @@ template<class Expect> void run(const Expect& expect) {
     calls = 0;
     expect(utility::validation::at_least<12, 6>(probe) && calls == 6,
         "a fresh invocation reevaluates permissions after a prior failure");
+
+    using utility::validation::ExecutableRegion;
+    size_t queries{};
+    bool current_executable = true;
+    const auto query = [&](uintptr_t address) -> std::optional<ExecutableRegion> {
+        ++queries;
+        if (address >= 0x1000 && address < 0x2000) { return ExecutableRegion{0x1000, 0x1000, current_executable}; }
+        if (address >= 0x2000 && address < 0x3000) { return ExecutableRegion{0x2000, 0x1000, false}; }
+        return std::nullopt;
+    };
+    {
+        auto regions = utility::validation::executable_regions<12>(query);
+        for (size_t i{}; i < 12; ++i) { expect(regions.check(0x1100 + i*8, 1), "same executable region covers all probed functions"); }
+        expect(queries == 1, "a single validator queries a homogeneous executable region once");
+        expect(!regions.check(0x2100, 1) && queries == 2, "a different protection region requires a fresh query");
+        expect(!regions.check(0x1fff, 2), "region reuse cannot authorize a range crossing a protection boundary");
+    }
+    current_executable = false;
+    {
+        auto fresh = utility::validation::executable_regions<12>(query);
+        expect(!fresh.check(0x1100, 1), "the next validator sees revoked executable permissions without a cross-call cache");
+    }
+    {
+        auto invalid = utility::validation::executable_regions<1>([](uintptr_t) -> std::optional<ExecutableRegion> {
+            return ExecutableRegion{(std::numeric_limits<uintptr_t>::max)()-1, 8, true};
+        });
+        expect(!invalid.check(0, 1) && !invalid.check(0x1000, 0) && !invalid.check(0x1000, SIZE_MAX) &&
+            !invalid.check((std::numeric_limits<uintptr_t>::max)()-1, 1),
+            "invalid pointers, zero sizes, overflow and malformed regions fail closed");
+    }
 }
 }

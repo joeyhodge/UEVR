@@ -15,8 +15,14 @@ Two redundant pieces of work are removed:
 - The existing vtable rule still requires a readable twelve-slot table and six
   executable entries. Probing stops after six successes, or once the remaining
   slots cannot reach six. All 4096 stable success/failure combinations return
-  the original result. Valid tables usually need six executable-range queries
-  instead of twelve; no pointer or memory-region validity is cached.
+  the original result. Addresses in the same homogeneous VirtualQuery region
+  share that region's result only inside this read-only validation operation.
+  A table whose functions share one code region needs one executable-region
+  query instead of twelve. There is no persistent or cross-call validity cache:
+  each new object validation re-queries its code regions. Only complete queries
+  of committed memory participate; guards, no-access, non-executable protections,
+  range boundaries and overflow reject. Undefined protection fields from free
+  or reserved memory cannot become a positive region proof.
 - Scene-state validation no longer asks whether the state pointer is readable
   twice consecutively. Its existing safe_read_value still validates the state
   on every call. Vtable readability, a nonnull first function, executable memory
