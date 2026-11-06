@@ -18,6 +18,7 @@
 #include "utility/SupportDiagnostics.hpp"
 #include "utility/UObjectAllocatorDiscovery.hpp"
 #include "utility/SceneCaptureLifecycle.hpp"
+#include "DiagnosticSnapshotTests.hpp"
 #include "utility/PostInitValidation.hpp"
 #include "utility/PostInitCodeMemory.hpp"
 // Some backend translation units still include Windows headers without NOMINMAX.
@@ -634,6 +635,7 @@ void test_uobject_allocator_discovery() {
 }
 
 int main() {
+    diagnostic_snapshot_tests::run(expect);
     test_scene_capture_lifecycle();
     test_source_post_init_validation();
     test_opaque_states();

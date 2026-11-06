@@ -2560,6 +2560,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
     if (collect_frame_timing != m_frame_timing_collection_active) {
         reset_frame_timing_stats();
+        m_hitch_snapshot.try_clear();
         m_frame_timing_collection_active = collect_frame_timing;
     }
 
@@ -2569,6 +2570,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     utility::ScopeGuard frame_timing_guard{[&]() {
         if (collect_frame_timing) {
             m_perf_on_frame.add(std::chrono::steady_clock::now() - on_frame_start);
+            publish_hitch_frame_snapshot(vr);
             log_frame_timing_stats_if_needed(vr);
         }
     }};
@@ -5843,8 +5845,20 @@ bool D3D12Component::has_game_and_ui_textures() const {
         (m_game_ui_tex.texture.Get() != nullptr || has_ue58_converted_ui);
 }
 
-D3D12Component::HitchFrameSnapshot D3D12Component::get_hitch_frame_snapshot(VR* vr) const {
+D3D12Component::HitchFrameSnapshot D3D12Component::get_hitch_frame_snapshot(VR*) const {
+    // The game-thread sampler must not call engine/RHI getters or wait for XR.
+    const auto read = m_hitch_snapshot.try_read();
+    if (read.value) { return *read.value; }
+    HitchFrameSnapshot unavailable{};
+    unavailable.sample_busy = read.busy;
+    return unavailable;
+}
+
+void D3D12Component::publish_hitch_frame_snapshot(VR* vr) noexcept try {
     HitchFrameSnapshot snapshot{};
+    snapshot.sample_available = true;
+    snapshot.captured_steady_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
     snapshot.initialized = is_initialized();
     snapshot.force_reset = m_force_reset;
     snapshot.last_afr_state = m_last_afr_state;
@@ -5855,9 +5869,12 @@ D3D12Component::HitchFrameSnapshot D3D12Component::get_hitch_frame_snapshot(VR* 
     snapshot.has_scene_capture_tex = m_scene_capture_tex.texture.Get() != nullptr;
     snapshot.backbuffer_width = m_backbuffer_size[0];
     snapshot.backbuffer_height = m_backbuffer_size[1];
-    const auto [ui_width, ui_height] = get_ui_extent();
-    snapshot.ui_extent_width = ui_width;
-    snapshot.ui_extent_height = ui_height;
+    // Observe the rendered UI allocation, not a new engine texture lookup.
+    if (vr != nullptr && vr->get_runtime() != nullptr && vr->get_runtime()->is_openvr() && m_openvr.ui_tex.texture) {
+        const auto desc = m_openvr.ui_tex.texture->GetDesc();
+        snapshot.ui_extent_width = static_cast<uint32_t>(desc.Width);
+        snapshot.ui_extent_height = desc.Height;
+    }
     snapshot.hmd_width = vr != nullptr ? vr->get_hmd_width() : 0;
     snapshot.hmd_height = vr != nullptr ? vr->get_hmd_height() : 0;
     snapshot.swapchain_recreate_count = m_swapchain_recreate_count;
@@ -5875,31 +5892,45 @@ D3D12Component::HitchFrameSnapshot D3D12Component::get_hitch_frame_snapshot(VR* 
     snapshot.perf_openxr_submit_avg_ms = m_perf_openxr_submit.avg();
     snapshot.perf_openxr_submit_max_ms = m_perf_openxr_submit.max_ms;
 
-    if (vr != nullptr && vr->m_openxr != nullptr) {
-        std::scoped_lock _{vr->m_openxr->swapchain_mtx};
-        snapshot.openxr_swapchain_count = (uint32_t)vr->m_openxr->swapchains.size();
+    if (vr != nullptr && vr->get_runtime() != nullptr && vr->get_runtime()->is_openxr() && vr->m_openxr != nullptr) {
+        // Creation mutates the map under the D3D12 XR mutex; teardown also
+        // takes the runtime map mutex in this order. Neither diagnostic lock waits.
+        std::unique_lock copies{m_openxr.mtx, std::try_to_lock};
+        std::unique_lock map{vr->m_openxr->swapchain_mtx, std::defer_lock};
+        if (copies.owns_lock() && map.try_lock()) {
+            snapshot.swapchain_stats_available = true;
+            snapshot.openxr_swapchain_count = (uint32_t)vr->m_openxr->swapchains.size();
 
-        const auto read_swapchain = [&](runtimes::OpenXR::SwapchainIndex index, uint32_t& width, uint32_t& height) {
-            const auto it = vr->m_openxr->swapchains.find((uint32_t)index);
+            const auto read_swapchain = [&](runtimes::OpenXR::SwapchainIndex index, uint32_t& width, uint32_t& height) {
+                const auto it = vr->m_openxr->swapchains.find((uint32_t)index);
 
-            if (it != vr->m_openxr->swapchains.end()) {
-                width = (uint32_t)std::max(0, it->second.width);
-                height = (uint32_t)std::max(0, it->second.height);
+                if (it != vr->m_openxr->swapchains.end()) {
+                    width = (uint32_t)std::max(0, it->second.width);
+                    height = (uint32_t)std::max(0, it->second.height);
+                }
+            };
+
+            read_swapchain(runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE, snapshot.eye_swapchain_width, snapshot.eye_swapchain_height);
+            if (snapshot.eye_swapchain_width == 0 || snapshot.eye_swapchain_height == 0) {
+                read_swapchain(runtimes::OpenXR::SwapchainIndex::AFR_LEFT_EYE, snapshot.eye_swapchain_width, snapshot.eye_swapchain_height);
             }
-        };
-
-        read_swapchain(runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE, snapshot.eye_swapchain_width, snapshot.eye_swapchain_height);
-        if (snapshot.eye_swapchain_width == 0 || snapshot.eye_swapchain_height == 0) {
-            read_swapchain(runtimes::OpenXR::SwapchainIndex::AFR_LEFT_EYE, snapshot.eye_swapchain_width, snapshot.eye_swapchain_height);
-        }
-        read_swapchain(runtimes::OpenXR::SwapchainIndex::UI, snapshot.ui_swapchain_width, snapshot.ui_swapchain_height);
-        read_swapchain(runtimes::OpenXR::SwapchainIndex::DEPTH, snapshot.depth_swapchain_width, snapshot.depth_swapchain_height);
-        if (snapshot.depth_swapchain_width == 0 || snapshot.depth_swapchain_height == 0) {
-            read_swapchain(runtimes::OpenXR::SwapchainIndex::AFR_DEPTH_LEFT_EYE, snapshot.depth_swapchain_width, snapshot.depth_swapchain_height);
+            read_swapchain(runtimes::OpenXR::SwapchainIndex::UI, snapshot.ui_swapchain_width, snapshot.ui_swapchain_height);
+            read_swapchain(runtimes::OpenXR::SwapchainIndex::DEPTH, snapshot.depth_swapchain_width, snapshot.depth_swapchain_height);
+            if (snapshot.depth_swapchain_width == 0 || snapshot.depth_swapchain_height == 0) {
+                read_swapchain(runtimes::OpenXR::SwapchainIndex::AFR_DEPTH_LEFT_EYE, snapshot.depth_swapchain_width, snapshot.depth_swapchain_height);
+            }
+            if (vr->get_runtime() != nullptr && vr->get_runtime()->is_openxr()) {
+                snapshot.ui_extent_width = snapshot.ui_swapchain_width;
+                snapshot.ui_extent_height = snapshot.ui_swapchain_height;
+            }
+        } else {
+            snapshot.swapchain_stats_busy = true;
         }
     }
 
-    return snapshot;
+    m_hitch_snapshot.try_publish(snapshot);
+} catch (...) {
+    // A failed optional observation must not affect frame submission.
 }
 
 void D3D12Component::log_openxr_swapchain_recreate(VR* vr, uint32_t reasons, uint32_t new_depth_width, uint32_t new_depth_height) {
@@ -6517,6 +6548,7 @@ void D3D12Component::on_reset(VR* vr, bool mono_retired) {
     sync_depth_target_stability_guard_state(vr);
     m_force_reset = true;
     reset_frame_timing_stats();
+    m_hitch_snapshot.try_clear();
     m_frame_timing_collection_active = false;
 
     auto runtime = vr->get_runtime();

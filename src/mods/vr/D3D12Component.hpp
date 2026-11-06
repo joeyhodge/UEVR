@@ -28,6 +28,7 @@
 #include "UIAlpha.hpp"
 #include "UIComposition.hpp"
 #include "Stalker2NativeD3D12.hpp"
+#include "utility/DiagnosticSnapshot.hpp"
 
 class VR;
 namespace render {
@@ -59,6 +60,11 @@ public:
     auto& get_openvr_ui_tex() { return m_openvr.ui_tex; }
 
     struct HitchFrameSnapshot {
+        bool sample_available{};
+        bool sample_busy{};
+        bool swapchain_stats_available{};
+        bool swapchain_stats_busy{};
+        int64_t captured_steady_ns{};
         bool initialized{};
         bool force_reset{};
         bool last_afr_state{};
@@ -113,6 +119,8 @@ public:
 
 private:
     friend class render::FrameResourceInspector;
+    void publish_hitch_frame_snapshot(VR* vr) noexcept;
+    utility::diagnostics::Snapshot<HitchFrameSnapshot> m_hitch_snapshot;
     uint64_t m_mono_generation{};
     bool m_mono_block_post_present{};
 

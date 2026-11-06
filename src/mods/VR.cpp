@@ -5975,6 +5975,16 @@ void VR::write_hitch_snapshot_request(HitchSnapshotDumpRequest&& request) try {
                 {"source", sample.cvar_change.source},
             }},
             {"d3d12", {
+                {"sample_available", d3d12.sample_available},
+                {"sample_busy", d3d12.sample_busy},
+                {"captured_steady_ns", d3d12.captured_steady_ns},
+                {"sample_age_ms", d3d12.sample_available && d3d12.captured_steady_ns > 0
+                    ? hitch_age_ms(sample.timestamp, std::chrono::steady_clock::time_point{
+                        std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                            std::chrono::nanoseconds{d3d12.captured_steady_ns})}) : -1},
+                {"ui_extent_source", "last_rendered_allocation"},
+                {"swapchain_stats_available", d3d12.swapchain_stats_available},
+                {"swapchain_stats_busy", d3d12.swapchain_stats_busy},
                 {"initialized", d3d12.initialized},
                 {"force_reset", d3d12.force_reset},
                 {"last_afr_state", d3d12.last_afr_state},
