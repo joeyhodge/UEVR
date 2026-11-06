@@ -32,14 +32,21 @@ and changing transforms do not authorize restoration.
 - Balanced uses a fixed 256-entry, four-way associative identity/history cache.
   Current HMD relevance does not require a promotion slot or prior broadcast
   visibility, so cache collisions cannot impose a player-count limit.
-- The observer reads the final corrected per-eye pose and copies the existing
-  projection results. It does not evaluate camera matching/smoothing again or
-  change any camera/projection output. A conservative projection union, body
-  bounds and head-motion margin cover both eyes and asymmetric/canted headsets.
+- The observer reads the final corrected per-eye pose. With game FOV matching
+  off, or Dolly on, the existing projection output is the unscaled headset
+  matrix; the observer can copy those current optics across a shot change.
+  Non-Dolly matched FOV still requires both observed projection results from
+  the current shot. Neither path reevaluates matching/smoothing or changes a
+  camera/projection output. A conservative projection union, body bounds and
+  head-motion margin cover both eyes and asymmetric/canted headsets.
 - Only current camera-generation packets at most 250 ms old authorize HMD
-  relevance. During a cut's initial missing packet, only genuine game-visible
-  history can authorize restoration (3 seconds in-shot, 500 ms across one cut).
-  A forced bit never teaches this history.
+  relevance. A body independently proven relevant by valid HMD geometry can
+  bridge a missing packet for at most two engine ticks AND 100 ms, within the
+  same generation or one cut. Fresh outside-HMD geometry, identity reuse,
+  PLAYEROFF and world/mode retirement revoke this proof. The handoff cannot
+  renew itself, and a Heavy override alone cannot establish it. Genuine
+  game-visible history retains its separate 3-second/500-ms bounds. Forced
+  readback never teaches either history.
 - Heavy remains an explicit all-enabled fallback. It does not require a frustum
   packet and does not run the HMD observer. Native state identity is read at the
   actual callback instead of relying on the old eight-state pointer-probe cache.
@@ -53,6 +60,13 @@ and changing transforms do not authorize restoration.
   and no engine/UObject calls; they need not be assumed to run on the engine tick
   thread. Off, 2D, inactive HMD, mode changes and world transitions revoke the
   guard/history authority. View readers use nonblocking lock attempts.
+
+The cut-entry optimization avoids false projection invalidation and short
+hide/show cycles, not normal engine player updates. The verified backend
+visibility setter also changes actor and child ticking, so it is deliberately
+not skipped just because the requested visible bit is unchanged. Existing
+frustum bounds, head-motion margins and current-view player selection remain
+unchanged; no additional actors are hidden to improve a benchmark.
 
 The read-only live roster fixture contains 48 native states: 40 enabled real
 models, seven disabled states and one enabled invalid-handle dummy. It is not
@@ -75,8 +89,12 @@ it. Existing structural handling and genuine game-visible learning stay in place
 `compatibility-policy-tests` checks the captured native code for both editions,
 every witness-byte mutation/truncation, model zero/-1, PLAYEROFF, reuse, cache
 collisions/pressure, the live roster, signed coordinate conversion, frustum edges,
-asymmetry, stale packets and cut generations. The existing stadium and camera
-fixture suites remain required.
+asymmetry, stale packets and cut generations. The cut fixture retains 19
+read-only snapshots around nine paused automatic cuts. Its replay checks current
+player classification and explicitly simulated first-view gaps; it is not a
+frame-level measurement of visibility toggles or an FPS result. Tests also check
+handoff expiry, tick wrap, fresh outside results, identity reuse and retirement.
+The existing stadium and camera fixture suites remain required.
 
 Build success is not HMD confirmation. Test Balanced with unchanged camera
 settings in normal pitching/batting, field/bench head turns, a crowded celebration,

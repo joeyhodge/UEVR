@@ -100,7 +100,7 @@ template<class Expect> void run(const Expect& expect) {
     cache.clear();
     expect(cache.consider(player,1,0,false,std::nullopt,100,1) == Decision::unchanged, "unknown HMD view cannot force an unproven body");
     cache.consider(player,1,0,false,true,101,1);
-    expect(cache.consider(player,1,0,false,std::nullopt,102,1) == Decision::unchanged, "our own override cannot train visible history");
+    expect(cache.consider(player,1,0,false,std::nullopt,102,1) == Decision::unchanged, "without an engine-tick proof, an override cannot train a handoff");
     cache.consider(player,1,1,false,false,200,1);
     expect(cache.consider(player,1,0,false,std::nullopt,300,2) == Decision::restore, "genuine previous-shot visibility covers the first view after a cut");
     expect(cache.consider(player,1,0,false,std::nullopt,701,2) == Decision::unchanged, "previous-shot handoff expires after 500 ms");

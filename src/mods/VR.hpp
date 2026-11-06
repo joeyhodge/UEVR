@@ -2689,6 +2689,7 @@ private:
     int32_t m_prospi_player_world_index{-1}, m_prospi_player_world_serial{};
     std::atomic<uint32_t> m_prospi_player_thread{};
     std::atomic<uint64_t> m_prospi_player_scope{1};
+    std::atomic<uint32_t> m_prospi_player_tick{};
     std::atomic<uint32_t> m_prospi_player_tracked{};
     std::atomic<bool> m_prospi_player_visibility_guard_enabled{false};
     std::atomic<uint8_t> m_prospi_player_visibility_mode{

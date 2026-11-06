@@ -6621,7 +6621,8 @@ void VR::prospi_player_visibility_hook(safetyhook::Context& ctx) {
             in_view = relevance(views, *sphere, time_ms, generation);
         }
         const auto decision = cache.consider(id, enabled, visible,
-            mode == ProSpiPlayerVisibilityMode::AGGRESSIVE, in_view, time_ms, generation);
+            mode == ProSpiPlayerVisibilityMode::AGGRESSIVE, in_view, time_ms, generation,
+            vr->m_prospi_player_tick.load(std::memory_order_relaxed));
         if (decision == Decision::natural) { ++pending.learned; }
         else if (decision == Decision::intentional_off) { ++pending.intentional_off; }
         else if (decision == Decision::rejected) { ++pending.rejected; }
@@ -6945,6 +6946,7 @@ void VR::update_prospi_player_visibility_guard(sdk::UGameEngine* engine) {
     m_prospi_player_visibility_guard_enabled.store(enabled, std::memory_order_release);
 
     if (enabled) {
+        m_prospi_player_tick.fetch_add(1, std::memory_order_relaxed);
         m_prospi_player_visibility_now_ms.store(steady_clock_ms(), std::memory_order_relaxed);
     }
 
@@ -13363,25 +13365,51 @@ void VR::on_post_calculate_stereo_view_offset(void* stereo_device, int32_t view_
     if (!m_prospi_player_visibility_guard_enabled.load(std::memory_order_acquire) ||
         !m_prospi_player_native_ready.load(std::memory_order_acquire) || !rotation || !location || view_index < 0 ||
         m_prospi_player_visibility_mode.load() != static_cast<uint8_t>(ProSpiPlayerVisibilityMode::BALANCED)) { return; }
+    const auto runtime = get_runtime();
+    if (!runtime || !runtime->loaded || !is_hmd_active()) { return; }
+    const auto scope = m_prospi_player_scope.load(std::memory_order_acquire);
     const auto origin = is_double ? glm::vec3{*reinterpret_cast<Vector3d*>(location)} : *location;
     const auto angles = is_double ? glm::vec3{*reinterpret_cast<glm::dvec3*>(rotation)} : *reinterpret_cast<glm::vec3*>(rotation);
     uevr::prospi::players::Matrix left{}, right{};
     const auto now = steady_clock_ms();
     const auto generation = m_prospi_player_visibility_balanced_generation.load(std::memory_order_acquire);
-    {
-        std::unique_lock lock{m_prospi_player_views_mutex, std::try_to_lock};
-        if (!lock.owns_lock()) { return; }
-        for (size_t i{}; i < 2; ++i) {
-            if (!uevr::prospi::players::packet_current(m_prospi_player_projection_times[i],
-                    m_prospi_player_projection_generations[i], now, generation)) { return; }
+    const auto view_from_projections = [&]() {
+        return uevr::prospi::players::make_view({origin.x, origin.y, origin.z}, {angles.x, angles.y, angles.z},
+            left, right, now, generation);
+    };
+    std::optional<uevr::prospi::players::View> view;
+    if (uevr::prospi::players::uses_headset_projection(m_match_game_fov->value(), m_match_game_fov_dolly->value())) {
+        // This is exactly the unscaled branch of get_projection_matrix(). Its
+        // headset optics do not depend on a broadcast camera's shot generation.
+        // Copy them without evaluating camera matching/smoothing again.
+        bool copied{};
+        {
+            std::shared_lock lock{runtime->eyes_mtx, std::try_to_lock};
+            if (lock.owns_lock()) {
+                std::memcpy(left.data(), &runtime->projections[0][0][0], sizeof(left));
+                std::memcpy(right.data(), &runtime->projections[1][0][0], sizeof(right));
+                copied = true;
+            }
         }
-        left = m_prospi_player_projections[0]; right = m_prospi_player_projections[1];
+        if (copied) { view = view_from_projections(); }
     }
-    const auto view = uevr::prospi::players::make_view({origin.x, origin.y, origin.z}, {angles.x, angles.y, angles.z},
-        left, right, now, generation);
+    if (!view) {
+        {
+            std::unique_lock lock{m_prospi_player_views_mutex, std::try_to_lock};
+            if (!lock.owns_lock()) { return; }
+            for (size_t i{}; i < 2; ++i) {
+                if (!uevr::prospi::players::packet_current(m_prospi_player_projection_times[i],
+                        m_prospi_player_projection_generations[i], now, generation)) { return; }
+            }
+            left = m_prospi_player_projections[0]; right = m_prospi_player_projections[1];
+        }
+        view = view_from_projections();
+    }
     if (!view) { return; }
     std::unique_lock lock{m_prospi_player_views_mutex, std::try_to_lock};
-    if (!lock.owns_lock() || generation != m_prospi_player_visibility_balanced_generation.load(std::memory_order_acquire)) { return; }
+    if (!lock.owns_lock() || generation != m_prospi_player_visibility_balanced_generation.load(std::memory_order_acquire) ||
+        scope != m_prospi_player_scope.load(std::memory_order_acquire) ||
+        !m_prospi_player_visibility_guard_enabled.load(std::memory_order_acquire)) { return; }
     // Keep the two latest rendered-eye poses. AFR may reuse physical view 0
     // for alternating logical eyes; do not collapse that history by view index.
     m_prospi_player_views[1] = m_prospi_player_views[0];

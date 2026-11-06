@@ -57,6 +57,7 @@ struct View {
 inline bool packet_current(int64_t time_ms, uint64_t generation, int64_t now_ms, uint64_t expected) {
     return time_ms > 0 && generation && generation == expected && now_ms >= time_ms && now_ms-time_ms <= 250;
 }
+inline bool uses_headset_projection(bool match_game_fov, bool dolly) { return !match_game_fov || dolly; }
 
 // Use a conservative union of the actual eye projections, not the telephoto
 // broadcast FOV. The final per-eye view rotation also covers canted headsets.
@@ -132,18 +133,30 @@ public:
     static constexpr size_t capacity = 256;
     void clear() { m_entries = {}; }
     Decision consider(const Identity& id, uint8_t enabled, uint8_t original, bool heavy,
-        std::optional<bool> in_view, int64_t now_ms, uint64_t generation) {
+        std::optional<bool> in_view, int64_t now_ms, uint64_t generation, std::optional<uint32_t> tick = {}) {
         if (!id.valid() || enabled > 1 || original > 1 || now_ms <= 0 || !generation) { return Decision::rejected; }
         auto& entry = find(id.state, now_ms);
         if (entry.id != id) { entry = {}; entry.id = id; }
         entry.touched = now_ms;
         if (!enabled) { entry = {}; return Decision::intentional_off; }
+        if (in_view) {
+            if (*in_view && tick) { entry.hmd = {now_ms, generation, *tick, true}; }
+            else if (!*in_view) { entry.hmd = {}; }
+        }
         if (original) {
             entry.visible = now_ms; entry.generation = generation;
             return Decision::natural;
         }
         if (heavy || (in_view && *in_view)) { return Decision::restore; }
         if (in_view) { return Decision::unchanged; }
+        // A shot change precedes publication of its final HMD view. Keep an
+        // independently geometry-proven body through that bounded gap, rather
+        // than cycling its actor/mesh off then on. Forced readback never renews it.
+        const auto& hmd = entry.hmd;
+        if (tick && hmd.valid && generation >= hmd.generation && generation-hmd.generation <= 1 &&
+            now_ms >= hmd.time_ms && now_ms-hmd.time_ms <= 100 && uint32_t(*tick-hmd.tick) <= 2) {
+            return Decision::restore;
+        }
         // During a cut's first view or a temporarily unavailable pose, retain
         // only genuine game-visible history. Never teach from our forced bit.
         const auto age = now_ms-entry.visible;
@@ -157,7 +170,8 @@ public:
         });
     }
 private:
-    struct Entry { Identity id{}; int64_t touched{}, visible{}; uint64_t generation{}; };
+    struct HmdProof { int64_t time_ms{}; uint64_t generation{}; uint32_t tick{}; bool valid{}; };
+    struct Entry { Identity id{}; int64_t touched{}, visible{}; uint64_t generation{}; HmdProof hmd{}; };
     Entry& find(uintptr_t state, int64_t now_ms) {
         const auto bucket = ((state >> 4) ^ (state >> 17)) & 63;
         auto* oldest = &m_entries[bucket*4];
