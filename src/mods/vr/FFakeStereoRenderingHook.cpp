@@ -54,6 +54,7 @@
 #include "GearsEDayAllocation.hpp"
 #include "GearsEDayNativeFix.hpp"
 #include "utility/HookDiagnostics.hpp"
+#include "utility/ValidationThreshold.hpp"
 #include <sdk/KtjLStereoBootstrap.hpp>
 #include <sdk/KingdomHearts3Runtime.hpp>
 #include <sdk/ObjectLivenessPolicy.hpp>
@@ -11870,19 +11871,10 @@ bool looks_like_virtual_function_table(uintptr_t table) {
         return false;
     }
 
-    auto executable_entries = 0;
-
-    for (auto i = 0; i < 12; ++i) {
+    return utility::validation::at_least<12, 6>([table](size_t i) {
         const auto fn = ((uintptr_t*)table)[i];
-
-        if (fn == 0 || !is_executable_process_range(fn, 1)) {
-            continue;
-        }
-
-        ++executable_entries;
-    }
-
-    return executable_entries >= 6;
+        return fn != 0 && is_executable_process_range(fn, 1);
+    });
 }
 
 template <typename T>
@@ -12008,7 +12000,7 @@ struct GhostingFixOwnerCandidate {
 };
 
 bool ghosting_is_valid_scene_state(sdk::FSceneViewStateInterface* state) {
-    if (state == nullptr || !is_readable_process_range((uintptr_t)state, sizeof(uintptr_t))) {
+    if (state == nullptr) {
         return false;
     }
 
