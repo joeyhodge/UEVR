@@ -54,6 +54,7 @@
 #include "GearsEDayAllocation.hpp"
 #include "GearsEDayNativeFix.hpp"
 #include "utility/HookDiagnostics.hpp"
+#include "UE521ViewExtensionCode.hpp"
 #include <sdk/KtjLStereoBootstrap.hpp>
 #include <sdk/KingdomHearts3Runtime.hpp>
 #include <sdk/ObjectLivenessPolicy.hpp>
@@ -21927,6 +21928,71 @@ struct SceneViewExtensionAnalyzer {
     static inline uint32_t pre_render_viewfamily_renderthread_index{0};
     static inline uint32_t frame_count_offset{0};
 
+    static inline uevr::ue521::view_extension::Evidence ue521_source_evidence{};
+
+    static bool ue521_source_candidate() {
+        static const bool version = [] {
+            const auto file = sdk::get_file_version_info();
+            if (HIWORD(file.dwFileVersionMS) != 5 || LOWORD(file.dwFileVersionMS) != 2 ||
+                HIWORD(file.dwFileVersionLS) > 1) { return false; }
+            const auto engine = sdk::search_for_version(utility::get_executable());
+            return !engine || *engine == L"5.2";
+        }();
+        return version && has_found_is_active_this_frame_index &&
+            uevr::ue521::view_extension::eligible(5, 2, 1, is_active_this_frame_index, index_0_called);
+    }
+
+    static bool ue521_source_caller(uintptr_t address, uevr::ue521::view_extension::Stage stage) {
+        if (!address) { return false; }
+        const auto range = get_runtime_function_range(address - 1);
+        const auto module = utility::get_module_within(reinterpret_cast<void*>(address - 1));
+        if (!range || !module || range->image_base != reinterpret_cast<uintptr_t>(*module) ||
+            address <= range->begin || address > range->end ||
+            range->size() > uevr::ue521::view_extension::max_caller_bytes ||
+            !is_executable_process_range(range->begin, range->size())) { return false; }
+        std::array<uint8_t, uevr::ue521::view_extension::max_caller_bytes> code{};
+        return sdk::discovery::read_process(nullptr, range->begin, code.data(), range->size()) &&
+            uevr::ue521::view_extension::caller_contract(
+                std::span<const uint8_t>{code.data(), range->size()}, address - range->begin, stage);
+    }
+
+    static void observe_ue521_source_family(uintptr_t candidate, uintptr_t caller,
+        uevr::ue521::view_extension::Stage stage) {
+        if (!ue521_source_candidate()) { return; }
+        if (!ue521_source_caller(caller, stage)) { return; }
+        const auto family = uevr::ue521::view_extension::read_family(candidate,
+            [](uintptr_t address, void* out, size_t size) {
+                return sdk::discovery::read_process(nullptr, address, out, size);
+            },
+            [](uintptr_t address) {
+                uintptr_t table{}, first{};
+                return safe_read_value(address, table) && table &&
+                    utility::get_module_within(reinterpret_cast<void*>(table)).has_value() &&
+                    safe_read_value(table, first) && first && is_executable_process_range(first, 1);
+            });
+        if (family) { ue521_source_evidence.observe(stage, *family); }
+    }
+
+    static bool try_apply_ue521_source_fallback() {
+        if (has_found_begin_render_viewfamily || !ue521_source_candidate()) { return false; }
+        const auto proof = ue521_source_evidence.ready();
+        if (!proof) { return false; }
+        has_found_begin_render_viewfamily = true;
+        begin_render_viewfamily_index = uevr::ue521::view_extension::begin_slot;
+        pre_render_viewfamily_renderthread_index = uevr::ue521::view_extension::pre_render_slot;
+        frame_count_offset = uevr::ue521::view_extension::frame_offset;
+        sdk::FSceneViewFamily::set_frame_count_offset(frame_count_offset);
+        SPDLOG_INFO("[UE5.2][ViewExtension] Source/runtime family proof: Begin={} RDGPreRender={} IsActive={} "
+            "FrameNumber=0x{:x} valid={}/{} advances={}/{} frames={}/{}",
+            begin_render_viewfamily_index, pre_render_viewfamily_renderthread_index, is_active_this_frame_index,
+            frame_count_offset, proof->begin.valid, proof->pre_render.valid, proof->begin.advances,
+            proof->pre_render.advances, proof->begin.frame, proof->pre_render.frame);
+        // Re-prove this startup-only fallback next launch; do not promote a
+        // source-version guess into a persistent hook authorization.
+        setup_view_extension_hook();
+        return true;
+    }
+
     static constexpr uint32_t UE426_427_BEGIN_RENDER_VIEWFAMILY_INDEX = 5;
     static constexpr uint32_t UE426_427_PRE_RENDER_VIEWFAMILY_INDEX = 6;
     static constexpr uint32_t UE426_427_IS_ACTIVE_INDEX = 14;
@@ -22372,6 +22438,15 @@ struct SceneViewExtensionAnalyzer {
         }
 
         std::scoped_lock _{dummy_mutex};
+
+        if constexpr (N == uevr::ue521::view_extension::begin_slot) {
+            observe_ue521_source_family(a2, reinterpret_cast<uintptr_t>(_ReturnAddress()),
+                uevr::ue521::view_extension::Stage::begin);
+        } else if constexpr (N == uevr::ue521::view_extension::pre_render_slot) {
+            observe_ue521_source_family(a3, reinterpret_cast<uintptr_t>(_ReturnAddress()),
+                uevr::ue521::view_extension::Stage::pre_render);
+        }
+        if (try_apply_ue521_source_fallback()) { return false; }
 
         if constexpr (N == UE426_427_BEGIN_RENDER_VIEWFAMILY_INDEX) {
             auto& func = functions[N];
