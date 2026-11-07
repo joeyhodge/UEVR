@@ -19,7 +19,7 @@ PATH_FIELDS = ["seconds", "sequence", "epoch", "cut", "camera_sequence", "kind",
                "focus_after", "dolly", "safety_up", "raw_x", "raw_y", "raw_z",
                "neutral_x", "neutral_y", "neutral_z", "output_x", "output_y", "output_z",
                "suspects", "snapshot_age_ms", "previous_assist_write", "input_matches_assist",
-               "native_status", "native_frame", "native_camera", "native_fov", "native_focus_cm",
+               "framing_repair_reason", "native_status", "native_frame", "native_camera", "native_fov", "native_focus_cm",
                "look_at_x", "look_at_y", "look_at_z", "source_matches_input",
                "neutral_target_depth", "neutral_target_yaw_error", "neutral_target_pitch_error",
                "hmd_target_depth", "hmd_target_yaw_error", "hmd_target_pitch_error"]
@@ -177,6 +177,7 @@ def catalogue(session, output):
                         "snapshot_age_ms": view.get("snapshot_age_ms"),
                         "previous_assist_write": c.get("previous_update_wrote_fov")}
                     row["input_matches_assist"] = view.get("input_matches_assist")
+                    row["framing_repair_reason"] = view.get("framing_repair_reason")
                     row.update({"native_status": native.get("status"), "native_frame": native.get("native_frame"),
                         "native_camera": native.get("object"), "native_fov": native.get("pose", {}).get("fov") if native.get("valid") else None,
                         "native_focus_cm": native.get("focus_cm"), "source_matches_input": view.get("source_matches_input")})

@@ -4,7 +4,26 @@
 
 namespace uevr::prospi::focus_guard {
 
-enum class AuthoredScope : uint8_t { presentation, near_home_crossing };
+enum class AuthoredScope : uint8_t {
+    presentation, near_home_crossing, interview_repair, dugout_repair
+};
+
+inline bool repair_scope(AuthoredScope scope) noexcept {
+    return scope == AuthoredScope::interview_repair || scope == AuthoredScope::dugout_repair;
+}
+
+inline bool dugout_scope(AuthoredScope scope) noexcept {
+    return scope == AuthoredScope::dugout_repair;
+}
+
+inline bool dugout_repair_rig(const trace::Pose& p) noexcept {
+    if (!trace::valid_pose(p) || std::abs(std::remainder(p.rotation[2], 360.0f)) > 25.0f) { return false; }
+    // Reuse the evidenced low-rig envelope; only admission ignores roll. All
+    // endpoint/source checks below retain the actual full camera basis.
+    auto envelope = framing::Pose{p.location, p.rotation, p.fov};
+    envelope.rotation[2] = 0;
+    return celebration::low_rig(envelope);
+}
 
 // The recorded interview rigs overlap the broad Pitch/Batter preset classifier.
 // This only admits observation; their current authored target must actually be crossed.
@@ -23,9 +42,10 @@ inline bool crossing_candidate(const Request& r, bool presentation_camera,
     return presentation_camera && r.enabled && r.prospi && r.mode == 3 && r.dolly_enabled &&
         r.sequencer_enabled && r.safety_enabled && r.automatic_source && !r.protected_camera &&
         (r.zone == 1 || r.zone == 2) && trace::valid_pose(r.camera) && r.camera.fov >= 0.5f &&
-        r.camera.fov <= (scope == AuthoredScope::near_home_crossing ? 60.0f : 40.0f) &&
-        (scope != AuthoredScope::near_home_crossing || near_home_crossing_rig(r.camera)) &&
-        std::abs(std::remainder(r.camera.rotation[2], 360.0f)) <= 0.01f &&
+        r.camera.fov <= (scope == AuthoredScope::near_home_crossing || scope == AuthoredScope::interview_repair ? 60.0f : 40.0f) &&
+        ((scope != AuthoredScope::near_home_crossing && scope != AuthoredScope::interview_repair) || near_home_crossing_rig(r.camera)) &&
+        (!dugout_scope(scope) || dugout_repair_rig(r.camera)) &&
+        std::abs(std::remainder(r.camera.rotation[2], 360.0f)) <= (repair_scope(scope) ? 25.0f : 0.01f) &&
         std::isfinite(r.dolly) && r.dolly > 0.0f && r.dolly <= 8000.0f &&
         std::isfinite(r.lift) && r.lift >= 0.0f && r.lift <= 600.0f &&
         std::isfinite(r.max_lift) && r.max_lift >= r.lift && r.max_lift <= 600.0f &&
@@ -44,7 +64,8 @@ inline Decision bound_crossing(const Request& r, const trace::NativeSource& sour
     out.status = Status::source_mismatch;
     if (!trace::valid_source(source) || !source.object || !source.camera_actor || !r.camera_manager ||
         !source.pose.aspect_valid || !std::isfinite(source.pose.aspect) || source.pose.aspect < 0.5f || source.pose.aspect > 3.0f ||
-        source.focus_distance < 100.0f || source.focus_distance > (scope == AuthoredScope::near_home_crossing ? 1000.0f : 8000.0f) ||
+        source.focus_distance < 100.0f || source.focus_distance >
+            (dugout_scope(scope) ? 1250.0f : scope == AuthoredScope::near_home_crossing || scope == AuthoredScope::interview_repair ? 1000.0f : 8000.0f) ||
         !trace::source_matches_input(source, r.camera, r.camera_manager, r.now_ns) ||
         r.now_ns < source.time_ns || r.now_ns - source.time_ns > 50'000'000 ||
         trace::distance(source.pose.location, r.camera.location) > 1.0f ||

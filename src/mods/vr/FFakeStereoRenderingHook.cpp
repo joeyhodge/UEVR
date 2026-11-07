@@ -31533,6 +31533,7 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
         auto& e = trace_view->event;
         auto& v = e.view;
         v.current_source = camera_offsets.current_source;
+        v.framing_repair_reason = (int32_t)camera_offsets.repair_reason;
         const auto& source = uevr::prospi::trace::valid_source(v.current_source) ? v.current_source : e.camera.native_source;
         v.source_matches_input = uevr::prospi::trace::source_matches_input(source, v.input, e.camera.camera_manager,
             uevr::prospi::trace::Recorder::clock_ns());

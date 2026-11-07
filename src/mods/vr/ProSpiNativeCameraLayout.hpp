@@ -67,6 +67,21 @@ inline const VerifiedBuild* verified_build(uint32_t timestamp, size_t image_size
     return nullptr;
 }
 
+// Use only after resolve_layout has validated the producer/bridge contract.
+// Both games share an executable name; a renamed 2025 install is not eBaseball.
+inline bool ebaseball_layout(const Layout& layout) noexcept {
+    if (!layout.base) { return false; }
+    for (size_t i = 0; i < 2; ++i) {
+        const auto& expected = verified_builds[i].layout;
+        if (layout.image_size == expected.image_size && layout.context_rva == expected.context_rva &&
+            layout.sentinel_rva == expected.sentinel_rva && layout.frame_rva == expected.frame_rva &&
+            layout.sentinel_vtable_rva == expected.sentinel_vtable_rva && layout.bridge_vtable_rva == expected.bridge_vtable_rva &&
+            layout.camera_getter_rva == expected.camera_getter_rva && layout.empty_getter_rva == expected.empty_getter_rva &&
+            layout.vertical_fov_offset == expected.vertical_fov_offset) { return true; }
+    }
+    return false;
+}
+
 template <typename Read>
 bool resolve_layout(Read read, uintptr_t base, uint32_t timestamp, size_t image_size, Layout& out) noexcept {
     out = {};

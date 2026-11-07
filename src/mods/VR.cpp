@@ -3,6 +3,7 @@
 
 #include "vr/ProSpiNativeFocusGuard.hpp"
 #include "vr/ProSpiAuthoredTargetGuard.hpp"
+#include "vr/ProSpiNativeCameraLayout.hpp"
 #include "vr/ControllerTouchBindings.hpp"
 #include "vr/StockFrameBindingMigration.hpp"
 
@@ -9573,6 +9574,10 @@ void VR::update_game_fov() {
     uevr::prospi::trace::NativeSource prospi_authored_source{};
     uevr::prospi::trace::native::Layout prospi_native_layout{};
     uevr::prospi::focus_guard::Request prospi_presentation_request{};
+    uevr::prospi::repair::Request prospi_framing_repair{};
+    utility::ScopeGuard framing_repair_finish{[&] {
+        if (!uevr::prospi::repair::candidate(prospi_framing_repair)) { m_prospi_framing_repair.reset(); }
+    }};
     bool prospi_presentation{};
     bool prospi_identity_allowed{};
     auto prospi_authored_scope = uevr::prospi::focus_guard::AuthoredScope::presentation;
@@ -13197,6 +13202,37 @@ void VR::update_game_fov() {
                         prospi_native_layout = m_prospi_native_focus_probe.validated_native_layout().value_or(
                             uevr::prospi::trace::native::Layout{});
                     }
+                    // A saved automatic match is not a manual camera override.
+                    // Admit only the evidenced rigs here; fresh native geometry
+                    // at view consumption must still prove the framing failure.
+                    if (is_ebaseball_pro_spirit && m_match_game_fov_prospi_camera_safety_field_rule->value()) {
+                        auto repair_camera = current_request;
+                        repair_camera.protected_camera = false;
+                        repair_camera.sequencer_enabled = m_match_game_fov_prospi_auto_camera_sequencer->value();
+                        repair_camera.automatic_source = source == ProSpiAutoCameraSource::RuleAssist ||
+                            source == ProSpiAutoCameraSource::LearnedNearest || source == ProSpiAutoCameraSource::ExactCalibration;
+                        prospi_framing_repair = {
+                            .camera = repair_camera, .field_floor = field_min_z, .legacy_floor = safety_min_z,
+                            .smoothing = m_match_game_fov_prospi_auto_camera_sequencer_smoothing->value(),
+                            .rendering_method = m_rendering_method->value(),
+                            .ebaseball = true,
+                            .manual_controls = prospi_tv_override_applied || generic_camera_preset_applied ||
+                                generic_camera_presets_apply_enabled || camera_cut_stabilizer_enabled ||
+                                m_match_game_fov_prospi_actual_clamp->value() || is_decoupled_pitch_enabled() ||
+                                m_match_game_fov_prospi_cinematic_camera_assist->value() || m_prospi_cutscene_segment_active,
+                            .protected_camera = home_plate_pitch_view || third_base_outfield_line_replay_camera ||
+                                play_mode == ProSpiPlayCameraMode::BallFollow || play_mode == ProSpiPlayCameraMode::AerialEstablishing ||
+                                framing_status == uevr::prospi::framing::Status::accepted,
+                        };
+                        if (uevr::prospi::repair::candidate(prospi_framing_repair)) {
+                            prospi_native_layout = m_prospi_native_focus_probe.validated_native_layout().value_or(
+                                uevr::prospi::trace::native::Layout{});
+                            prospi_framing_repair.ebaseball = uevr::prospi::trace::native::ebaseball_layout(prospi_native_layout);
+                            prospi_identity_allowed = prospi_identity_allowed || prospi_framing_repair.ebaseball;
+                        } else {
+                            prospi_framing_repair.ebaseball = false;
+                        }
+                    }
                 }
                 if (trace_camera) {
                     trace_camera->native_focus_guard_status = (int32_t)native_focus_decision.status;
@@ -13259,6 +13295,7 @@ void VR::update_game_fov() {
                 .presentation_request = prospi_presentation_request,
                 .publisher_thread = GetCurrentThreadId(), .presentation = prospi_presentation,
                 .scope = prospi_authored_scope,
+                .framing_repair = prospi_framing_repair,
             }, prospi_cut_epoch);
         }
         if (trace_camera) { trace_camera->dolly_after = dolly_offset; }
@@ -13279,21 +13316,36 @@ VR::CameraViewOffsets VR::get_camera_view_offsets(const uevr::prospi::trace::Pos
     const CameraViewOffsets legacy{get_camera_forward_offset(), get_camera_right_offset(), get_camera_up_offset()};
     if (!uses_prospi_camera_cut_guard()) {
         m_prospi_current_view_status.store(0, std::memory_order_relaxed);
+        m_prospi_framing_repair_status.store(0, std::memory_order_relaxed);
         return legacy;
     }
     const auto snapshot = m_prospi_camera_cut_offsets.read();
     const auto now = uevr::prospi::trace::Recorder::clock_ns();
     auto decision = snapshot ? uevr::prospi::cut_guard::evaluate(*snapshot, input, now) :
         uevr::prospi::cut_guard::Decision{uevr::prospi::cut_guard::Status::unavailable};
-    if (snapshot && !snapshot->automatic) {
+    const bool repair_enabled = snapshot && uevr::prospi::repair::candidate(snapshot->framing_repair) &&
+        snapshot->framing_repair.rendering_method == m_rendering_method->value() &&
+        m_camera_forward_offset->value() == 0 && m_camera_right_offset->value() == 0 && m_camera_up_offset->value() == 0 &&
+        m_match_game_fov_prospi_camera_safety_guard->value() && m_match_game_fov_prospi_camera_safety_field_rule->value() &&
+        m_match_game_fov_prospi_camera_safety_dolly_cap_strength->value() == 1 &&
+        !is_decoupled_pitch_enabled() && !m_match_game_fov_prospi_actual_clamp->value() &&
+        !m_match_game_fov_prospi_cinematic_camera_assist->value();
+    if (snapshot && !snapshot->automatic && !repair_enabled) {
         m_prospi_current_view_status.store(0, std::memory_order_relaxed);
+        m_prospi_framing_repair_status.store(0, std::memory_order_relaxed);
         return legacy;
     }
     if (snapshot && snapshot->publisher_thread == GetCurrentThreadId() && snapshot->identity.valid &&
         decision.status != uevr::prospi::cut_guard::Status::stale &&
         decision.status != uevr::prospi::cut_guard::Status::unavailable &&
         decision.status != uevr::prospi::cut_guard::Status::discontinuity) {
-        if (const auto cached = m_prospi_camera_view_cache.read(snapshot->epoch, frame, input, now)) {
+        const auto current_eye_margin = [&] {
+            const auto radius = std::max(glm::length(glm::vec3{get_eye_offset(VRRuntime::Eye::LEFT)}),
+                glm::length(glm::vec3{get_eye_offset(VRRuntime::Eye::RIGHT)}));
+            return radius * get_world_to_meters() * (repair_enabled ? get_world_scale() : 1.0f);
+        };
+        auto eye_margin = repair_enabled ? current_eye_margin() : 0.0f;
+        if (const auto cached = m_prospi_camera_view_cache.read(snapshot->epoch, frame, input, now, repair_enabled, eye_margin)) {
             decision = *cached;
         } else {
             uevr::prospi::shot::Identity current{};
@@ -13301,7 +13353,7 @@ VR::CameraViewOffsets VR::get_camera_view_offsets(const uevr::prospi::trace::Pos
                 reinterpret_cast<sdk::UObjectBase*>(snapshot->identity.manager.address), current);
             uevr::prospi::trace::NativeSource native{};
             if (current.valid && snapshot->native_layout.base &&
-                (snapshot->presentation || snapshot->identity.native_camera || snapshot->presentation_request.enabled)) {
+                (snapshot->presentation || snapshot->identity.native_camera || snapshot->presentation_request.enabled || repair_enabled)) {
                 native = uevr::prospi::trace::CameraProbe::capture_native_view(snapshot->native_layout,
                     snapshot->identity.manager.address);
                 if (uevr::prospi::trace::valid_source(native)) {
@@ -13309,19 +13361,24 @@ VR::CameraViewOffsets VR::get_camera_view_offsets(const uevr::prospi::trace::Pos
                 }
             }
             const auto sampled_at = uevr::prospi::trace::Recorder::clock_ns();
-            const auto eye_radius = std::max(glm::length(glm::vec3{get_eye_offset(VRRuntime::Eye::LEFT)}),
-                glm::length(glm::vec3{get_eye_offset(VRRuntime::Eye::RIGHT)}));
-            const auto eye_margin = eye_radius * get_world_to_meters();
+            if (!repair_enabled) { eye_margin = current_eye_margin(); }
             decision = uevr::prospi::cut_guard::evaluate_current(*snapshot, input, sampled_at, current, native, eye_margin);
+            if (repair_enabled) {
+                decision = uevr::prospi::cut_guard::repair_current(*snapshot, input, sampled_at, current, native,
+                    eye_margin, decision, m_prospi_framing_repair);
+            } else {
+                m_prospi_framing_repair.reset();
+            }
             if (current.valid) {
                 m_prospi_last_view_identity = current; m_prospi_last_view_identity_time = sampled_at;
             }
-            m_prospi_camera_view_cache.publish(snapshot->epoch, frame, input, sampled_at, decision);
+            m_prospi_camera_view_cache.publish(snapshot->epoch, frame, input, sampled_at, decision, repair_enabled, eye_margin);
         }
     }
     m_prospi_current_view_status.store((int32_t)decision.status, std::memory_order_relaxed);
+    m_prospi_framing_repair_status.store((int32_t)decision.repair_reason, std::memory_order_relaxed);
     return {m_camera_forward_offset->value() + decision.dolly, legacy.right,
-        m_camera_up_offset->value() + decision.lift, decision.status, decision.current_source};
+        m_camera_up_offset->value() + decision.lift, decision.status, decision.current_source, decision.repair_reason};
 }
 
 float VR::get_game_fov() const {
@@ -16626,6 +16683,11 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                                     (uevr::prospi::focus_guard::Status)m_prospi_native_focus_status.load(std::memory_order_relaxed)));
                                 ImGui::TextWrapped("Current view: %s", uevr::prospi::cut_guard::status_name(
                                     (uevr::prospi::cut_guard::Status)m_prospi_current_view_status.load(std::memory_order_relaxed)));
+                                if (is_ebaseball_pro_spirit_variant()) {
+                                    ImGui::TextWrapped("Validated eBaseball Mode 3 also checks automatically selected calibrations on evidenced interview/low dugout rigs. Only a proved target crossing/clipping permits pullback; explicit camera controls remain protected.");
+                                    ImGui::TextWrapped("Final framing: %s", uevr::prospi::repair::reason_name(
+                                        (uevr::prospi::repair::Reason)m_prospi_framing_repair_status.load(std::memory_order_relaxed)));
+                                }
                                 ImGui::Text("Dolly %.1f -> %.1f cm; lift %.1f -> %.1f cm",
                                     m_prospi_native_focus_dolly_before.load(std::memory_order_relaxed),
                                     m_prospi_native_focus_dolly_after.load(std::memory_order_relaxed),

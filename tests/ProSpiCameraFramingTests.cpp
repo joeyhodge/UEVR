@@ -2,6 +2,7 @@
 #include "mods/vr/ProSpiNativeFocusGuard.hpp"
 #include "mods/vr/ProSpiAuthoredTargetGuard.hpp"
 #include "ProSpiAuthoredFramingTests.hpp"
+#include "EBaseballFramingRepairTests.hpp"
 #include "mods/vr/ProSpiCameraCutGuard.hpp"
 
 #include <nlohmann/json.hpp>
@@ -686,6 +687,13 @@ void captured_interview_crossings(const Json& fixture) {
         const auto after=admitted ? cg::evaluate_current(packet,input,now,identity,native,4) : before;
         const auto name="Recorded cut "+std::to_string(sample.at("cut").get<int>())+
             " sequence "+std::to_string(sample.at("sequence").get<int>());
+        auto final_packet=packet;
+        final_packet.framing_repair={.camera=r,.field_floor=r.floor,.legacy_floor=r.floor,
+            .ebaseball=true,.protected_camera=play==4 || play==6};
+        uevr::prospi::repair::Continuity repair_state;
+        const auto final=cg::repair_current(final_packet,input,now,identity,native,4,after,repair_state);
+        require(final.dolly==after.dolly && final.lift==after.lift && final.status==after.status,
+            name+": final eBaseball check altered an already-covered interview/control");
         if(!sample.at("marked_bad").get<bool>()) {
             require(after.dolly==before.dolly && after.lift==before.lift && after.status==before.status,
                 name+": unrelated/good recorded framing changed");
@@ -958,6 +966,11 @@ void baseline_pan_fixtures(const Json& fixture) {
         const auto current = cg::evaluate_current(extended, input, now, identity, source, 3.3f);
         require(current.dolly == after.dolly && current.lift == after.lift && current.status == after.status,
             "Current-source framing changed an already-covered baseline shot: " + sample.at("label").get<std::string>());
+        extended.framing_repair={.camera=r,.field_floor=r.floor,.legacy_floor=r.floor,.ebaseball=true};
+        uevr::prospi::repair::Continuity repair_state;
+        const auto final=cg::repair_current(extended,input,now,identity,source,3.3f,current,repair_state);
+        require(final.dolly==after.dolly && final.lift==after.lift && final.status==after.status,
+            "Final eBaseball check changed an already-covered baseline shot: " + sample.at("label").get<std::string>());
         if (sample.at("expected_before") == "cut") {
             require(before.status == cg::Status::discontinuity && after.status == before.status && after.dolly == 0 && after.lift == 0,
                 "Publisher candidate bypassed the previous-shot rejection");
@@ -1201,6 +1214,8 @@ int main(int argc, char** argv) {
         hokkaido_fixtures(read_json(std::filesystem::path{argv[1]}.parent_path() / "prospi-hokkaido-cut-framing.json"));
         view_focus_guards(); crossing_focus_guards();
         prospi_authored_framing_tests::run([](bool passed, const char* message) { require(passed, message); });
+        ebaseball_framing_tests::run([](bool passed, const char* message) { require(passed, message); });
+        std::cout << "eBaseball final framing: automatic-calibration, rolled stereo windows, ownership/cache and 4000 geometry trials passed\n";
         captured_interview_crossings(read_json(std::filesystem::path{argv[1]}.parent_path() / "prospi-20261101-interview-crossing.json"));
         std::cout << "Authored framing: 5000 geometry trials, per-eye margin and shot-identity preservation passed\n";
         baseline_pan_fixtures(read_json(std::filesystem::path{argv[1]}.parent_path() / "prospi-20261010-baseline-pan.json"));

@@ -24,13 +24,14 @@ class AnalyzerTests(unittest.TestCase):
             event = {"kind": "view", "sequence": 1, "time_ns": 1000, "epoch": 1, "cut_sequence": 1,
                      "assist": {"input": pose, "native_source": old}, "view": {"input_matches_assist": False,
                          "current_native_source": current, "source_matches_input": True, "neutral_valid": True,
-                         "neutral": pose, "output": pose, "eye": 0}}
+                         "neutral": pose, "output": pose, "eye": 0, "framing_repair_reason": 7}}
             (session / "events.jsonl").write_text(json.dumps(event))
             MODULE.catalogue(session, root / "review")
             with (root / "review/camera_paths.csv").open() as stream:
                 rows = list(csv.DictReader(stream))
             self.assertEqual(float(rows[0]["native_focus_cm"]), 900)
             self.assertEqual(float(rows[0]["look_at_x"]), 900)
+            self.assertEqual(rows[0]["framing_repair_reason"], "7")
 
     def test_light_two_second_shots_keep_eye_context_and_marks(self):
         with tempfile.TemporaryDirectory() as temp:

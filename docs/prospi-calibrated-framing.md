@@ -356,3 +356,35 @@ subjects or stadium geometry and another recorded comparison. Do not globally
 lower stand/dugout floors based only on suspect flags: several soft-good cuts
 hit the same lift limits. A passing offline review is ready for an HMD test,
 not confirmation that every celebration now has the ideal target.
+
+### eBaseball final authored-focus check
+
+Mode 3 with Authored Focus now also checks automatically selected saved
+calibrations on the validated eBaseball builds. This does not change calibration
+selection or save new values. ProSpi 2025, modes 0/1/2, explicit camera offsets,
+TV/generic overrides, decoupled pitch and legacy cinematic controls keep their
+existing behavior.
+
+The extra admission is limited to the recorded near-home interview envelope
+and low baseline/dugout envelope, including modest authored roll. The current
+native pose, lens, look-at and owner must validate at the pre-HMD view callback.
+Only an actual target crossing or offscreen neutral-camera focus can authorize
+a correction; a tight but still-framed shot is unchanged. Corrections shorten
+the forward dolly, use signed camera-up height within the configured lift
+budget, and retain the authored focus-plane window with a per-eye margin.
+A low dugout rig uses the configured field floor only after this framing
+failure is proved; elevated stand rigs do not inherit that exception.
+
+The numeric recovery hold is limited to the same live shot, with full window
+revalidation, cut/owner/mode/gap retirement and time-based release using the
+existing sequencer smoothing response. Both eyes share the current-frame
+decision. Invalid data or an impossible endpoint leaves the old offsets intact.
+An already-safe current shot is never held merely because a previous sample
+needed repair; a constant camera pointer alone does not establish a shot ID.
+The lightweight view trace and CSV expose `framing_repair_reason`; no extra
+actor scan, log loop, collision call or recording frequency is introduced.
+
+This is not a player/podium detector or a collision fix. In particular, a
+high-foul black stadium still needs a failing capture to distinguish camera
+penetration from game-authored visibility/culling. No speculative visibility
+override, global floor reduction, CVar or frame-lag change is included.
