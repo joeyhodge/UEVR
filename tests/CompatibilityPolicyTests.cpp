@@ -34,6 +34,7 @@
 #include "ProSpiPlayerVisibilityTests.hpp"
 #include "ProSpiPlayerCutTests.hpp"
 #include "ValidationThresholdTests.hpp"
+#include "UE521ViewExtensionTests.hpp"
 
 namespace {
 
@@ -2579,6 +2580,7 @@ void test_ktjl_hook_contracts() {
 #include "UE58NativeFixTests.hpp"
 
 int main(int argc, char** argv) {
+    ue521_view_extension_tests::run(expect);
     validation_threshold_tests::run(expect);
     prospi_player_tests::run(expect);
     prospi_player_cut_tests::run(expect);
