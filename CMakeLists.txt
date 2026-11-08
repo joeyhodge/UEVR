@@ -962,6 +962,41 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	unset(CMKR_SOURCES)
 endif()
 
+# Target: native-openxr-array-tests
+if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
+	set(native-openxr-array-tests_SOURCES
+		"tests/NativeOpenXRArrayTests.cpp"
+		cmake.toml
+	)
+
+	add_executable(native-openxr-array-tests)
+
+	target_sources(native-openxr-array-tests PRIVATE ${native-openxr-array-tests_SOURCES})
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${native-openxr-array-tests_SOURCES})
+
+	target_compile_features(native-openxr-array-tests PRIVATE
+		cxx_std_23
+	)
+
+	target_include_directories(native-openxr-array-tests PRIVATE
+		"src/"
+	)
+
+	target_link_libraries(native-openxr-array-tests PRIVATE
+		d3d12
+		dxgi
+	)
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT native-openxr-array-tests)
+	endif()
+
+	set(CMKR_TARGET native-openxr-array-tests)
+	add_test(NAME native-openxr-array-tests COMMAND native-openxr-array-tests)
+	set_tests_properties(native-openxr-array-tests PROPERTIES TIMEOUT 30)
+
+endif()
 # Target stalker2-native-policy-tests
 if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	set(CMKR_TARGET stalker2-native-policy-tests)

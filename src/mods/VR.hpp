@@ -684,18 +684,8 @@ public:
         return m_native_stereo_fix_preserve_secondary_pass->value();
     }
 
-    bool is_native_stereo_fix_texture_array_submit_enabled() const {
-        if (uevr::nascar::is_target()) { return false; }
-        const auto runtime = get_runtime();
-        return m_native_stereo_fix_texture_array_submit->value() &&
-            is_native_stereo_fix_enabled() &&
-            !is_native_stereo_fix_same_pass_enabled() &&
-            m_is_d3d12 &&
-            runtime != nullptr &&
-            runtime->is_openxr() &&
-            !is_using_afr() &&
-            m_rendering_method->value() == RenderingMethod::NATIVE_STEREO;
-    }
+    bool is_native_stereo_fix_texture_array_submit_enabled() const;
+    bool is_native_stereo_array_ready() const;
 
     bool is_stalker2_native_fix_experiment_enabled() const;
     bool is_stalker2_sharpen_priority_enabled() const {
