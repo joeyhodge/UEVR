@@ -39,6 +39,7 @@
 #include "Pre57SlateSafety.hpp"
 #include "GalacticRacerOwnedTexture.hpp"
 #include "utility/BufferedRTTextureCall.hpp"
+#include "Subnautica2BetaRenderTarget.hpp"
 #include "StupidNeverDiesUI.hpp"
 #include "NativeFrameDiagnostics.hpp"
 #include "Stalker2NativePolicy.hpp"
@@ -506,6 +507,7 @@ protected:
     uintptr_t texture_finalize_func{0};
     uintptr_t texture_extract_func{0};
     uintptr_t texture_finalize_callsite{0};
+    std::optional<uevr::subnautica2_beta::FinalizeOutput> subnautica2_beta_finalize_output;
     uintptr_t texture_extract_callsite{0};
 
     std::vector<uint8_t> texture_create_insn_bytes{};
