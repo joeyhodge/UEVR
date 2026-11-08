@@ -39,6 +39,7 @@ template<class T> bool read(uintptr_t address, T& value) { return read_bytes(add
 sdk::UObjectBase* object(const Identity& id) { return reinterpret_cast<sdk::UObjectBase*>(id.object); }
 std::optional<Identity> observe(sdk::UObjectBase* value) {
     const auto observed = sdk::observe_uobject(value);
+    if (!observed) { return {}; }
     return observation::fresh(observed, reinterpret_cast<uintptr_t>(value), &sdk::FUObjectArray::get_layout(),
         sdk::UObjectBase::published_header_layout(), sdk::object_liveness::current_policy());
 }
