@@ -8381,6 +8381,11 @@ void VR::handle_keybinds() {
 void VR::on_frame() {
     ZoneScopedN(__FUNCTION__);
 
+    if (!sdk::where_seeds_fall_version_ready()) {
+        SPDLOG_WARNING_EVERY_N_SEC(5, "[WhereSeedsFall] Waiting for a validated native engine version before CVars, reflection and stereo hooks");
+        return;
+    }
+
     m_last_mod_frame = std::chrono::steady_clock::now();
     m_cvar_manager->on_frame();
     handle_keybinds();

@@ -13464,14 +13464,16 @@ FFakeStereoRenderingHook::FFakeStereoRenderingHook() {
         sw_zero_company_ue56_install_nanite_hologram_guard();
     }
 
-    m_uses_ue58_rendertarget_manager =
-        uevr::vr_compatibility::should_use_ue58_render_target_manager_abi(is_ue_5_8());
+    if (sdk::where_seeds_fall_version_ready()) {
+        m_uses_ue58_rendertarget_manager =
+            uevr::vr_compatibility::should_use_ue58_render_target_manager_abi(is_ue_5_8());
 
-    if (m_uses_ue58_rendertarget_manager) {
-        SPDLOG_INFO("[UE5.8] Render-target-manager ABI defaults to public and requires exact call-pair evidence before using a transitional layout");
+        if (m_uses_ue58_rendertarget_manager) {
+            SPDLOG_INFO("[UE5.8] Render-target-manager ABI defaults to public and requires exact call-pair evidence before using a transitional layout");
+        }
+
+        m_prefer_slate_thread_for_session = load_ue57_slate_thread_preference();
     }
-
-    m_prefer_slate_thread_for_session = load_ue57_slate_thread_preference();
     setup_options();
 }
 
@@ -13629,6 +13631,16 @@ void FFakeStereoRenderingHook::observe_ue58_render_target_manager_abi(uintptr_t 
 }
 
 void FFakeStereoRenderingHook::on_frame() {
+    if (sdk::is_where_seeds_fall_game()) {
+        if (!sdk::where_seeds_fall_version_ready()) { return; }
+        if (!m_attempted_hook_game_engine_tick) {
+            // Construction can precede publication of the native version.
+            // Do not cache unknown metadata or load preference files every frame.
+            m_uses_ue58_rendertarget_manager =
+                uevr::vr_compatibility::should_use_ue58_render_target_manager_abi(is_ue_5_8());
+            m_prefer_slate_thread_for_session = load_ue57_slate_thread_preference();
+        }
+    }
     if (uevr::nascar::is_target()) {
         if (!uevr::nascar::is_validated_build()) { return; }
         // Publish the UI adapter before Tick can initialize stereo on another thread.
