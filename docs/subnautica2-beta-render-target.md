@@ -54,3 +54,19 @@ The accessor proof is cached per vtable; those getters are never executed.
 Changed layouts or scene identities preserve the original draw. The texture
 is restored after the original call and on unwinding. DestroyState, resource
 dimensions, the shared SDK offset and Native Fix remain unchanged.
+
+## Native Fix enabled before injection
+
+Starting in ordinary Native, then enabling Native Fix, was confirmed working.
+A separate startup attempt with Native Fix already enabled stopped on the first
+game tick: its hang dump records an execute access violation in the temporary
+post-projection hook stub, whose page is non-executable during the trap.
+This occurs before the scene/Slate allocation correction can run.
+
+The Test executable now uses the existing projection-entry LocalPlayer bootstrap,
+as Subnautica Shipping already does, rather than patching the immediate projection
+return address. Its PDB confirms `ULocalPlayer::GetProjectionData` takes LocalPlayer
+in RCX, as that guarded bootstrap expects. Existing entry discovery, callable
+PostInit validation, one-time completion and fail-closed handling are preserved.
+There is no timer, settings change, exception-retry bypass or shared SafetyHook
+protection change. The corrected scene and Slate paths are unchanged.

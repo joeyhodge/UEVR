@@ -31124,8 +31124,9 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
                     is_ue_5_5_runtime() &&
                     g_framework != nullptr &&
                     g_framework->is_dx12();
+                const bool subnautica2_beta_safe_bootstrap = subnautica2_beta_dx12_runtime();
                 const bool use_projection_entry_bootstrap =
-                    subnautica2_is_current_game() || captain_tsubasa2_safe_bootstrap;
+                    subnautica2_is_current_game() || subnautica2_beta_safe_bootstrap || captain_tsubasa2_safe_bootstrap;
 
                 if (use_projection_entry_bootstrap && !g_hook->m_hooked_alternative_localplayer_scan) {
                     // These optimized builds can fault in the generated trampoline when
@@ -31133,7 +31134,8 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
                     // LocalPlayer from RCX at the containing projection function entry.
                     constexpr auto max_stack_depth = 100;
                     uintptr_t stack[max_stack_depth]{};
-                    const auto* bootstrap_label = captain_tsubasa2_safe_bootstrap ? "CaptainTsubasa2" : "Subnautica2";
+                    const auto* bootstrap_label = captain_tsubasa2_safe_bootstrap ? "CaptainTsubasa2" :
+                        subnautica2_beta_safe_bootstrap ? "Subnautica2Beta" : "Subnautica2";
 
                     const auto depth = RtlCaptureStackBackTrace(0, max_stack_depth, (void**)&stack, nullptr);
                     g_hook->m_projection_matrix_stack.clear();
