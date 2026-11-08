@@ -2419,6 +2419,15 @@ bool dune_is_auxiliary_view_family(sdk::FSceneViewFamily* view_family, const cha
     }
 }
 
+bool subnautica2_beta_dx12_runtime() {
+    if (g_framework == nullptr || !g_framework->is_dx12()) { return false; }
+    static const bool target = [] {
+        const auto path = utility::get_module_pathw(utility::get_executable());
+        return path && uevr::subnautica2_beta::target(*path, sdk::get_file_version_info().dwFileVersionMS);
+    }();
+    return target;
+}
+
 bool subnautica2_is_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -41188,6 +41197,39 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
         }
     }
 
+    if (subnautica2_beta_dx12_runtime() && rtm->subnautica2_beta_finalize_output) {
+        const auto address = rtm->subnautica2_beta_finalize_output->address(ctx.rsp, ctx.rbp);
+        const auto candidate = address ? recover_texture_from_ref(*address, "validated Finalize output") : nullptr;
+        const auto device = g_framework->get_d3d12_hook()->get_device();
+        const auto vr = VR::get();
+        std::array<uint8_t, 0x54> rhi_desc{};
+        if (candidate && device && vr && candidate != rtm->get_dedicated_ui_target() &&
+            sdk::discovery::read_process(nullptr, reinterpret_cast<uintptr_t>(candidate), rhi_desc.data(), rhi_desc.size()) &&
+            uevr::subnautica2_beta::rhi_shape(rhi_desc, vr->get_hmd_width(), vr->get_hmd_height())) {
+            Microsoft::WRL::ComPtr<ID3D12Resource> resource = static_cast<ID3D12Resource*>(candidate->get_native_resource());
+            Microsoft::WRL::ComPtr<ID3D12Device> owner;
+            Microsoft::WRL::ComPtr<IUnknown> owner_identity, device_identity;
+            if (resource && SUCCEEDED(resource->GetDevice(IID_PPV_ARGS(&owner))) &&
+                SUCCEEDED(owner.As(&owner_identity)) && SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&device_identity))) &&
+                owner_identity.Get() == device_identity.Get()) {
+                const auto desc = resource->GetDesc();
+                if (desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && desc.DepthOrArraySize == 1 &&
+                    desc.MipLevels == 1 && desc.SampleDesc.Count == 1 && desc.SampleDesc.Quality == 0 &&
+                    desc.Format != DXGI_FORMAT_UNKNOWN && (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != 0 &&
+                    (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) == 0 &&
+                    uevr::subnautica2_beta::scene_extent(desc.Width, desc.Height, vr->get_hmd_width(), vr->get_hmd_height())) {
+                    const bool changed = texture != candidate;
+                    texture = candidate;
+                    texture_source = "validated Finalize output";
+                    if (changed) {
+                        SPDLOG_INFO("[Subnautica2Beta][SceneTarget] Adopted engine-owned scene {:x} [{}x{} fmt={}] from the Finalize output; no RAX guess",
+                            reinterpret_cast<uintptr_t>(texture), desc.Width, desc.Height, static_cast<uint32_t>(desc.Format));
+                    }
+                }
+            }
+        }
+    }
+
     if ((!shf_is_current_game() || !g_framework->is_dx12()) && !is_ue_5_1_dx12_backend()) {
         SPDLOG_INFO(" last texture index: {}", rtm->last_texture_index);
     }
@@ -45084,6 +45126,7 @@ bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return
         struct UE57TextureCreateSequence {
             DirectCallInfo create_initializer{};
             DirectCallInfo finalize{};
+            std::optional<uevr::subnautica2_beta::FinalizeOutput> beta_output;
         };
 
         auto find_ue57_texture_create_sequence = [&](uintptr_t start) -> std::optional<UE57TextureCreateSequence> {
@@ -45098,9 +45141,20 @@ bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return
                 if (has_ue57_create_initializer_setup(setup_start, calls[i].callsite) &&
                     has_ue57_finalize_setup(finalize_setup_start, calls[i + 1].callsite))
                 {
+                    std::optional<uevr::subnautica2_beta::FinalizeOutput> output;
+                    if (subnautica2_beta_dx12_runtime()) {
+                        const auto bytes = calls[i + 1].callsite - finalize_setup_start;
+                        std::array<uint8_t, 0x30> setup{};
+                        if (bytes > setup.size() || !sdk::discovery::read_process(nullptr, finalize_setup_start, setup.data(), bytes)) {
+                            return std::nullopt;
+                        }
+                        output = uevr::subnautica2_beta::finalize_output(std::span{setup}.first(bytes));
+                        if (!output) { return std::nullopt; }
+                    }
                     return UE57TextureCreateSequence{
                         .create_initializer = calls[i],
-                        .finalize = calls[i + 1]
+                        .finalize = calls[i + 1],
+                        .beta_output = output
                     };
                 }
             }
@@ -45290,6 +45344,11 @@ bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return
                                 this->texture_extract_func = 0;
                                 this->texture_finalize_callsite = 0;
                                 this->texture_extract_callsite = 0;
+                                this->subnautica2_beta_finalize_output = texture_sequence->beta_output;
+                                if (this->subnautica2_beta_finalize_output) {
+                                    this->texture_finalize_callsite = texture_sequence->finalize.callsite;
+                                    SPDLOG_INFO("[Subnautica2Beta][SceneTarget] Validated the engine Finalize output stack contract");
+                                }
 
                                 SPDLOG_INFO("Resolved UE 5.7 texture-desc helper {:x}, wrapper {:x}, and finalize helper {:x}",
                                     this->texture_desc_prepare_func,

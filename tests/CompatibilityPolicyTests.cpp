@@ -28,6 +28,7 @@
 #include "mods/vr/SWZeroCompanyBinary.hpp"
 #include "mods/vr/GearsEDayAllocation.hpp"
 #include "PhantomBladeZeroUITests.hpp"
+#include "Subnautica2BetaRenderTargetTests.hpp"
 #include "CVarExistingPriorityTests.hpp"
 #include "B1RendererTests.hpp"
 #include "StellarBladeSlateTests.hpp"
@@ -2661,6 +2662,7 @@ int main(int argc, char** argv) {
     test_sifu_callable_renderer_entry();
     test_sifu_native_mesh_commands();
     test_sw_zero_company_binary_revisions();
+    test_subnautica2_beta_render_target(expect);
 
     if (failures != 0) {
         std::cerr << failures << " compatibility policy test(s) failed\n";
