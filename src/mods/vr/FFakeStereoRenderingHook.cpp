@@ -56,6 +56,7 @@
 #include "utility/HookDiagnostics.hpp"
 #include "utility/ValidationThreshold.hpp"
 #include "utility/SceneStateValidation.hpp"
+#include "ProSpiSlateValidation.hpp"
 #include "UE521ViewExtensionCode.hpp"
 #include <sdk/KtjLStereoBootstrap.hpp>
 #include <sdk/KingdomHearts3Runtime.hpp>
@@ -39182,6 +39183,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     const auto engine_texture = *slate_texture_cell;
     bool engine_texture_native_ok = true;
+    bool deferred_engine_texture_proof{};
     bool provider_texture_native_ok = true;
     const auto vr_state = VR::get();
     const bool naruto_waiting_for_verified_scene_target =
@@ -39195,7 +39197,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         rtm->get_render_target() != nullptr &&
         rtm->get_ui_target() != nullptr;
 
-    if (engine_texture != nullptr && !IsBadReadPtr(engine_texture, sizeof(void*))) {
+    const auto validate_engine_texture = [&] {
         const auto engine_texture_object_ok = looks_like_vtable_object(engine_texture);
         engine_texture_native_ok =
             engine_texture_object_ok &&
@@ -39213,6 +39215,27 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         } else if (!ue56_d3d12_targets_ready) {
             SPDLOG_WARNING_EVERY_N_SEC(2,
                 "[UE5.6][RT] Not adopting Slate viewport texture because native-resource discovery failed; waiting for D3D12 texture/backbuffer hooks");
+        }
+    };
+
+    if (engine_texture != nullptr && !IsBadReadPtr(engine_texture, sizeof(void*))) {
+        if (prospi_is_current_game() && is_ue_4_27_runtime() && g_framework->is_dx12() &&
+            vr_state != nullptr && vr_state->is_native_stereo_fix_enabled())
+        {
+            uintptr_t current_table{};
+            deferred_engine_texture_proof =
+                safe_read_value(reinterpret_cast<uintptr_t>(engine_texture), current_table) &&
+                uevr::prospi::slate_validation::may_defer_unused_proof({
+                    true, g_hook->has_seen_stable_slate_draw(), rtm->get_render_target() != nullptr,
+                    rtm->get_ui_target() != nullptr, current_table,
+                    reinterpret_cast<uintptr_t>(FRHITexture2D::get_vtable())});
+        }
+        if (deferred_engine_texture_proof) {
+            // No positive texture proof is retained. A later fallback must
+            // validate before adopting it, even inside this same callback.
+            engine_texture_native_ok = false;
+        } else {
+            validate_engine_texture();
         }
 
         if (engine_texture_native_ok &&
@@ -39388,6 +39411,14 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Adopting viewport RT provider texture as dedicated UI target fallback");
                 rtm->get_fallback_ui_target_ref() = provider_texture;
             }
+        }
+
+        if (uevr::prospi::slate_validation::needs_late_proof(deferred_engine_texture_proof,
+                ui_target != nullptr, reinterpret_cast<uintptr_t>(engine_texture),
+                reinterpret_cast<uintptr_t>(render_target_fallback)) &&
+            !IsBadReadPtr(engine_texture, sizeof(void*)))
+        {
+            validate_engine_texture();
         }
 
         if (ui_target == nullptr && engine_texture_native_ok && engine_texture != nullptr && !IsBadReadPtr(engine_texture, sizeof(void*)) && engine_texture != render_target_fallback) {

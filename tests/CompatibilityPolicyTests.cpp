@@ -38,6 +38,7 @@
 #include "ValidationThresholdTests.hpp"
 #include "SceneStateValidationTests.hpp"
 #include "SceneStateWindowsTests.hpp"
+#include "ProSpiSlateValidationTests.hpp"
 #include "UE521ViewExtensionTests.hpp"
 
 namespace {
@@ -2588,6 +2589,7 @@ int main(int argc, char** argv) {
     validation_threshold_tests::run(expect);
     scene_state_validation_tests::run(expect);
     scene_state_windows_tests::run(expect);
+    prospi_slate_validation_tests::run(expect);
     prospi_player_tests::run(expect);
     prospi_player_cut_tests::run(expect);
     ue58_native_tests::run(expect);
