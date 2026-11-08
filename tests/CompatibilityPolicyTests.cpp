@@ -37,7 +37,6 @@
 #include "ProSpiPlayerCutTests.hpp"
 #include "ValidationThresholdTests.hpp"
 #include "SceneStateValidationTests.hpp"
-#include "SceneStateWindowsTests.hpp"
 #include "ProSpiSlateValidationTests.hpp"
 #include "ProSpiFreshObservationTests.hpp"
 #include "UE521ViewExtensionTests.hpp"
@@ -2584,6 +2583,7 @@ void test_ktjl_hook_contracts() {
 #include "Pre57SlateDiscoveryTests.hpp"
 #include "Pre57UIResourceTests.hpp"
 #include "UE58NativeFixTests.hpp"
+#include "SceneStateWindowsTests.hpp"
 
 int main(int argc, char** argv) {
     ue521_view_extension_tests::run(expect);
