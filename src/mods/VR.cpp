@@ -1,5 +1,6 @@
 #define NOMINMAX
 
+#include "vr/NativeOpenXRArrayPolicy.hpp"
 #include "vr/ControllerTouchBindings.hpp"
 #include "vr/StockFrameBindingMigration.hpp"
 
@@ -2675,11 +2676,25 @@ bool VR::is_stalker2_native_fix_experiment_enabled() const {
         is_using_2d_screen()}.enabled();
 }
 
+bool VR::is_native_stereo_fix_texture_array_submit_enabled() const {
+    const auto* runtime = get_runtime();
+    // Config loads before the first on_frame assignment to m_is_d3d12.
+    return uevr::native_array::Scope{m_native_stereo_fix_texture_array_submit->value(),
+        is_native_stereo_fix_enabled(), is_native_stereo_fix_same_pass_enabled(),
+        g_framework != nullptr && g_framework->is_dx12(), runtime != nullptr && runtime->is_openxr(),
+        m_rendering_method->value() == RenderingMethod::NATIVE_STEREO, is_using_afr(), uevr::nascar::is_target()}.enabled();
+}
+
+bool VR::is_native_stereo_array_ready() const {
+    return m_openxr != nullptr && get_runtime() == m_openxr.get() &&
+        m_d3d12.openxr().native_array_ready(m_openxr->session, get_hmd_width(), get_hmd_height());
+}
+
 bool VR::is_native_openxr_async_wait_active() const {
     return is_native_stereo_fix_async_openxr_wait_enabled() &&
         m_openxr != nullptr &&
         get_runtime() != nullptr &&
-        get_runtime()->is_openxr();
+        get_runtime()->is_openxr() && is_native_stereo_array_ready() && m_d3d12.openxr().native_array_last_copy_ok();
 }
 
 void VR::ensure_native_openxr_async_wait_worker() {
@@ -9199,9 +9214,7 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             m_native_stereo_fix_texture_array_submit->draw("Experimental OpenXR Texture-Array Submit");
             {
                 const auto runtime = get_runtime();
-                const bool has_array_swapchain =
-                    m_openxr != nullptr &&
-                    m_openxr->swapchains.contains((uint32_t)runtimes::OpenXR::SwapchainIndex::NATIVE_STEREO_ARRAY);
+                const bool has_array_swapchain = is_native_stereo_array_ready();
 
                 if (!m_native_stereo_fix_texture_array_submit->value()) {
                     draw_status_badge("Texture-array status:", "skipped: disabled", skipped_color);
@@ -9209,16 +9222,17 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                     draw_status_badge("Texture-array status:", "blocked: Use Same Stereo Pass is on", blocked_color);
                 } else if (!is_native_stereo_fix_enabled()) {
                     draw_status_badge("Texture-array status:", "blocked: Native Stereo Fix inactive", blocked_color);
-                } else if (!m_is_d3d12) {
+                } else if (g_framework == nullptr || !g_framework->is_dx12()) {
                     draw_status_badge("Texture-array status:", "blocked: D3D12 required", blocked_color);
                 } else if (runtime == nullptr || !runtime->is_openxr()) {
                     draw_status_badge("Texture-array status:", "blocked: OpenXR required", blocked_color);
                 } else if (m_rendering_method->value() != RenderingMethod::NATIVE_STEREO) {
                     draw_status_badge("Texture-array status:", "blocked: Native Stereo required", blocked_color);
                 } else if (has_array_swapchain) {
-                    draw_status_badge("Texture-array status:", "active", active_color);
+                    draw_status_badge("Texture-array status:", m_d3d12.openxr().native_array_last_copy_ok()
+                        ? "active: validated array copy submitted" : "ready: waiting for a validated eye copy", active_color);
                 } else {
-                    draw_status_badge("Texture-array status:", "fell back: array swapchain unavailable", fallback_color);
+                    draw_status_badge("Texture-array status:", m_d3d12.openxr().native_array_status(), fallback_color);
                 }
             }
             if (is_native_stereo_fix_same_pass_enabled()) {
@@ -9227,7 +9241,8 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             }
             ImGui::TextWrapped(
                 "Default off. D3D12 + OpenXR + Native Stereo Fix only, and requires Use Same Stereo Pass OFF. "
-                "Copies each eye into a two-slice OpenXR swapchain and falls back to the existing double-wide path if unavailable.");
+                "Copies each eye into a two-slice OpenXR swapchain and falls back to the existing double-wide path if unavailable. "
+                "Can be enabled mid-game; allocation retries are bounded. Toggle off/on to re-arm after the retry limit.");
             m_native_stereo_fix_async_openxr_wait->draw("Experimental Async OpenXR Wait/Pre-Acquire");
             if (!m_native_stereo_fix_async_openxr_wait->value()) {
                 draw_status_badge("Async wait status:", "skipped: disabled", skipped_color);
@@ -9235,9 +9250,10 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                 draw_status_badge("Async wait status:", "blocked: Use Same Stereo Pass is on", blocked_color);
             } else if (!is_native_stereo_fix_texture_array_submit_enabled()) {
                 draw_status_badge("Async wait status:", "blocked: texture-array submit inactive", blocked_color);
-            } else if (m_openxr == nullptr ||
-                       !m_openxr->swapchains.contains((uint32_t)runtimes::OpenXR::SwapchainIndex::NATIVE_STEREO_ARRAY)) {
+            } else if (!is_native_stereo_array_ready()) {
                 draw_status_badge("Async wait status:", "fell back: array swapchain unavailable", fallback_color);
+            } else if (!m_d3d12.openxr().native_array_last_copy_ok()) {
+                draw_status_badge("Async wait status:", "waiting: validated array copy required", fallback_color);
             } else if (is_native_openxr_async_wait_active()) {
                 draw_status_badge("Async wait status:", "active: opportunistic pre-acquire", active_color);
             } else {
