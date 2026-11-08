@@ -3694,7 +3694,7 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
     }
 
     const auto has_native_stereo_array =
-        uevr::native_array::current_copy(vr->is_native_stereo_array_ready(), is_afr, mono,
+        uevr::native_array::current_copy(vr->is_native_stereo_array_ready(), is_afr, false,
             native_array_copy_time.load(std::memory_order_acquire), frame_state.predictedDisplayTime) &&
         this->swapchains.contains((uint32_t)OpenXR::SwapchainIndex::NATIVE_STEREO_ARRAY);
 
