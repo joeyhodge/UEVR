@@ -145,6 +145,7 @@
 #include "Borderlands4Slate.hpp"
 #include "Pre57SlateDiscovery.hpp"
 #include "Pre57SlateCode.hpp"
+#include "Subnautica2BetaSlate.hpp"
 #include "utility/ReadOnlyPointerAccessor.hpp"
 #include "utility/DiagnosticChange.hpp"
 #include "utility/D3D12ResourceInterface.hpp"
@@ -38377,6 +38378,12 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         viewport_info = ue55_inputs.viewport_info;
     }
 
+    if (subnautica2_beta_dx12_runtime() &&
+        (!a4_is_ue_5_5_variant || !a4_has_ue_5_5_full_inputs || ue55_inputs_full.renderer != renderer)) {
+        SPDLOG_WARNING_EVERY_N_SEC(10, "[Subnautica2Beta][SlateUI] Unvalidated DrawWindow inputs; preserving the original draw");
+        return g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
+    }
+
     if (redemption_sin_eternal_is_current_game() &&
         is_ue_5_6_dx12_backend() &&
         a4_is_ue_5_5_variant)
@@ -39059,7 +39066,42 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         return call_orig();
     }
 
-    const auto engine_texture = slate_resource->get_mutable_resource();
+    FRHITexture2D** slate_texture_cell{};
+    const bool beta_slate = subnautica2_beta_dx12_runtime();
+    if (beta_slate) {
+        namespace beta_ui = uevr::subnautica2_beta::slate;
+        std::array<uint8_t, beta_ui::resource_bytes> bytes{};
+        const auto object = reinterpret_cast<uintptr_t>(slate_resource);
+        const auto reference = sdk::discovery::read_process(nullptr, object, bytes.data(), bytes.size())
+            ? beta_ui::reference(object, bytes, reinterpret_cast<uintptr_t>(rtm->get_render_target())) : std::nullopt;
+        static std::atomic<uintptr_t> verified_table{};
+        bool layout_proven = reference && verified_table.load(std::memory_order_acquire) == reference->vtable;
+        if (reference && !layout_proven) {
+            std::array<uintptr_t, 2> getters{};
+            std::array<uint8_t, 16> width_code{}, height_code{};
+            const auto executable = utility::get_executable();
+            layout_proven = utility::get_module_within(reference->vtable).value_or(nullptr) == executable &&
+                sdk::discovery::read_process(nullptr, reference->vtable, getters.data(), sizeof(getters)) &&
+                utility::get_module_within(getters[0]).value_or(nullptr) == executable &&
+                utility::get_module_within(getters[1]).value_or(nullptr) == executable &&
+                is_executable_process_range(getters[0], width_code.size()) &&
+                is_executable_process_range(getters[1], height_code.size()) &&
+                sdk::discovery::read_process(nullptr, getters[0], width_code.data(), width_code.size()) &&
+                sdk::discovery::read_process(nullptr, getters[1], height_code.data(), height_code.size()) &&
+                beta_ui::dimension_getter(width_code, 0x28) && beta_ui::dimension_getter(height_code, 0x2c);
+            if (layout_proven) { verified_table.store(reference->vtable, std::memory_order_release); }
+        }
+        if (!reference || !layout_proven || !is_writable_process_range(reference->cell, sizeof(FRHITexture2D*))) {
+            SPDLOG_WARNING_EVERY_N_SEC(10, "[Subnautica2Beta][SlateUI] Texture member/layout/scene ownership is unproven; preserving the original draw");
+            return call_orig();
+        }
+        slate_texture_cell = reinterpret_cast<FRHITexture2D**>(reference->cell);
+        SPDLOG_INFO_ONCE("[Subnautica2Beta][SlateUI] Verified read-only dimension getters and current scene; redirecting ShaderResource at +0x10, not DestroyState at +0x8");
+    } else {
+        slate_texture_cell = &slate_resource->get_mutable_resource();
+    }
+
+    const auto engine_texture = *slate_texture_cell;
     bool engine_texture_native_ok = true;
     bool provider_texture_native_ok = true;
     const auto vr_state = VR::get();
@@ -39331,7 +39373,11 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     // Replace the texture with one we have control over.
     // This isolates the UI to render on our own texture separate from the scene.
-    const auto old_texture = slate_resource->get_mutable_resource();
+    const auto old_texture = *slate_texture_cell;
+    bool beta_slate_redirected = false;
+    utility::ScopeGuard beta_slate_restore{[&] {
+        if (beta_slate_redirected) { *slate_texture_cell = old_texture; }
+    }};
 
     bool naruto_slate_viewport_filter_armed = false;
     sdk::TConsoleVariableData<float>* naruto_slate_draw_to_vr_target_cvar = nullptr;
@@ -39414,14 +39460,16 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     };
     utility::ScopeGuard naruto_slate_scope_guard{restore_naruto_slate_scope};
 
-    slate_resource->get_mutable_resource() = ui_target;
+    beta_slate_redirected = beta_slate;
+    *slate_texture_cell = ui_target;
 
     // To be seen if we need to resort to a MidHook on this function if the parameters
     // are wildly different between UE versions.
     const auto ret = g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
 
     // Restore the old texture.
-    slate_resource->get_mutable_resource() = old_texture;
+    *slate_texture_cell = old_texture;
+    beta_slate_redirected = false;
     restore_naruto_slate_scope();
 
     for (auto& mod : mods) {
