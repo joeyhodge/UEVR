@@ -36,3 +36,21 @@ any scene copy or submit, so correct UI composition must be checked again once
 that earlier failure is removed. No settings, rendering method or CVars are
 changed. A future engine/layout change needs a new validation, not an address
 bump or a blanket extension of the Shipping fixes.
+
+## Slate texture member
+
+The first scene-source correction was confirmed working in Native and Native
+Fix, but the UI remained clipped. The beta's developer PDB gives the
+`FSlateShaderResource` base a `DestroyState` member at +8. Its derived
+`TSlateTexture` stores the actual texture at +0x10, which is also the member
+read by the original `DrawWindow_RenderThread`. The legacy mutable-resource
+accessor defaults to +8 when the old provider scan is bypassed on UE5.7.
+Changing that field does not redirect the UI.
+
+The beta now selects a scoped +0x10 cell only when the resource points to the
+current scene texture, its dimensions are sane, and its module-owned first
+two virtuals are proven read-only Width/Height accessors at +0x28/+0x2c.
+The accessor proof is cached per vtable; those getters are never executed.
+Changed layouts or scene identities preserve the original draw. The texture
+is restored after the original call and on unwinding. DestroyState, resource
+dimensions, the shared SDK offset and Native Fix remain unchanged.
