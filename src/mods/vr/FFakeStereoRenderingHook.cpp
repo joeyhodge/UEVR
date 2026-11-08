@@ -55,6 +55,7 @@
 #include "GearsEDayNativeFix.hpp"
 #include "utility/HookDiagnostics.hpp"
 #include "utility/ValidationThreshold.hpp"
+#include "utility/SceneStateValidation.hpp"
 #include "UE521ViewExtensionCode.hpp"
 #include <sdk/KtjLStereoBootstrap.hpp>
 #include <sdk/KingdomHearts3Runtime.hpp>
@@ -26213,6 +26214,13 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             {
                 std::scoped_lock lock{g_hook->m_sceneview_data.mtx};
                 const auto& metadata = g_hook->m_sceneview_data.native_stereo_views;
+                const bool share_state_type = is_ue_4_27_runtime() && prospi_is_current_game();
+                auto scene_state_checks = utility::scene_state_validation::batch<2>(
+                    [](uintptr_t address, uintptr_t& value) { return safe_read_value(address, value); },
+                    [](uintptr_t table, uintptr_t first) {
+                        return is_executable_process_range(first, 1) &&
+                            utility::get_module_within(reinterpret_cast<void*>(table)).has_value();
+                    });
                 for (uint32_t view_index = 0; view_index < 2; ++view_index) {
                     auto* const candidate_view = candidate_views->data[view_index];
                     const auto metadata_it = metadata.find(candidate_view);
@@ -26238,7 +26246,9 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
                         pair_reject_reason = "PlayerIndex is outside the validated range";
                         break;
                     }
-                    if (item.state == nullptr || !ghosting_is_valid_scene_state(item.state)) {
+                    if (item.state == nullptr || !(share_state_type
+                            ? scene_state_checks.check(reinterpret_cast<uintptr_t>(item.state))
+                            : ghosting_is_valid_scene_state(item.state))) {
                         pair_valid = false;
                         pair_reject_reason = "scene state is null or invalid";
                         break;
