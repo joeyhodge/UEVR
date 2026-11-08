@@ -389,6 +389,18 @@ add_test(NAME mono-d3d12-tests COMMAND mono-d3d12-tests)
 set_tests_properties(mono-d3d12-tests PROPERTIES TIMEOUT 30)
 """
 
+[target.native-openxr-array-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/NativeOpenXRArrayTests.cpp"]
+include-directories = ["src/"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["d3d12", "dxgi"]
+cmake-after = """
+add_test(NAME native-openxr-array-tests COMMAND native-openxr-array-tests)
+set_tests_properties(native-openxr-array-tests PROPERTIES TIMEOUT 30)
+"""
+
 [target.stalker2-native-policy-tests]
 condition = "compatibility-policy-tests"
 type = "executable"

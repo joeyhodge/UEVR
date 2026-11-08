@@ -234,6 +234,8 @@ public:
     std::recursive_mutex sync_assignment_mtx{};
     std::recursive_mutex event_mtx{};
     std::recursive_mutex swapchain_mtx{};
+    void note_native_array_copy(bool success);
+    std::atomic<XrTime> native_array_copy_time{0};
 
     // Making it static because for some reason destroying it doesn't actually completely destroy everything.
     // So we must make sure it always exists if we ever re-initialize OpenXR.

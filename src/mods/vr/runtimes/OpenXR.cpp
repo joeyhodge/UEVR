@@ -24,6 +24,7 @@
 #include "../../VR.hpp"
 #include "../../../utility/Logging.hpp"
 #include "OpenXR.hpp"
+#include "../NativeOpenXRArrayPolicy.hpp"
 #include "../UIComposition.hpp"
 #include "../SteamFrameBindings.hpp"
 
@@ -3868,6 +3869,12 @@ XrResult OpenXR::begin_frame(const char* caller) {
     return result;
 }
 
+void OpenXR::note_native_array_copy(bool success) {
+    std::scoped_lock lock{sync_mtx};
+    native_array_copy_time.store(success && frame_began && frame_synced ? frame_state.predictedDisplayTime : 0,
+        std::memory_order_release);
+}
+
 XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& quad_layers, bool has_depth,
     uevr::ui_composition::Compositor* ui_composition) {
     std::scoped_lock _{sync_mtx};
@@ -3902,8 +3909,8 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
     }
 
     const auto has_native_stereo_array =
-        !is_afr &&
-        vr->is_native_stereo_fix_texture_array_submit_enabled() &&
+        uevr::native_array::current_copy(vr->is_native_stereo_array_ready(), is_afr, mono,
+            native_array_copy_time.load(std::memory_order_acquire), frame_state.predictedDisplayTime) &&
         this->swapchains.contains((uint32_t)OpenXR::SwapchainIndex::NATIVE_STEREO_ARRAY);
 
     if (is_afr || has_native_stereo_array) {
