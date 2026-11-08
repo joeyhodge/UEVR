@@ -4441,6 +4441,17 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                         expected.Format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
                         bool recorded = false;
                         ID3D12Resource* array_destination{};
+                        // Own the selection through copy/release; failed copies must not consume it.
+                        const auto complete_array_copy = [native_stereo_packet, native_stereo_hook, native_frame_ticket](
+                            bool native_capture, ID3D12Resource* source, ID3D12Resource* destination) {
+                            if (!native_capture || !native_stereo_packet || !native_stereo_hook) { return; }
+                            if (native_frame_ticket) {
+                                native_stereo_hook->record_native_frame_stage(*native_stereo_packet, native_frame_ticket,
+                                    frame_diag::Backend::d3d12, frame_diag::Runtime::openxr, frame_diag::Stage::copy_recorded,
+                                    0, 2, 0, source, destination);
+                            }
+                            native_stereo_hook->note_native_stereo_frame_packet_consumed(native_stereo_packet->serial);
+                        };
                         if (uevr::native_array::pair_copy(sources[0]->GetDesc(), sources[1]->GetDesc(), expected, left_box, right_box)) {
                             native_stereo_array_submit_active = m_openxr.copy(native_stereo_array_swapchain, nullptr,
                                 [sources, left_box, right_box, left_state, right_state, &recorded, &array_destination](
@@ -4460,21 +4471,23 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                         vr->m_openxr->note_native_array_copy(native_stereo_array_submit_active);
                         if (native_stereo_array_submit_active) {
                             SPDLOG_INFO_ONCE("[OpenXR][native] Texture-array submit active: validated left/right slices");
-                            if (native_capture && native_stereo_hook) {
-                                if (native_frame_ticket) {
-                                    native_stereo_hook->record_native_frame_stage(*native_stereo_packet, native_frame_ticket,
-                                        frame_diag::Backend::d3d12, frame_diag::Runtime::openxr, frame_diag::Stage::copy_recorded,
-                                        0, 2, 0, sources[1].Get(), array_destination);
-                                }
-                                native_stereo_hook->note_native_stereo_frame_packet_consumed(native_stereo_packet->serial);
-                            }
+                            complete_array_copy(native_capture, sources[1].Get(), array_destination);
                         } else {
                             m_openxr.release_acquired(native_stereo_array_swapchain);
                             SPDLOG_INFO_ONCE("[OpenXR][native] Array copy not validated; preserving double-wide fallback");
                         }
                     }
                     if (!native_stereo_array_submit_active) {
-                        copy_stalker_pair();
+                        if (stalker_exact) {
+                            copy_stalker_pair();
+                        } else if (native_stereo_packet == nullptr ||
+                                   m_scene_capture_tex.texture.Get() == nullptr ||
+                                   shf_using_mono_expansion ||
+                                   dune_using_hmd_mono_expansion) {
+                            m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE, backbuffer.Get(), scene_source_state, nullptr);
+                        } else {
+                            m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE, nullptr, pre_render, std::nullopt, D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr);
+                        }
                     }
 
                     if (scene_depth_tex != nullptr && !native_stereo_array_submit_active) {
