@@ -3,6 +3,7 @@
 #include "ProSpiRoofVisibilityPolicy.hpp"
 #include "ProSpiRoofVisibilityCode.hpp"
 #include "ProSpiStadiumDiscovery.hpp"
+#include "ProSpiFreshObservation.hpp"
 
 #include <Windows.h>
 #include <sdk/UObjectArray.hpp>
@@ -37,9 +38,17 @@ bool read_bytes(uintptr_t address, void* out, size_t bytes) {
 template<class T> bool read(uintptr_t address, T& value) { return read_bytes(address, &value, sizeof(T)); }
 sdk::UObjectBase* object(const Identity& id) { return reinterpret_cast<sdk::UObjectBase*>(id.object); }
 std::optional<Identity> observe(sdk::UObjectBase* value) {
-    const auto observation = sdk::observe_uobject(value);
-    if (!observation || !sdk::is_current_object(observation->identity)) { return {}; }
-    return observation->identity;
+    const auto observed = sdk::observe_uobject(value);
+    return observation::fresh(observed, reinterpret_cast<uintptr_t>(value), &sdk::FUObjectArray::get_layout(),
+        sdk::UObjectBase::published_header_layout(), sdk::object_liveness::current_policy());
+}
+std::optional<Identity> observe_runtime(sdk::UObjectBase* value) {
+    const auto id = observe(value);
+    uint32_t flags{};
+    if (!id || !read(id->object + sdk::UObjectBase::get_object_flags_offset(), flags) ||
+        (flags & non_runtime_flags) || !observation::published(*id, &sdk::FUObjectArray::get_layout(),
+            sdk::UObjectBase::published_header_layout())) { return {}; }
+    return id;
 }
 bool runtime(const Identity& id) {
     uint32_t flags{};
@@ -53,6 +62,10 @@ bool has_class(const Identity& id, const Identity& cls) {
 std::optional<Identity> outer(const Identity& id) {
     sdk::UObjectBase* value{};
     return read(id.object + sdk::UObjectBase::get_outer_private_offset(), value) ? observe(value) : std::nullopt;
+}
+std::optional<Identity> runtime_outer(const Identity& id) {
+    sdk::UObjectBase* value{};
+    return read(id.object + sdk::UObjectBase::get_outer_private_offset(), value) ? observe_runtime(value) : std::nullopt;
 }
 
 struct Boolean {
@@ -446,8 +459,8 @@ struct VisibilityGuard::Impl : std::enable_shared_from_this<Impl> {
             runtime(entry.level), current_scope, owner_hidden, component_hidden}.accepted();
     }
     Entry* learn(sdk::UObjectBase* component, std::optional<bool> requested = {}) {
-        const auto id = observe(component);
-        if (!id || !runtime(*id) || !has_class(*id, component_class)) { return nullptr; }
+        const auto id = observe_runtime(component);
+        if (!id || !has_class(*id, component_class)) { return nullptr; }
         bool inherited_override{};
         const auto existing = entries.find(id->object);
         if (existing != entries.end()) {
@@ -460,10 +473,10 @@ struct VisibilityGuard::Impl : std::enable_shared_from_this<Impl> {
                 (existing->second.lease.forced || existing->second.proof.inherited_override);
             entries.erase(existing);
         }
-        const auto owner = outer(*id);
-        if (!owner || !runtime(*owner) || !has_class(*owner, actor_class)) { return nullptr; }
-        const auto level = outer(*owner);
-        if (!level || !runtime(*level) || !has_class(*level, level_class) || !level_in_world(level->object)) { return nullptr; }
+        const auto owner = runtime_outer(*id);
+        if (!owner || !has_class(*owner, actor_class)) { return nullptr; }
+        const auto level = runtime_outer(*owner);
+        if (!level || !has_class(*level, level_class) || !level_in_world(level->object)) { return nullptr; }
         // An original game visibility call or the fallback sweep can identify
         // the owning stadium before the level's actor-array cursor reaches it.
         remember_actor(*owner, *level);
