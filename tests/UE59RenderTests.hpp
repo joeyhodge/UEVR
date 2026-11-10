@@ -93,6 +93,20 @@ template<class Expect> void run(Expect&& expect) {
     const nlohmann::json cached{{"ue59_schema",1},{"index_0_called",true},{"is_active_this_frame_index",21},
         {"begin_render_viewfamily_index",4},{"pre_render_viewfamily_renderthread_index",6},{"frame_count_offset",0xa0}};
     expect(uevr::ue59_extension::valid_cache(cached), "only versioned 5.9 cache topology is admitted");
+    expect(uevr::ue59_extension::source_discovery_eligible(true,false,true,21,true,false),
+        "live 5.9 stage 2 admits observed slot 21 so validated render callbacks can publish real frames");
+    expect(!uevr::ue59_extension::source_discovery_eligible(true,false,true,20,true,false),
+        "live 5.9 discovery cannot reuse the old active slot 20");
+    for (const auto active_slot : {20u,21u,UINT32_MAX}) {
+        for (uint32_t flags=0; flags<32; ++flags) {
+            const bool reviewed59=(flags&1)!=0, legacy=(flags&2)!=0, active=(flags&4)!=0;
+            const bool setup=(flags&8)!=0, mapped=(flags&16)!=0;
+            const bool expected=(reviewed59 || legacy) && active && setup && !mapped &&
+                active_slot==(reviewed59 ? 21u : 20u);
+            expect(uevr::ue59_extension::source_discovery_eligible(reviewed59,legacy,active,active_slot,setup,mapped)==expected,
+                "stage 2 preserves legacy slot 20, rejects unknown profiles and requires active/setup evidence before mapping");
+        }
+    }
     for (const auto& [key, value] : cached.items()) {
         auto stale=cached; stale.erase(key);
         expect(!uevr::ue59_extension::valid_cache(stale), "incomplete view-extension caches are refused");

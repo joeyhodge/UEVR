@@ -13,6 +13,25 @@ AUDIT = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(AUDIT)
 
 
+class ViewExtensionWiringTests(unittest.TestCase):
+    def test_stage_two_uses_the_version_selected_active_slot_gate(self):
+        source = (Path(__file__).parents[1] / "src/mods/vr/FFakeStereoRenderingHook.cpp").read_text(encoding="utf-8")
+        start = source.index("static bool try_apply_ue57_source_fallback()")
+        end = source.index("static bool try_apply_dune_ue52_source_layout", start)
+        body = source[start:end]
+        self.assertIn("uevr::ue59_extension::source_discovery_eligible(", body)
+        self.assertIn("sdk::ue59::reviewed_runtime(), is_ue_5_7_runtime() || farfarwest_source_layout", body)
+        self.assertIn("has_found_is_active_this_frame_index, is_active_this_frame_index", body)
+        self.assertIn("index_0_called, has_found_begin_render_viewfamily", body)
+        self.assertNotIn("is_active_this_frame_index != UE57_IS_ACTIVE_INDEX", body)
+        # The slot fix cannot bypass repeated live family/frame validation.
+        self.assertLess(body.index("source_discovery_eligible("), body.index("minimum_calls"))
+        self.assertLess(body.index("minimum_advances"), body.index("setup_view_extension_hook();"))
+        for proof in ("begin.ue57_source_valid_a2", "pre_render.ue57_source_valid_a3",
+                      "begin.ue57_source_advances_a2", "pre_render.ue57_source_advances_a3"):
+            self.assertIn(proof, body)
+
+
 class SourceAuditTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

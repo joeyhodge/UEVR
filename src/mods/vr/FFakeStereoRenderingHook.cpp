@@ -22105,6 +22105,11 @@ struct SceneViewExtensionAnalyzer {
     static constexpr uint32_t UE57_SCENE_OFFSET = 0x40;
     static constexpr uint32_t UE57_FRAME_NUMBER_OFFSET = 0xA0;
 
+    static_assert(UE57_IS_ACTIVE_INDEX == uevr::ue59_extension::legacy_source_active_slot);
+    static_assert(UE57_BEGIN_RENDER_VIEWFAMILY_INDEX == sdk::ue59::extension_begin_slot &&
+        UE57_PRE_RENDER_VIEWFAMILY_INDEX == sdk::ue59::extension_pre_render_slot &&
+        UE57_FRAME_NUMBER_OFFSET == sdk::ue59::family_frame_offset);
+
     // Dune is a UE5.2.1 build. These slots and family offsets are fixed by the
     // matching source and independently confirmed by both runtime logs.
     static constexpr uint32_t DUNE_UE52_BEGIN_RENDER_VIEWFAMILY_INDEX = 5;
@@ -22369,11 +22374,10 @@ struct SceneViewExtensionAnalyzer {
 
     static bool try_apply_ue57_source_fallback() {
         const bool farfarwest_source_layout = farfarwest_ue581_view_extension_layout_is_current_game();
-        if ((!is_ue_5_7_runtime() && !farfarwest_source_layout && !sdk::ue59::reviewed_runtime()) ||
-            !has_found_is_active_this_frame_index ||
-            is_active_this_frame_index != UE57_IS_ACTIVE_INDEX ||
-            !index_0_called ||
-            has_found_begin_render_viewfamily)
+        if (!uevr::ue59_extension::source_discovery_eligible(
+                sdk::ue59::reviewed_runtime(), is_ue_5_7_runtime() || farfarwest_source_layout,
+                has_found_is_active_this_frame_index, is_active_this_frame_index,
+                index_0_called, has_found_begin_render_viewfamily))
         {
             return false;
         }
@@ -22509,6 +22513,13 @@ struct SceneViewExtensionAnalyzer {
 
             has_found_is_active_this_frame_index = true;
             is_active_this_frame_index = max_index;
+
+            if (sdk::ue59::reviewed_runtime()) {
+                SPDLOG_INFO("[UE5.9][ViewExtension] Active slot {} observed; awaiting validated Begin={} "
+                    "PreRender={} families and advancing FrameNumber at 0x{:x}",
+                    max_index, sdk::ue59::extension_begin_slot, sdk::ue59::extension_pre_render_slot,
+                    sdk::ue59::family_frame_offset);
+            }
 
             // Dune's Win64 UE5.2 interface layout is known. Bypass the generic
             // frame-counter heuristic, which can confuse PreRenderView's

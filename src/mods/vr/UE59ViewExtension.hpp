@@ -4,6 +4,15 @@
 #include <sdk/UE59Compatibility.hpp>
 
 namespace uevr::ue59_extension {
+inline constexpr uint32_t legacy_source_active_slot = 20;
+
+constexpr bool source_discovery_eligible(bool reviewed_ue59, bool legacy_profile,
+    bool active_observed, uint32_t active_slot, bool setup_observed, bool already_mapped) noexcept {
+    // Admission in stage 2 must use the same version-selected active slot as stage 1.
+    return (reviewed_ue59 || legacy_profile) && active_observed && setup_observed && !already_mapped &&
+        active_slot == (reviewed_ue59 ? sdk::ue59::extension_active_slot : legacy_source_active_slot);
+}
+
 inline bool valid_cache(const nlohmann::json& cached) noexcept {
     try {
         if (!cached.is_object() || !cached.contains("index_0_called") || !cached["index_0_called"].is_boolean()) { return false; }

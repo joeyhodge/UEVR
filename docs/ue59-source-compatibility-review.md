@@ -111,6 +111,12 @@ This is binary-contract validation, not in-game/HMD validation.
 - 5.9 uses source-slot observation plus repeated validated family/frame
   correlation. It cannot fall through to the unrestricted counter heuristic.
   A mismatched active slot leaves callbacks inactive rather than guessing.
+- The first packaged Shipping test exposed a stage-2 admission check still
+  requiring the older active slot 20 despite observing 21 in stage 1. Both
+  stages now select 21 for reviewed 5.9, leaving the legacy profiles on 20.
+  Repeated family ownership/frame proofs remain mandatory before hooks install;
+  no synthetic frame increments or pacing changes are used. Regression tests
+  cover the production gate wiring as well as its complete eligibility matrix.
 - Cache key `ue59_view_extension_discovery_v1` separates this topology from
   older discovery. Schema, types, ranges, module ownership and exact topology
   are checked before reuse. Invalid/stale caches are discarded.
