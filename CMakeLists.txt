@@ -505,6 +505,12 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	)
 
 	add_test(NAME compatibility-policy-tests COMMAND compatibility-policy-tests)
+	find_package(Python3 COMPONENTS Interpreter QUIET)
+	if(Python3_Interpreter_FOUND)
+	    add_test(NAME ue59-source-audit-tests COMMAND "${Python3_EXECUTABLE}"
+	        "${CMAKE_CURRENT_SOURCE_DIR}/tests/AuditUE59SourcesTests.py")
+	    set_tests_properties(ue59-source-audit-tests PROPERTIES TIMEOUT 30)
+	endif()
 	add_test(NAME build-metadata-tests COMMAND powershell -NoProfile -NonInteractive
 	    -ExecutionPolicy Bypass -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/BuildMetadataTests.ps1")
 	set_tests_properties(build-metadata-tests PROPERTIES TIMEOUT 120)
@@ -962,16 +968,31 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	unset(CMKR_SOURCES)
 endif()
 
-# Target: native-openxr-array-tests
+# Target native-openxr-array-tests
 if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
-	set(native-openxr-array-tests_SOURCES
+	set(CMKR_TARGET native-openxr-array-tests)
+	set(native-openxr-array-tests_SOURCES "")
+
+	list(APPEND native-openxr-array-tests_SOURCES
 		"tests/NativeOpenXRArrayTests.cpp"
+	)
+
+	list(APPEND native-openxr-array-tests_SOURCES
 		cmake.toml
 	)
 
+	set(CMKR_SOURCES ${native-openxr-array-tests_SOURCES})
 	add_executable(native-openxr-array-tests)
 
-	target_sources(native-openxr-array-tests PRIVATE ${native-openxr-array-tests_SOURCES})
+	if(native-openxr-array-tests_SOURCES)
+		target_sources(native-openxr-array-tests PRIVATE ${native-openxr-array-tests_SOURCES})
+	endif()
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT native-openxr-array-tests)
+	endif()
+
 	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${native-openxr-array-tests_SOURCES})
 
 	target_compile_features(native-openxr-array-tests PRIVATE
@@ -987,16 +1008,13 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 		dxgi
 	)
 
-	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
-	if(NOT CMKR_VS_STARTUP_PROJECT)
-		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT native-openxr-array-tests)
-	endif()
-
-	set(CMKR_TARGET native-openxr-array-tests)
 	add_test(NAME native-openxr-array-tests COMMAND native-openxr-array-tests)
 	set_tests_properties(native-openxr-array-tests PROPERTIES TIMEOUT 30)
 
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
 endif()
+
 # Target stalker2-native-policy-tests
 if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	set(CMKR_TARGET stalker2-native-policy-tests)
@@ -1552,8 +1570,6 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/IXRTrackingSystemHook.cpp"
 	"src/mods/vr/KtjLOpenXRFactory.cpp"
 	"src/mods/vr/OverlayComponent.cpp"
-	"src/mods/vr/PhantomBladeZeroNative.hpp"
-	"src/mods/vr/PhantomBladeZeroUI.hpp"
 	"src/mods/vr/RenderTargetPoolHook.cpp"
 	"src/mods/vr/SatisfactoryRuntime.cpp"
 	"src/mods/vr/UE57SlateSymbols.cpp"
@@ -1603,6 +1619,7 @@ list(APPEND uevr_SOURCES
 	"src/mods/pluginloader/FUObjectArrayFunctions.hpp"
 	"src/mods/pluginloader/UScriptStructFunctions.hpp"
 	"src/mods/uobjecthook/SDKDumper.hpp"
+	"src/mods/vr/B1RendererEntry.hpp"
 	"src/mods/vr/BodycamTextureLayout.hpp"
 	"src/mods/vr/Borderlands4Slate.hpp"
 	"src/mods/vr/BreathedgeInventoryPolicy.hpp"
@@ -1620,6 +1637,8 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/DuneSmartGI.hpp"
 	"src/mods/vr/DuneSmartGIContract.hpp"
 	"src/mods/vr/FFakeStereoRenderingHook.hpp"
+	"src/mods/vr/FinchAimPose.hpp"
+	"src/mods/vr/FinchMenuView.hpp"
 	"src/mods/vr/GalacticRacerBink.hpp"
 	"src/mods/vr/GalacticRacerBinkCode.hpp"
 	"src/mods/vr/GalacticRacerBinkSeek.hpp"
@@ -1661,7 +1680,14 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/KtjLShadowGatherHook.hpp"
 	"src/mods/vr/NativeFrameDiagnostics.hpp"
 	"src/mods/vr/NativeFrameDiagnosticsJson.hpp"
+	"src/mods/vr/NativeOpenXRArrayD3D12.hpp"
+	"src/mods/vr/NativeOpenXRArrayPolicy.hpp"
 	"src/mods/vr/OverlayComponent.hpp"
+	"src/mods/vr/PhantomBladeZeroNative.hpp"
+	"src/mods/vr/PhantomBladeZeroUI.hpp"
+	"src/mods/vr/Pre57SlateCode.hpp"
+	"src/mods/vr/Pre57SlateDiscovery.hpp"
+	"src/mods/vr/Pre57SlateSafety.hpp"
 	"src/mods/vr/RenderTargetPoolHook.hpp"
 	"src/mods/vr/SWZeroCompanyBinary.hpp"
 	"src/mods/vr/SatisfactoryModular.hpp"
@@ -1673,11 +1699,22 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/SteamFrameBindings.hpp"
 	"src/mods/vr/SteamFrameInput.hpp"
 	"src/mods/vr/StellarBladeRendererEntry.hpp"
+	"src/mods/vr/StellarBladeSlate.hpp"
 	"src/mods/vr/StockFrameBindingMigration.hpp"
 	"src/mods/vr/StupidNeverDiesUI.hpp"
+	"src/mods/vr/Subnautica2BetaRenderTarget.hpp"
+	"src/mods/vr/Subnautica2BetaSlate.hpp"
+	"src/mods/vr/UE521ViewExtension.hpp"
+	"src/mods/vr/UE521ViewExtensionCode.hpp"
 	"src/mods/vr/UE57SlateSymbols.hpp"
+	"src/mods/vr/UE58NativeContracts.hpp"
+	"src/mods/vr/UE58NativeFix.hpp"
 	"src/mods/vr/UE58OwnedUITexture.hpp"
 	"src/mods/vr/UE58UIInitialization.hpp"
+	"src/mods/vr/UE59NativeContracts.hpp"
+	"src/mods/vr/UE59NativeFix.hpp"
+	"src/mods/vr/UE59Slate.hpp"
+	"src/mods/vr/UE59ViewExtension.hpp"
 	"src/mods/vr/d3d12/ComPtr.hpp"
 	"src/mods/vr/d3d12/CommandContext.hpp"
 	"src/mods/vr/d3d12/DirectXTK.hpp"
@@ -1697,6 +1734,8 @@ list(APPEND uevr_SOURCES
 	"src/utility/BoundedTextureDiagnostics.hpp"
 	"src/utility/BufferedRTTextureCall.hpp"
 	"src/utility/BuildIdentity.hpp"
+	"src/utility/D3D12ResourceInterface.hpp"
+	"src/utility/DiagnosticChange.hpp"
 	"src/utility/FrameworkInitialization.hpp"
 	"src/utility/GpuRetirement.hpp"
 	"src/utility/HiFiRushHookMemory.hpp"
@@ -1710,6 +1749,7 @@ list(APPEND uevr_SOURCES
 	"src/utility/PostInitCodeMemory.hpp"
 	"src/utility/PostInitValidation.hpp"
 	"src/utility/ProtectedHookTrampoline.hpp"
+	"src/utility/ReadOnlyPointerAccessor.hpp"
 	"src/utility/SceneCaptureLifecycle.hpp"
 	"src/utility/SupportDiagnostics.hpp"
 	"src/utility/UObjectAllocatorDiscovery.hpp"
