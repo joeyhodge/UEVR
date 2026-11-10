@@ -1,16 +1,34 @@
-# UE5.9.0 compatibility: reviewed development snapshot
+# UE5.9.0 compatibility
 
 ## Status and scope
 
-This is the `59` development branch, derived from `eBaseballfocused`, paired
-with UESDK's `59` branch. The implementation is source-reviewed and covered by
-offline tests. **It is not yet runtime-confirmed UE5.9 support.** An installed
-engine, a successful backend build and unit-test success do not establish that
-a shipping game renders correctly in an HMD.
+Developed on the paired UEVR/UESDK `59` branches from the `eBaseballfocused`
+baseline, this profile is source-reviewed, binary-validated and HMD-tested in
+a packaged UE5.9.0 Shipping demo using D3D12 and OpenXR. Native, Native Fix,
+Synced Sequential, Ghost Fix with bounded separate-state bootstrap, UObject
+Hook and aiming were confirmed working on 2026-11-09. This does not establish
+compatibility with every future 5.9 build or custom engine fork.
 
-No changes are propagated to established UEVR/UESDK branches. Existing game
-allowlists, eBaseball camera/crowd fixes, Lua interfaces and rendering-mode IDs
-are retained. There is no global FSR, frame-generation or backbuffer workaround.
+The established branches retain their own UESDK pairing, game allowlists,
+camera/crowd features, Lua interfaces and rendering-mode IDs. Non-DIBR branches
+do not acquire DIBR or private eBaseball features through this update. There is
+no global FSR, frame-generation or backbuffer workaround.
+
+### Packaged Shipping runtime verification
+
+The verified backend is `da51e73de36b6bb5d2dd11029e60ede6038e6be2`, paired with
+UESDK `5852f690b72574a63b515a82149fc413f0294670`. The log confirms:
+
+- Stage-2 discovery converged with Begin 4, PreRender 6, active 21 and the real
+  frame counter at `0xA0`, following repeated live family/frame validation.
+- Native Fix reached active only after a validated right-eye resource was
+  submitted. Both constructor and native family ownership contracts passed.
+- Ghost Fix's bounded bootstrap learned distinct eye histories, established
+  stable ownership and remapped the right eye to its dedicated scene state.
+
+Development/DebugGame binaries remain covered by binary contracts and offline
+tests, not by this Shipping runtime result. DIBR, mono, DX11 and custom forks
+still require their own mode-specific runtime validation.
 
 The review uses these local, licensed archives (no Unreal source is included
 in this repository):
@@ -216,7 +234,7 @@ cleanup/canary/alias tests; every unmasked ownership byte is mutation-tested.
 The established rendering, camera, Lua, UObject and
 diagnostic suites remain enabled. CI runs SDK discovery tests as well.
 
-## Runtime acceptance still required
+## Runtime acceptance for additional builds and modes
 
 1. Record the exact installed 5.9 executable/modules, matching PDB GUID/age,
    engine changelist, RHI, backend/SDK commits, mode and options. An editor PDB
@@ -230,6 +248,6 @@ diagnostic suites remain enabled. CI runs SDK discovery tests as well.
 5. Check UI/HUD, ImGui open/closed, spectator output, resolution changes,
    loading/level transitions, head and both controller aim modes, stale-object
    transitions and shutdown. Repeat injection to expose lifecycle races.
-6. Compare at least one working older UE game before broader propagation.
-   Do not describe the development branch as fully runtime-compatible until
-   those checks pass; keep all rollout limited to the two `59` branches.
+6. Compare working older UE games and run each branch's regression suite.
+   Keep unknown layouts fail-closed; a successful Shipping demo must not
+   authorize unrelated compiler, platform, engine-patch or rendering-mode ABIs.
