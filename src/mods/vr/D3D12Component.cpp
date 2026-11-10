@@ -24,6 +24,7 @@
 #include "../VR.hpp"
 
 #include <sdk/Utility.hpp>
+#include <sdk/UE59Compatibility.hpp>
 #include <sdk/PhantomBladeZeroObjectArray.hpp>
 
 #include <../../directxtk12-src/Inc/ResourceUploadBatch.h>
@@ -241,6 +242,7 @@ std::pair<uint32_t, uint32_t> get_openxr_depth_extent(VR* vr) {
 
 bool is_ue58_runtime_cached() {
     static const bool is_ue58 = []() {
+        if (sdk::ue59::reviewed_runtime()) { return true; }
         const auto file_version = sdk::get_file_version_info();
 
         if (file_version.dwFileVersionMS == 0x00050008) {
