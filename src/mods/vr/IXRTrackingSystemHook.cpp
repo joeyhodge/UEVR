@@ -366,6 +366,9 @@ bool write_payday3_control_rotation_property(sdk::APlayerController* controller,
 }
 
 detail::IXRTrackingSystemVT& get_tracking_system_vtable(std::optional<std::string> version_override = std::nullopt) {
+    if (sdk::ue59::is_runtime()) {
+        return sdk::ue59::reviewed_runtime() ? static_cast<detail::IXRTrackingSystemVT&>(ue5_9::IXRTrackingSystemVT::get()) : detail::IXRTrackingSystemVT::get();
+    }
     const auto str_version = version_override.has_value() ? version_override.value() : utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
     auto version = sdk::get_file_version_info();
 
@@ -473,6 +476,9 @@ detail::IXRTrackingSystemVT& get_tracking_system_vtable(std::optional<std::strin
 
 
 detail::IXRCameraVT& get_camera_vtable(std::optional<std::string> version_override = std::nullopt) {
+    if (sdk::ue59::is_runtime()) {
+        return sdk::ue59::reviewed_runtime() ? static_cast<detail::IXRCameraVT&>(ue5_9::IXRCameraVT::get()) : detail::IXRCameraVT::get();
+    }
     const auto str_version = version_override.has_value() ? version_override.value() : utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
     auto version = sdk::get_file_version_info();
 
@@ -575,6 +581,9 @@ detail::IXRCameraVT& get_camera_vtable(std::optional<std::string> version_overri
 }
 
 detail::IHeadMountedDisplayVT& get_hmd_vtable(std::optional<std::string> version_override = std::nullopt) {
+    if (sdk::ue59::is_runtime()) {
+        return sdk::ue59::reviewed_runtime() ? static_cast<detail::IHeadMountedDisplayVT&>(ue5_9::IHeadMountedDisplayVT::get()) : detail::IHeadMountedDisplayVT::get();
+    }
     const auto str_version = version_override.has_value() ? version_override.value() : utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
     auto version = sdk::get_file_version_info();
 
@@ -1369,6 +1378,22 @@ void IXRTrackingSystemHook::pre_initialize() {
         static sdk::OwnedFName fake_name{};
         return &fake_name;
     };
+
+    if (sdk::ue59::reviewed_runtime()) {
+        const auto name = (uintptr_t)+[](void*, sdk::FName* out) -> sdk::FName* {
+            static const sdk::OwnedFName none{};
+            return none.write_to(out, sdk::FName::runtime_size()) ? out : nullptr;
+        };
+        // The engine owns neither synthetic object. Its inherited deleting
+        // destructor must not execute an identity/pose callback or free it.
+        const auto destroy = (uintptr_t)+[](void* object, uint32_t) -> void* { return object; };
+        m_xrtracking_vtable[sdk::ue59::xr_destructor_slot] = destroy;
+        m_camera_vtable[sdk::ue59::xr_destructor_slot] = destroy;
+        m_xrtracking_vtable[sdk::ue59::xr_system_name_slot] = name;
+        m_camera_vtable[sdk::ue59::xr_system_name_slot] = name;
+        m_camera_vtable[sdk::ue59::xr_device_id_slot] = (uintptr_t)+[](const void*) -> int32_t { return 0; };
+        SPDLOG_INFO("[UE5.9][XR] Selected inherited-destructor tracking/camera ABI; HMD/stereo ABI retained; runtime validation pending");
+    }
 
     if (is_finch_executable()) {
         // Its native version and aim ABI are validated at mode entry. Never

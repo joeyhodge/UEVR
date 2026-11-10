@@ -10,3 +10,4 @@
 [submodule "dependencies/submodules/UESDK"]
 	path = dependencies/submodules/UESDK
 	url = https://github.com/joeyhodge/UESDK.git
+	branch = daysgone-fresh
