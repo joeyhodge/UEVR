@@ -1100,6 +1100,10 @@ public:
         return reinterpret_cast<uintptr_t>(m_sceneview_data.constructor_hook.target());
     }
 
+    const std::vector<uint8_t>& get_scene_view_constructor_original_bytes() const {
+        return m_sceneview_data.constructor_hook.original_bytes();
+    }
+
     uintptr_t get_slate_hook_target_address() const {
         if (m_swgr_slate_output_hook) { return m_swgr_slate_output_hook.target_address(); }
         return m_slate_thread_hook.target_address();
