@@ -1,0 +1,108 @@
+{
+  "schema": 1,
+  "engine_version": "5.9.0",
+  "changelist": 60351404,
+  "runtime_validated": false,
+  "method": "Read-only matching public PDBs, PE code/unwind records and offline contract tests; no engine code executed.",
+  "binaries": [
+    {
+      "file": "UnrealGame-Win64-Shipping.exe",
+      "sha256": "52ae66a13932a88e8f0ab07ccb07e0dd1ba9af631f8177db07d1d7c097235b8d",
+      "pdb": {
+        "file": "UnrealGame-Win64-Shipping.pdb",
+        "guid": "3D8631B6-479A-EF96-06AD-0FE1EB43DFB9",
+        "age": 1,
+        "stripped_public_symbols": true
+      },
+      "selected_rvas": {
+        "?CalcSceneViewInitOptions@ULocalPlayer@@UEAA_NAEAUFSceneViewInitOptions@@PEAVFViewport@@PEAVFViewElementDrawer@@H@Z": "0x2c4e8c0",
+        "?BeginRenderingViewFamilies@FRendererModule@@UEAAXPEAVFCanvas@@V?$TArrayView@QEAVFSceneViewFamily@@H@@@Z": "0x3baa320",
+        "?Draw@UGameViewportClient@@UEAAXPEAVFViewport@@PEAVFCanvas@@@Z": "0x2aaf5e0",
+        "?CreateAndInitSingleView@FRendererModule@@UEAAXAEAVFRHICommandListImmediate@@PEAVFSceneViewFamily@@PEBUFSceneViewInitOptions@@@Z": "0x3bac840",
+        "?BeginRenderingViewFamily@FRendererModule@@UEAAXPEAVFCanvas@@PEAVFSceneViewFamily@@@Z": "0x3baacb0",
+        "??0FSceneView@@QEAA@AEBUFSceneViewInitOptions@@@Z": "0x2f17c20",
+        "??0FSceneViewFamily@@QEAA@AEBV0@@Z": "0x2f19420"
+      },
+      "contracts": {
+        "scene_view_constructor": true,
+        "renderer_handoff": true,
+        "family_copy_and_base_destructor": true,
+        "extension_active_slot": 21,
+        "post_init_properties_slot": 10,
+        "xr_get_camera_call_offset": "0x110",
+        "xr_apply_rotation_call_offset": "0x28",
+        "scene_increment_frame_slot": 162
+      },
+      "family_layout": {
+        "size": "0x1a8",
+        "interfaces": "0x168"
+      }
+    },
+    {
+      "file": "UnrealGame.exe",
+      "sha256": "ad030c159ab755cd6b4a1c4edec5577f3d81fe280a0e0280351b537845a934c0",
+      "pdb": {
+        "file": "UnrealGame.pdb",
+        "guid": "BC68B15D-FA12-4A0B-83A7-0115B91018F9",
+        "age": 1,
+        "stripped_public_symbols": true
+      },
+      "selected_rvas": {
+        "?CalcSceneViewInitOptions@ULocalPlayer@@UEAA_NAEAUFSceneViewInitOptions@@PEAVFViewport@@PEAVFViewElementDrawer@@H@Z": "0x55a0130",
+        "?BeginRenderingViewFamilies@FRendererModule@@UEAAXPEAVFCanvas@@V?$TArrayView@QEAVFSceneViewFamily@@H@@@Z": "0x7798cf0",
+        "?Draw@UGameViewportClient@@UEAAXPEAVFViewport@@PEAVFCanvas@@@Z": "0x52e4520",
+        "?CreateAndInitSingleView@FRendererModule@@UEAAXAEAVFRHICommandListImmediate@@PEAVFSceneViewFamily@@PEBUFSceneViewInitOptions@@@Z": "0x779d7e0",
+        "?BeginRenderingViewFamily@FRendererModule@@UEAAXPEAVFCanvas@@PEAVFSceneViewFamily@@@Z": "0x7799e20",
+        "??0FSceneView@@QEAA@AEBUFSceneViewInitOptions@@@Z": "0x5b809a0",
+        "??0FSceneViewFamily@@QEAA@AEBV0@@Z": "0x5b825a0"
+      },
+      "contracts": {
+        "scene_view_constructor": true,
+        "renderer_handoff": true,
+        "family_copy_and_base_destructor": true,
+        "extension_active_slot": 21,
+        "post_init_properties_slot": 10,
+        "xr_get_camera_call_offset": "0x110",
+        "xr_apply_rotation_call_offset": "0x28",
+        "scene_increment_frame_slot": 162
+      },
+      "family_layout": {
+        "size": "0x1b8",
+        "interfaces": "0x178"
+      }
+    },
+    {
+      "file": "UnrealGame-Win64-DebugGame.exe",
+      "sha256": "a59f90700c969eb0fb44e32bfb393ebe505880e82bcbe6e0b44f9ef7797887bc",
+      "pdb": {
+        "file": "UnrealGame-Win64-DebugGame.pdb",
+        "guid": "2AC3282B-AA78-4C3F-899F-6AD2E5432F6F",
+        "age": 1,
+        "stripped_public_symbols": true
+      },
+      "selected_rvas": {
+        "?CalcSceneViewInitOptions@ULocalPlayer@@UEAA_NAEAUFSceneViewInitOptions@@PEAVFViewport@@PEAVFViewElementDrawer@@H@Z": "0x55a0130",
+        "?BeginRenderingViewFamilies@FRendererModule@@UEAAXPEAVFCanvas@@V?$TArrayView@QEAVFSceneViewFamily@@H@@@Z": "0x7798cf0",
+        "?Draw@UGameViewportClient@@UEAAXPEAVFViewport@@PEAVFCanvas@@@Z": "0x52e4520",
+        "?CreateAndInitSingleView@FRendererModule@@UEAAXAEAVFRHICommandListImmediate@@PEAVFSceneViewFamily@@PEBUFSceneViewInitOptions@@@Z": "0x779d7e0",
+        "?BeginRenderingViewFamily@FRendererModule@@UEAAXPEAVFCanvas@@PEAVFSceneViewFamily@@@Z": "0x7799e20",
+        "??0FSceneView@@QEAA@AEBUFSceneViewInitOptions@@@Z": "0x5b809a0",
+        "??0FSceneViewFamily@@QEAA@AEBV0@@Z": "0x5b825a0"
+      },
+      "contracts": {
+        "scene_view_constructor": true,
+        "renderer_handoff": true,
+        "family_copy_and_base_destructor": true,
+        "extension_active_slot": 21,
+        "post_init_properties_slot": 10,
+        "xr_get_camera_call_offset": "0x110",
+        "xr_apply_rotation_call_offset": "0x28",
+        "scene_increment_frame_slot": 162
+      },
+      "family_layout": {
+        "size": "0x1b8",
+        "interfaces": "0x178"
+      }
+    }
+  ]
+}
