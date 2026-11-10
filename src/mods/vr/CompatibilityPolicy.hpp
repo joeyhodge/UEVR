@@ -1,4 +1,5 @@
 #pragma once
+#include <sdk/UE59Compatibility.hpp>
 
 #include <array>
 #include <cstdint>
@@ -149,6 +150,10 @@ constexpr bool is_validated_ue58_slate_source_version(
     const auto patch = static_cast<uint16_t>(file_version_ls >> 16);
 
     return major == 5 && minor == 8 && patch <= 4;
+}
+
+constexpr bool is_validated_modern_slate_source_version(uint32_t ms, uint32_t ls) noexcept {
+    return is_validated_ue58_slate_source_version(ms, ls) || sdk::ue59::reviewed_file(ms, ls);
 }
 
 constexpr bool should_enable_ue58_automatic_ui_route(

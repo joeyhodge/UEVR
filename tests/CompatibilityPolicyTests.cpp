@@ -40,6 +40,7 @@
 #include "ProSpiSlateValidationTests.hpp"
 #include "ProSpiFreshObservationTests.hpp"
 #include "UE521ViewExtensionTests.hpp"
+#include "UE59RenderTests.hpp"
 
 namespace {
 
@@ -213,8 +214,8 @@ void test_scene_view_layouts() {
         "UE5.8 patch versions must select the validated UE5.8 layout");
     expect(classify_engine_version_string(L"5.8.4") == FSceneViewInitLayout::UE58,
         "source-reviewed UE5.8.4 retains the UE5.8 view-init layout");
-    expect(classify_engine_version_string(L"5.9") == FSceneViewInitLayout::UnsupportedNewer,
-        "UE5.9 string detection must fail closed");
+    expect(classify_engine_version_string(L"5.9") == FSceneViewInitLayout::UE59,
+        "UE5.9 string detection selects its separate reviewed initializer prefix");
     expect(classify_engine_version_string(L"6.0") == FSceneViewInitLayout::UnsupportedNewer,
         "UE6 string detection must fail closed");
     expect(!classify_engine_version_string(L"5.5.4").has_value(),
@@ -246,7 +247,7 @@ void test_scene_view_layouts() {
         "UE5.7 must use the FSceneViewOwner layout");
     expect(classify_engine_version(5, 8) == FSceneViewInitLayout::UE58,
         "UE5.8 must use the skylight-scale layout");
-    expect(classify_engine_version(5, 9) == FSceneViewInitLayout::UnsupportedNewer,
+    expect(classify_engine_version(5, 10) == FSceneViewInitLayout::UnsupportedNewer,
         "unknown future UE5 layouts must fail closed");
     expect(classify_engine_version(6, 0) == FSceneViewInitLayout::UnsupportedNewer,
         "UE6 layouts must fail closed until validated");
@@ -2583,9 +2584,12 @@ void test_ktjl_hook_contracts() {
 #include "Pre57SlateDiscoveryTests.hpp"
 #include "Pre57UIResourceTests.hpp"
 #include "UE58NativeFixTests.hpp"
+#include "UE59BinaryTests.hpp"
+#include "UE59NativeFamilyTests.hpp"
 #include "SceneStateWindowsTests.hpp"
 
 int main(int argc, char** argv) {
+    ue59_render_tests::run(expect);
     ue521_view_extension_tests::run(expect);
     validation_threshold_tests::run(expect);
     scene_state_validation_tests::run(expect);
@@ -2595,6 +2599,8 @@ int main(int argc, char** argv) {
     prospi_player_tests::run(expect);
     prospi_player_cut_tests::run(expect);
     ue58_native_tests::run(expect);
+    ue59_family_tests::run(expect);
+    if (argc == 4 && std::string_view{argv[1]} == "--ue59-image") { ue59_binary_tests::image(argv[2],argv[3],expect); }
     if (argc == 3 && std::string_view{argv[1]} == "--ue58-native-image") { ue58_native_tests::shipping_image(argv[2], expect); }
     glory_fname_tests::run(expect);
     pbz_ui_tests::run(expect);
