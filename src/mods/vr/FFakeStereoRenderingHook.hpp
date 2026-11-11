@@ -1,5 +1,9 @@
 #pragma once
 
+namespace uevr::ue59_native::dx11 {
+struct Binding;
+}
+
 #include <sdk/GalacticRacerRuntime.hpp>
 
 #include <memory>
@@ -877,6 +881,7 @@ public:
 
     struct NativeStereoFramePacket {
         std::shared_ptr<const VRRenderTargetManager_Base::SceneCaptureTargetSnapshot> capture{};
+        std::shared_ptr<const uevr::ue59_native::dx11::Binding> ue59_dx11_binding{};
         sdk::FSceneViewFamily* family{};
         sdk::FSceneView* left_view{};
         sdk::FSceneView* right_view{};
@@ -905,7 +910,9 @@ public:
     std::shared_ptr<const NativeStereoFramePacket> get_native_stereo_frame_packet_for_submit(
         int32_t render_frame, uevr::native_frame::Backend backend = uevr::native_frame::Backend::unknown,
         uevr::native_frame::Ticket* diagnostic_ticket = nullptr) const;
-    void note_native_stereo_frame_packet_consumed(uint64_t serial);
+    bool ue59_dx11_split_pending(int32_t render_frame) const;
+    void note_native_stereo_frame_packet_consumed(uint64_t serial,
+        const uevr::ue59_native::dx11::Binding* submitted_dx11_binding = nullptr);
     void reject_native_stereo_frame_packet(uint64_t serial, const char* detail);
     void sync_stalker2_native_experiment(bool enabled);
     uint64_t stalker2_native_epoch() const { return m_stalker2_native_packets.epoch(); }
@@ -1543,6 +1550,7 @@ private:
 
     std::atomic<NativeStereoFixState> m_native_stereo_fix_state{NativeStereoFixState::Off};
     std::atomic<std::shared_ptr<const NativeStereoFramePacket>> m_native_stereo_frame_packet{};
+    std::atomic<uint64_t> m_ue59_dx11_split_clocks{UINT64_MAX};
     uevr::stalker2_native::PacketRing<NativeStereoFramePacket> m_stalker2_native_packets{};
     std::atomic_bool m_stalker2_native_experiment{};
     std::atomic<uint64_t> m_native_stereo_packet_serial{};
