@@ -26,9 +26,20 @@ UESDK `5852f690b72574a63b515a82149fc413f0294670`. The log confirms:
 - Ghost Fix's bounded bootstrap learned distinct eye histories, established
   stable ownership and remapped the right eye to its dedicated scene state.
 
-Development/DebugGame binaries remain covered by binary contracts and offline
-tests, not by this Shipping runtime result. DIBR, mono, DX11 and custom forks
-still require their own mode-specific runtime validation.
+The same backend also reached Native Fix active on the packaged Development
+demo (`d59`, DX12), using its distinct native family copy/destructor contract.
+Ordinary Native and Synced/Ghost worked in the Development DX11 run; Native
+Fix produced a capture but could not enter the DX12-only linked renderer.
+DebugGame, DIBR, mono and custom forks still require mode-specific runtime
+validation.
+
+### Packaged Development DX11 Native Fix verification
+
+The DX11 Native Fix change was tested on `d59` in OpenXR. Present validated
+the generation-owned right-eye capture and all three double-wide images;
+the Development family copy/destructor proof passed, and Native Fix reached
+Active after a successful two-eye projection. The matching Shipping binary
+contract also passed offline; Shipping DX11 HMD validation is separate.
 
 The review uses these local, licensed archives (no Unreal source is included
 in this repository):
@@ -109,12 +120,19 @@ This is binary-contract validation, not in-game/HMD validation.
   It can use a linked-family transaction only when constructor, renderer,
   native copy/destructor, live eyes, target and generation contracts all pass.
   A different compiler/fork can legitimately decline this capability.
-  The proven linked-family capability currently targets DX12; DX11 must not
-  claim it is active without its own validated resource/submission path.
+  Reviewed 5.9 DX11 can use the same renderer proof on standard Native OpenXR
+  output. Present first validates the exact main viewport, generation-owned
+  right capture, packed scene and double-wide XR images on the same device.
+  The binding is reused until an identity changes or the swapchain is reset.
+  Both color copies must validate before either half is written. Only a
+  successful XR projection with two views of that released image marks the
+  fix active. Split frames do not submit the ordinary packed depth texture.
+  DX11 OpenVR, 2D, split-screen and legacy engine behavior are not extended.
 - Both DX11 and DX12 5.9 paths are kept out of the old second-render fallback
   that could replay a truncated initializer or assume an old full-view size.
-  Failed Native Fix validation preserves the original packed eye render;
-  it must never be reported as an active fix.
+  Failed pre-render validation preserves the original packed eye render.
+  If validation fails after a DX11 split was already issued, that incomplete
+  frame is not submitted as ordinary packed stereo.
 - There is no inferred `FViewInfo` stride, whole-view memcpy or blanket `+16`
   adjustment across unrelated renderer structures.
 
@@ -245,6 +263,9 @@ diagnostic suites remain enabled. CI runs SDK discovery tests as well.
    source textures. Verify actual stereo/IPD in the HMD, not just desktop output.
 4. Test Native first without optional overrides; then Native Fix (including
    its fail-closed path), Synced/AFR, Ghost Fix, DIBR and mono individually.
+   For the DX11 Native Fix change, repeat on Development and Shipping with
+   OpenXR. Verify the generation/destination proof, selected/copied frame
+   serials and successful two-eye projection, then toggle Fix off and on.
 5. Check UI/HUD, ImGui open/closed, spectator output, resolution changes,
    loading/level transitions, head and both controller aim modes, stale-object
    transitions and shutdown. Repeat injection to expose lifecycle races.

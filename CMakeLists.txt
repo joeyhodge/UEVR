@@ -968,6 +968,52 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	unset(CMKR_SOURCES)
 endif()
 
+# Target ue59-native-d3d11-tests
+if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
+	set(CMKR_TARGET ue59-native-d3d11-tests)
+	set(ue59-native-d3d11-tests_SOURCES "")
+
+	list(APPEND ue59-native-d3d11-tests_SOURCES
+		"tests/UE59NativeD3D11Tests.cpp"
+	)
+
+	list(APPEND ue59-native-d3d11-tests_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${ue59-native-d3d11-tests_SOURCES})
+	add_executable(ue59-native-d3d11-tests)
+
+	if(ue59-native-d3d11-tests_SOURCES)
+		target_sources(ue59-native-d3d11-tests PRIVATE ${ue59-native-d3d11-tests_SOURCES})
+	endif()
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ue59-native-d3d11-tests)
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${ue59-native-d3d11-tests_SOURCES})
+
+	target_compile_features(ue59-native-d3d11-tests PRIVATE
+		cxx_std_23
+	)
+
+	target_include_directories(ue59-native-d3d11-tests PRIVATE
+		"src/"
+	)
+
+	target_link_libraries(ue59-native-d3d11-tests PRIVATE
+		d3d11
+	)
+
+	add_test(NAME ue59-native-d3d11-tests COMMAND ue59-native-d3d11-tests)
+	set_tests_properties(ue59-native-d3d11-tests PROPERTIES TIMEOUT 30)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
 # Target native-openxr-array-tests
 if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	set(CMKR_TARGET native-openxr-array-tests)
@@ -1712,6 +1758,7 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/UE58OwnedUITexture.hpp"
 	"src/mods/vr/UE58UIInitialization.hpp"
 	"src/mods/vr/UE59NativeContracts.hpp"
+	"src/mods/vr/UE59NativeD3D11.hpp"
 	"src/mods/vr/UE59NativeFix.hpp"
 	"src/mods/vr/UE59Slate.hpp"
 	"src/mods/vr/UE59ViewExtension.hpp"
