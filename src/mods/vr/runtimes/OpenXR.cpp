@@ -3666,8 +3666,10 @@ void OpenXR::note_native_array_copy(bool success) {
         std::memory_order_release);
 }
 
-XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& quad_layers, bool has_depth) {
+XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& quad_layers, bool has_depth,
+    PackedStereoSubmission* packed_stereo) {
     std::scoped_lock _{sync_mtx};
+    if (packed_stereo) { packed_stereo->submitted = false; }
 
     emit_openxr_state_probes(this, "end_frame");
 
@@ -3791,7 +3793,14 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
 
     // we CANT push the layers every time, it cause some layer error
     // in xrEndFrame, so we must only do it when shouldRender is true
-    if (!debug_submit_empty && (!stalker_pair || stalker_pair->scene_available) && pipelined_frame_state.shouldRender == XR_TRUE && !pipelined_stage_views.empty()) {
+    const auto packed_scene_matches = [&] {
+        if (!packed_stereo) { return true; }
+        if (packed_stereo->color_swapchain == XR_NULL_HANDLE || is_afr || has_native_stereo_array ||
+            pipelined_stage_views.size() != 2) { return false; }
+        const auto scene = swapchains.find((uint32_t)SwapchainIndex::DOUBLE_WIDE);
+        return scene != swapchains.end() && scene->second.handle == packed_stereo->color_swapchain;
+    };
+    if (packed_scene_matches() && !debug_submit_empty && (!stalker_pair || stalker_pair->scene_available) && pipelined_frame_state.shouldRender == XR_TRUE && !pipelined_stage_views.empty()) {
         projection_layer_views.resize(pipelined_stage_views.size(), {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW});
         depth_layers.resize(projection_layer_views.size(), {XR_TYPE_COMPOSITION_LAYER_DEPTH_INFO_KHR});
 
@@ -3918,6 +3927,12 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
         ? std::chrono::steady_clock::now()
         : std::chrono::steady_clock::time_point{};
     auto result = xrEndFrame(this->session, &frame_end_info);
+    if (packed_stereo) {
+        packed_stereo->submitted = result == XR_SUCCESS && !projection_layer_cache.empty() &&
+            projection_layer_views.size() == 2 &&
+            projection_layer_views[0].subImage.swapchain == packed_stereo->color_swapchain &&
+            projection_layer_views[1].subImage.swapchain == packed_stereo->color_swapchain;
+    }
     if (collect_frame_timing) {
         this->end_frame_timing.add(std::chrono::steady_clock::now() - end_frame_start);
     }
