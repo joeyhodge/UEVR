@@ -301,6 +301,12 @@ int test_native_frame_adapters() {
                     code.substr(pos, 100).find("native_stereo_packet->serial") != std::string::npos,
                     "owned-pair consumption retains the submitted packet after confirmation");
                 ++deferred_pair_copies;
+            } else if (std::string(backend) == "D3D11" && before.find("packed_stereo.submitted") != std::string::npos) {
+                expect(before.find("Stage::submit_result") != std::string::npos &&
+                    before.find("get_ue59_native_fix_binding() == native_stereo_packet->ue59_dx11_binding") != std::string::npos &&
+                    code.substr(pos, 200).find("native_stereo_packet->serial, native_stereo_packet->ue59_dx11_binding.get()") != std::string::npos,
+                    "DX11 split-pair consumption acknowledges the submitted packet and current binding after XR projection");
+                ++deferred_pair_copies;
             } else {
                 expect(before.find("record_native_frame_stage(*native_stereo_packet, native_frame_ticket") != std::string::npos &&
                     before.find("Stage::copy_recorded") != std::string::npos,
@@ -320,13 +326,25 @@ int test_native_frame_adapters() {
             }
         }
         expect(copies == (std::string(backend) == "D3D11" ? 2 : 3) &&
-            deferred_pair_copies == (std::string(backend) == "D3D11" ? 0 : 2) &&
+            deferred_pair_copies == (std::string(backend) == "D3D11" ? 1 : 2) &&
             submits == (std::string(backend) == "D3D11" ? 4 : 5),
             "expected backend copy/submit coverage (update fixture for new paths)");
         if (std::string(backend) == "D3D11") {
             const auto copy = code.find("bool D3D11Component::OpenXR::copy(");
             expect(copy != std::string::npos && code.substr(copy).find("pre_commands(ctx.textures[texture_index].texture);") != std::string::npos,
                 "D3D11 callback executes synchronously while submit owns the packet and ticket");
+            const auto pair_begin = code.find("if (ue59_dx11_split) {");
+            const auto pair_end = code.find("} else if (native_stereo_packet == nullptr", pair_begin);
+            expect(pair_begin != std::string::npos && pair_end != std::string::npos,
+                "DX11 validated split-pair branch precedes the ordinary packed fallback");
+            if (pair_begin != std::string::npos && pair_end != std::string::npos) {
+                const auto pair = code.substr(pair_begin, pair_end - pair_begin);
+                expect(pair.find("ue59_native::dx11::copy_pair(") != std::string::npos &&
+                    pair.find("record_native_frame_stage(*native_stereo_packet, native_frame_ticket") != std::string::npos &&
+                    pair.find("Stage::copy_recorded") != std::string::npos &&
+                    pair.find("if (released && recorded) { packed_stereo.color_swapchain = chain->second.handle; }") != std::string::npos,
+                    "DX11 split-pair diagnostics retain the selection ticket and require both copies plus swapchain release");
+            }
         } else {
             expect(code.find("native_stereo_packet,\n        native_frame_ticket,") != std::string::npos &&
                 code.find("native_stereo_packet, native_stereo_hook, native_frame_ticket]") != std::string::npos,

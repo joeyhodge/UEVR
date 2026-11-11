@@ -311,6 +311,18 @@ add_test(NAME input-hook-installation-tests COMMAND input-hook-installation-test
 set_tests_properties(input-hook-installation-tests PROPERTIES TIMEOUT 60)
 """
 
+[target.ue59-native-d3d11-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/UE59NativeD3D11Tests.cpp"]
+include-directories = ["src/"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["d3d11"]
+cmake-after = """
+add_test(NAME ue59-native-d3d11-tests COMMAND ue59-native-d3d11-tests)
+set_tests_properties(ue59-native-d3d11-tests PROPERTIES TIMEOUT 30)
+"""
+
 [target.native-openxr-array-tests]
 condition = "compatibility-policy-tests"
 type = "executable"
