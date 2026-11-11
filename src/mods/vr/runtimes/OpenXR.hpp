@@ -171,8 +171,12 @@ public:
     std::optional<std::string> initialize_actions(const std::string& json_string);
 
     XrResult begin_frame(const char* caller = "unknown");
+    struct PackedStereoSubmission {
+        XrSwapchain color_swapchain{XR_NULL_HANDLE};
+        bool submitted{};
+    };
     XrResult end_frame(const std::vector<XrCompositionLayerBaseHeader*>& quad_layers, bool has_depth = false,
-        uevr::ui_composition::Compositor* ui_composition = nullptr);
+        uevr::ui_composition::Compositor* ui_composition = nullptr, PackedStereoSubmission* packed_stereo = nullptr);
     XrResult recover_wedged_frame(const char* reason);
     bool close_synced_frame_without_layers(const char* reason);
     bool discard_synced_frame_without_layers(const char* reason);

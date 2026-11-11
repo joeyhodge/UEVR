@@ -19,11 +19,13 @@ namespace pixel_shader1 {
 #include <utility/ScopeGuard.hpp>
 #include <utility/Logging.hpp>
 #include <utility/Module.hpp>
+#include <sdk/UE59Compatibility.hpp>
 
 #include "Framework.hpp"
 #include "../VR.hpp"
 
 #include "D3D11Component.hpp"
+#include "UE59NativeD3D11.hpp"
 
 //#define VERBOSE_D3D11
 
@@ -476,7 +478,92 @@ bool D3D11Component::mono_consumers_retired(uint64_t request_token) {
     return m_mono_retirement.poll(context.Get(), request_token);
 }
 
+bool D3D11Component::ue59_native_fix_mode_supported(VR* vr) {
+    if (!sdk::ue59::reviewed_runtime() || vr == nullptr || !vr->is_native_stereo_fix_enabled()) { return false; }
+    const auto runtime = vr->get_runtime();
+    return uevr::ue59_native::dx11::mode_supported(runtime != nullptr && runtime->is_openxr(),
+        !vr->is_using_mono() && !vr->is_mono_transition_pending() &&
+        !vr->is_using_2d_screen() && !vr->is_stereo_emulation_enabled() &&
+        !vr->is_extreme_compatibility_mode_enabled() && !vr->is_splitscreen_compatibility_enabled() &&
+        !vr->is_sceneview_compatibility_enabled());
+}
+
+std::shared_ptr<const uevr::ue59_native::dx11::Binding> D3D11Component::prepare_ue59_native_fix_binding(
+    VR* vr, uintptr_t scene_rhi, ID3D11Device* device, ID3D11Texture2D* packed,
+    const D3D11_TEXTURE2D_DESC& packed_desc)
+{
+    namespace dx11 = uevr::ue59_native::dx11;
+    constexpr auto index = (uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE;
+    std::scoped_lock lock{m_openxr.mtx};
+    const auto previous = get_ue59_native_fix_binding();
+    const auto unavailable = [&]() -> std::shared_ptr<const dx11::Binding> {
+        if (previous) { m_ue59_native_fix_binding.store(nullptr, std::memory_order_release); }
+        return nullptr;
+    };
+
+    const auto rtm = vr->m_fake_stereo_hook->get_render_target_manager();
+    const auto capture = rtm->get_scene_capture_target_snapshot();
+    const auto viewport = rtm->get_view_family_render_target();
+    const auto chain = vr->m_openxr->swapchains.find(index);
+    const auto images = m_openxr.contexts.find(index);
+    if (!capture || !capture->native_resource || !capture->rhi_texture || capture->generation == 0 ||
+        capture->generation != rtm->get_scene_capture_generation() || !viewport || !scene_rhi ||
+        scene_rhi != reinterpret_cast<uintptr_t>(rtm->get_render_target()) ||
+        chain == vr->m_openxr->swapchains.end() || chain->second.handle == XR_NULL_HANDLE ||
+        images == m_openxr.contexts.end() || images->second.num_textures_acquired != 0 ||
+        images->second.textures.empty() || images->second.textures.size() > 16 ||
+        !device || m_openxr.binding.device != device || !packed) {
+        return unavailable();
+    }
+    const dx11::Binding::Identity identity{
+        capture->generation, reinterpret_cast<uintptr_t>(viewport), scene_rhi, reinterpret_cast<uintptr_t>(packed),
+        reinterpret_cast<uintptr_t>(capture->native_resource.Get()), reinterpret_cast<uintptr_t>(device),
+        reinterpret_cast<uintptr_t>(chain->second.handle)};
+    if (previous && previous->identity == identity) { return previous; }
+
+    ComPtr<ID3D11Texture2D> right{};
+    D3D11_TEXTURE2D_DESC right_desc{};
+    if (SUCCEEDED(capture->native_resource.As(&right)) && right) { right->GetDesc(&right_desc); }
+    if (!right || right.Get() == packed || !dx11::source_pair_matches(packed_desc, right_desc, capture->width, capture->height) ||
+        packed_desc.Width != m_backbuffer_size[0] || packed_desc.Height != m_backbuffer_size[1] ||
+        chain->second.width != static_cast<int32_t>(packed_desc.Width) ||
+        chain->second.height != static_cast<int32_t>(packed_desc.Height) ||
+        !dx11::belongs_to_device(packed, device) || !dx11::belongs_to_device(right.Get(), device)) {
+        SPDLOG_WARNING_EVERY_N_SEC(2, "[UE5.9][NativeStereoFix][D3D11] Packed/capture geometry or device did not validate "
+            "(packed={}x{} format={}, capture={}x{} format={}, OpenXR={}x{})",
+            packed_desc.Width, packed_desc.Height, (uint32_t)packed_desc.Format,
+            right_desc.Width, right_desc.Height, (uint32_t)right_desc.Format, chain->second.width, chain->second.height);
+        return unavailable();
+    }
+    for (const auto& image : images->second.textures) {
+        D3D11_TEXTURE2D_DESC destination{};
+        if (image.texture) { image.texture->GetDesc(&destination); }
+        if (image.texture == packed || image.texture == right.Get() ||
+            !dx11::destination_matches(packed_desc, destination) || !dx11::belongs_to_device(image.texture, device)) {
+            SPDLOG_WARNING_EVERY_N_SEC(2,
+                "[UE5.9][NativeStereoFix][D3D11] Double-wide OpenXR image did not validate ({}x{}, format={})",
+                destination.Width, destination.Height, (uint32_t)destination.Format);
+            return unavailable();
+        }
+    }
+    if (capture->generation != rtm->get_scene_capture_generation() ||
+        capture != rtm->get_scene_capture_target_snapshot() || viewport != rtm->get_view_family_render_target() ||
+        scene_rhi != reinterpret_cast<uintptr_t>(rtm->get_render_target())) { return unavailable(); }
+
+    auto binding = std::make_shared<const dx11::Binding>(dx11::Binding{identity, ComPtr<ID3D11Texture2D>{packed}, std::move(right)});
+    m_ue59_native_fix_binding.store(binding, std::memory_order_release);
+    SPDLOG_INFO_EVERY_N_SEC(2,
+        "[UE5.9][NativeStereoFix][D3D11] Validated packed scene, right capture and {} OpenXR images; generation={} eye={}x{}",
+        images->second.textures.size(), capture->generation, capture->width, capture->height);
+    return binding;
+}
+
 vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
+    const bool ue59_dx11_runtime = sdk::ue59::reviewed_runtime();
+    const bool ue59_dx11_mode = ue59_dx11_runtime && ue59_native_fix_mode_supported(vr);
+    if (ue59_dx11_runtime && !ue59_dx11_mode && get_ue59_native_fix_binding()) {
+        m_ue59_native_fix_binding.store(nullptr, std::memory_order_release);
+    }
     const auto ui_alpha_allowed = [vr] {
         return uevr::ui_alpha::eligible(vr->get_runtime()->is_openxr(), vr->is_using_mono(),
             vr->is_dibr_rendering_method_selected(), vr->is_mono_transition_pending(), vr->is_using_2d_screen());
@@ -561,6 +648,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
 
     if (backbuffer == nullptr) {
         spdlog::error("[VR] Failed to get back buffer.");
+        if (ue59_dx11_runtime) { m_ue59_native_fix_binding.store(nullptr, std::memory_order_release); }
         m_engine_tex_ref.reset();
         m_scene_capture_tex_ref.reset();
         m_scene_capture_snapshot_transaction = 0;
@@ -688,10 +776,31 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
 
     const auto& ffsr = VR::get()->m_fake_stereo_hook;
     namespace frame_diag = uevr::native_frame;
+    const bool prepare_ue59_dx11 = ue59_dx11_mode && runtime->ready() && ffsr &&
+        backbuffer.Get() != real_backbuffer.Get();
+    if (ue59_dx11_runtime && !prepare_ue59_dx11 && get_ue59_native_fix_binding()) {
+        m_ue59_native_fix_binding.store(nullptr, std::memory_order_release);
+    }
+    const auto ue59_dx11_binding = prepare_ue59_dx11
+        ? prepare_ue59_native_fix_binding(vr, reinterpret_cast<uintptr_t>(ue4_texture), device, backbuffer.Get(), selected_backbuffer_desc)
+        : nullptr;
     frame_diag::Ticket native_frame_ticket{};
     auto native_stereo_packet = ffsr != nullptr && !vr->is_using_mono()
         ? ffsr->get_native_stereo_frame_packet_for_submit(vr->m_render_frame_count, frame_diag::Backend::d3d11, &native_frame_ticket)
         : nullptr;
+    const bool ue59_dx11_packet = native_stereo_packet && native_stereo_packet->ue59_dx11_binding;
+    const bool ue59_dx11_split = ue59_dx11_runtime && ffsr &&
+        (ue59_dx11_packet || ffsr->ue59_dx11_split_pending(vr->m_render_frame_count));
+    if (ue59_dx11_split && !ue59_dx11_mode) {
+        // A mode toggle can overtake a split render. Wait for a normal packed
+        // draw before handing the texture to the new presentation mode.
+        if (runtime->is_openxr() && runtime->ready()) {
+            vr->m_openxr->close_synced_frame_without_layers("UE5.9 DX11 Native Fix mode transition");
+            vr->m_openxr->needs_pose_update = true;
+        }
+        vr->m_submitted = false;
+        return vr::VRCompositorError_None;
+    }
     const auto record_native_submit = [&](frame_diag::Runtime api, frame_diag::Stage stage, int32_t result = 0, uint8_t eye = 2) {
         if (native_frame_ticket && native_stereo_packet != nullptr && ffsr != nullptr) {
             ffsr->record_native_frame_stage(*native_stereo_packet, native_frame_ticket,
@@ -702,7 +811,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
     bool scene_capture_packet_ready = false;
     bool daysgone_snapshot_deferred = false;
 
-    if (vr->is_native_stereo_fix_enabled() && native_stereo_packet != nullptr) {
+    if (vr->is_native_stereo_fix_enabled() && native_stereo_packet != nullptr && !ue59_dx11_packet) {
         ComPtr<ID3D11Texture2D> scene_capture_rt{};
         ComPtr<ID3D11Device> scene_capture_device{};
         const auto capture = native_stereo_packet->capture;
@@ -823,7 +932,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
         }
     }
 
-    if (native_stereo_packet != nullptr && !scene_capture_packet_ready &&
+    if (native_stereo_packet != nullptr && !ue59_dx11_packet && !scene_capture_packet_ready &&
         !daysgone_snapshot_deferred &&
         native_stereo_packet->d3d11_snapshot_transaction == 0 && ffsr != nullptr)
     {
@@ -832,7 +941,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
             "D3D11 rejected the capture resource or its views");
     }
 
-    if (!scene_capture_packet_ready) {
+    if (!scene_capture_packet_ready && !ue59_dx11_packet) {
         bool cached_capture_is_current = false;
 
         if (native_stereo_packet == nullptr &&
@@ -1181,7 +1290,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
 
     ComPtr<ID3D11Texture2D> scene_depth_tex{};
 
-    if (vr->is_depth_enabled() && runtime->is_depth_allowed()) {
+    if (!ue59_dx11_split && vr->is_depth_enabled() && runtime->is_depth_allowed()) {
         auto& rt_pool = vr->get_render_target_pool_hook();
         scene_depth_tex = rt_pool->get_texture<ID3D11Texture2D>(L"SceneDepthZ");
 
@@ -1282,6 +1391,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
         }};
 
         if (runtime->ready() && runtime->is_openxr()) {
+            runtimes::OpenXR::PackedStereoSubmission packed_stereo{};
             if (is_actually_afr && !is_afr && !m_submitted_left_eye) {
                 LOG_VERBOSE("Copying left eye");
                 D3D11_BOX src_box{};
@@ -1351,6 +1461,39 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                     vr->m_openxr->note_mono_copy(frame, copied && recorded);
                     if (!copied || !recorded) {
                         vr->set_mono_status("Waiting: Mono DX11 scene/device/format/extent validation failed");
+                    }
+                } else if (ue59_dx11_split) {
+                    constexpr auto index = (uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE;
+                    if (vr->m_openxr->frame_state.shouldRender == XR_TRUE && vr->m_openxr->frame_began &&
+                        ue59_dx11_packet && ue59_dx11_binding == native_stereo_packet->ue59_dx11_binding) {
+                        std::scoped_lock lock{m_openxr.mtx};
+                        const auto chain = vr->m_openxr->swapchains.find(index);
+                        const auto images = m_openxr.contexts.find(index);
+                        if (get_ue59_native_fix_binding() == ue59_dx11_binding &&
+                            chain != vr->m_openxr->swapchains.end() &&
+                            reinterpret_cast<uintptr_t>(chain->second.handle) == ue59_dx11_binding->identity.swapchain &&
+                            images != m_openxr.contexts.end() && images->second.num_textures_acquired == 0) {
+                            bool recorded = false;
+                            const auto rtm = ffsr->get_render_target_manager();
+                            const bool released = m_openxr.copy(index, nullptr, nullptr, [&](ID3D11Texture2D* destination) {
+                                if (rtm->get_scene_capture_generation() != native_stereo_packet->capture_generation ||
+                                    rtm->get_scene_capture_target_snapshot() != native_stereo_packet->capture ||
+                                    ue4_texture != rtm->get_render_target()) { return; }
+                                const auto& capture = *native_stereo_packet->capture;
+                                recorded = uevr::ue59_native::dx11::copy_pair(context.Get(), backbuffer.Get(),
+                                    ue59_dx11_binding->right.Get(), destination, capture.width, capture.height);
+                                if (recorded && native_frame_ticket) {
+                                    ffsr->record_native_frame_stage(*native_stereo_packet, native_frame_ticket,
+                                        frame_diag::Backend::d3d11, frame_diag::Runtime::openxr, frame_diag::Stage::copy_recorded,
+                                        0, 2, 0, ue59_dx11_binding->right.Get(), destination);
+                                }
+                            });
+                            if (released && recorded) { packed_stereo.color_swapchain = chain->second.handle; }
+                        }
+                    }
+                    if (packed_stereo.color_swapchain == XR_NULL_HANDLE && vr->m_openxr->frame_state.shouldRender == XR_TRUE) {
+                        SPDLOG_WARNING_EVERY_N_SEC(2,
+                            "[UE5.9][NativeStereoFix][D3D11] Skipping split frame without a current released eye pair");
                     }
                 } else if (native_stereo_packet == nullptr || !m_scene_capture_tex_ref.has_texture()) {
                     m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE, backbuffer.Get(), nullptr);
@@ -1462,11 +1605,18 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
             
             record_native_submit(frame_diag::Runtime::openxr, frame_diag::Stage::submit_attempt);
             auto result = vr->m_openxr->end_frame(quad_layers, scene_depth_tex != nullptr,
-                (ui_composition_request & 1) ? &m_openxr.ui_composition : nullptr);
+                (ui_composition_request & 1) ? &m_openxr.ui_composition : nullptr,
+                ue59_dx11_split ? &packed_stereo : nullptr);
             record_native_submit(frame_diag::Runtime::openxr, frame_diag::Stage::submit_result, static_cast<int32_t>(result));
+            if (packed_stereo.submitted && ue59_dx11_packet &&
+                get_ue59_native_fix_binding() == native_stereo_packet->ue59_dx11_binding) {
+                ffsr->note_native_stereo_frame_packet_consumed(
+                    native_stereo_packet->serial, native_stereo_packet->ue59_dx11_binding.get());
+                SPDLOG_INFO_ONCE("[UE5.9][NativeStereoFix][D3D11] Submitted both independently rendered eyes to OpenXR");
+            }
 
             vr->m_openxr->needs_pose_update = true;
-            vr->m_submitted = result == XR_SUCCESS;
+            vr->m_submitted = result == XR_SUCCESS && (!ue59_dx11_split || packed_stereo.submitted);
         }
 
         if (runtime->is_openvr()) {
@@ -1798,6 +1948,7 @@ void D3D11Component::on_post_present(VR* vr) {
 }
 
 void D3D11Component::on_reset(VR* vr, bool mono_retired) {
+    m_ue59_native_fix_binding.store(nullptr, std::memory_order_release);
     m_force_reset = true;
     if (vr->mono_generation() != 0 && !mono_retired) {
         // Resize/reinit callbacks only request work. Present retires the
@@ -3282,6 +3433,7 @@ std::optional<std::string> D3D11Component::OpenXR::create_swapchains() {
 
 void D3D11Component::OpenXR::destroy_swapchains() {
     std::scoped_lock _{this->mtx};
+    this->parent->m_ue59_native_fix_binding.store(nullptr, std::memory_order_release);
     const bool composition_retired = this->ui_composition.reset();
     const bool game_alpha_retired = this->game_ui_alpha.reset();
     const bool framework_alpha_retired = this->framework_ui_alpha.reset();
