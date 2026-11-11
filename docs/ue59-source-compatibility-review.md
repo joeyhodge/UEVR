@@ -33,6 +33,14 @@ Fix produced a capture but could not enter the DX12-only linked renderer.
 DebugGame, DIBR, mono and custom forks still require mode-specific runtime
 validation.
 
+### Packaged Development DX11 Native Fix verification
+
+The DX11 Native Fix change was tested on `d59` in OpenXR. Present validated
+the generation-owned right-eye capture and all three double-wide images;
+the Development family copy/destructor proof passed, and Native Fix reached
+Active after a successful two-eye projection. The matching Shipping binary
+contract also passed offline; Shipping DX11 HMD validation is separate.
+
 The review uses these local, licensed archives (no Unreal source is included
 in this repository):
 
