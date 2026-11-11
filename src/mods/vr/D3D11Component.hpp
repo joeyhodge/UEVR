@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+#include <memory>
 #include <d3d11.h>
 #include <dxgi.h>
 #include <openvr.h>
@@ -18,6 +20,9 @@ class VR;
 namespace render {
 class FrameResourceInspector;
 }
+namespace uevr::ue59_native::dx11 {
+struct Binding;
+}
 
 namespace vrmod {
 class D3D11Component {
@@ -31,6 +36,11 @@ public:
     vr::EVRCompositorError on_frame(VR* vr);
     void on_post_present(VR* vr);
     void on_reset(VR* vr);
+
+    static bool ue59_native_fix_mode_supported(VR* vr);
+    std::shared_ptr<const uevr::ue59_native::dx11::Binding> get_ue59_native_fix_binding() const {
+        return m_ue59_native_fix_binding.load(std::memory_order_acquire);
+    }
 
     auto& openxr() { return m_openxr; }
 
@@ -165,6 +175,7 @@ private:
     TextureContext m_engine_ui_ref{};
     TextureContext m_engine_tex_ref{};
     TextureContext m_scene_capture_tex_ref{};
+    std::atomic<std::shared_ptr<const uevr::ue59_native::dx11::Binding>> m_ue59_native_fix_binding{};
     uint64_t m_scene_capture_generation{};
     uint64_t m_scene_capture_snapshot_transaction{};
     uint32_t m_scene_capture_width{};
@@ -252,6 +263,9 @@ private:
         friend class D3D11Component;
     } m_openxr;
 
+    std::shared_ptr<const uevr::ue59_native::dx11::Binding> prepare_ue59_native_fix_binding(
+        VR* vr, uintptr_t scene_rhi, ID3D11Device* device, ID3D11Texture2D* packed,
+        const D3D11_TEXTURE2D_DESC& packed_desc);
     bool setup();
     bool setup_shader();
     void invoke_shader(uint32_t frame_count, uint32_t eye, uint32_t width, uint32_t height);
