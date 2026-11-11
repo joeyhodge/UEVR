@@ -1976,6 +1976,7 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/UE58OwnedUITexture.hpp"
 	"src/mods/vr/UE58UIInitialization.hpp"
 	"src/mods/vr/UE59NativeContracts.hpp"
+	"src/mods/vr/UE59NativeD3D11.hpp"
 	"src/mods/vr/UE59NativeFix.hpp"
 	"src/mods/vr/UE59Slate.hpp"
 	"src/mods/vr/UE59ViewExtension.hpp"

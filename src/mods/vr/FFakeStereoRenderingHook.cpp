@@ -46,6 +46,7 @@
 #include <sdk/TheSinkingCity2Native.hpp>
 #include "UE58NativeFix.hpp"
 #include "UE59NativeFix.hpp"
+#include "UE59NativeD3D11.hpp"
 #include <sdk/FinalFantasyResonance.hpp>
 #include <sdk/PhantomBladeZeroObjectArray.hpp>
 #include <sdk/PhantomBladeZeroRenderTarget.hpp>
@@ -6200,6 +6201,10 @@ bool is_ue58_dx12_backend() {
     return uses_reviewed_modern_stereo_contract() && g_framework != nullptr && g_framework->is_dx12();
 }
 
+bool is_ue59_dx11_backend() {
+    return sdk::ue59::reviewed_runtime() && g_framework != nullptr && g_framework->is_dx11();
+}
+
 bool is_validated_ue58_slate_ui_runtime() {
     static const auto file_version = sdk::get_file_version_info();
     return sdk::ue59::reviewed_runtime() || (is_ue_5_8() &&
@@ -6243,7 +6248,9 @@ bool sinking_city_2_native_view_layout() {
 }
 
 bool ue58_native_view_layout() {
-    if (!is_ue58_dx12_backend() || !g_hook || sinking_city_2_native_runtime()) { return false; }
+    if (!uevr::ue59_native::dx11::admits_linked_view_proof(is_ue58_dx12_backend(),
+            sdk::ue59::reviewed_runtime(), g_framework != nullptr && g_framework->is_dx11()) ||
+        !g_hook || sinking_city_2_native_runtime()) { return false; }
     const auto constructor = g_hook->get_scene_view_constructor_hook_target_address();
     if (!constructor) { return false; }
     if (sdk::ue59::reviewed_runtime()) {
@@ -25664,6 +25671,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             dibr_single_view_requested,
             vr->is_dibr_preview_active());
     const auto native_stereo_fix_enabled = vr->is_native_stereo_fix_enabled();
+    const bool ue59_dx11_fix = native_stereo_fix_enabled && is_ue59_dx11_backend();
     const bool split_screen_enabled = vr->is_splitscreen_compatibility_enabled();
 
     const auto reset_dibr_single_view_state = [&]() {
@@ -25837,6 +25845,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
 
     FixedCapacityList<SplitScreenViewsRestore, max_sane_view_families> split_screen_restores{};
     std::shared_ptr<const VRRenderTargetManager_Base::SceneCaptureTargetSnapshot> native_capture_snapshot{};
+    std::shared_ptr<const uevr::ue59_native::dx11::Binding> ue59_dx11_binding{};
     sdk::FSceneView* native_left_view{};
     sdk::FSceneView* native_right_view{};
     sdk::FSceneViewFamily* native_left_family{};
@@ -26215,6 +26224,13 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     }
 
     if (native_stereo_fix_enabled) {
+        if (ue59_dx11_fix && !vrmod::D3D11Component::ue59_native_fix_mode_supported(vr.get())) {
+            g_hook->invalidate_native_stereo_frame_packet(NativeStereoFixState::FailedClosed,
+                "UE5.9 DX11 linked eyes require standard Native stereo output on OpenXR");
+            call_original();
+            return;
+        }
+
         if (avowed_is_current_game() &&
             !sdk::FScene::update_offsets(reinterpret_cast<sdk::FScene*>(view_family->get_scene_interface()))) {
             g_hook->invalidate_native_stereo_frame_packet(
@@ -26271,6 +26287,19 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         }
 
         const auto expected_viewport = rtm->get_view_family_render_target();
+        if (ue59_dx11_fix) {
+            ue59_dx11_binding = vr->d3d11().get_ue59_native_fix_binding();
+            if (ue59_dx11_binding == nullptr ||
+                !ue59_dx11_binding->matches_capture(native_capture_snapshot->generation,
+                    reinterpret_cast<uintptr_t>(expected_viewport),
+                    reinterpret_cast<uintptr_t>(rtm->get_render_target()),
+                    reinterpret_cast<uintptr_t>(native_capture_snapshot->native_resource.Get()))) {
+                g_hook->invalidate_native_stereo_frame_packet(NativeStereoFixState::WaitingForTarget,
+                    "UE5.9 DX11 packed scene, capture or OpenXR destination has not been proven");
+                call_original();
+                return;
+            }
+        }
         const auto rect_is_sane = [](const FIntRect& rect) {
             const auto width = static_cast<int64_t>(rect.bounds[2]) - rect.bounds[0];
             const auto height = static_cast<int64_t>(rect.bounds[3]) - rect.bounds[1];
@@ -26952,6 +26981,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     const auto publish_native_packet = [&]() {
         auto packet = std::make_shared<NativeStereoFramePacket>();
         packet->capture = native_capture_snapshot;
+        packet->ue59_dx11_binding = ue59_dx11_binding;
         packet->family = view_family;
         packet->left_view = native_left_view;
         packet->right_view = native_right_view;
@@ -27223,6 +27253,14 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         };
         if (!identities_match()) { fail_closed("original logical eyes or temporal-state identities changed"); return; }
 
+        if (ue59_dx11_binding &&
+            (ue59_dx11_binding != vr->d3d11().get_ue59_native_fix_binding() ||
+                ue59_dx11_binding->identity.scene_rhi != reinterpret_cast<uintptr_t>(rtm->get_render_target()) ||
+                native_capture_snapshot->generation != rtm->get_scene_capture_generation())) {
+            fail_closed("UE5.9 DX11 destination binding changed before linked render");
+            return;
+        }
+
         uevr::ue59_native::FamilyClone clone;
         const char* reason{};
         if (!clone.initialize(memory, reinterpret_cast<uintptr_t>(view_family), expected_vtable, *functions, reason)) {
@@ -27289,6 +27327,11 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         right_views->count = 1;
         TArrayViewViewFamily families{linked.data(), static_cast<int32_t>(*count)};
         SPDLOG_INFO_ONCE("[{}][NativeStereoFix] Rendering independent linked eye families in one original call; physical PRIMARY right view retains logical eye/state/exposure", sdk::ue59::is_runtime() ? "UE5.9" : "UE5.8");
+        if (ue59_dx11_binding) {
+            // Remember a split render even if the subsequent ownership check cannot publish its packet.
+            g_hook->m_ue59_dx11_split_clocks.store(
+                uevr::native_frame::pack_clocks(g_frame_count, vr->m_render_frame_count), std::memory_order_release);
+        }
         g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(
             render_module, canvas, reinterpret_cast<sdk::FSceneViewFamily*>(&families));
         const bool independent = clone.finish(memory, reinterpret_cast<uintptr_t>(view_family));
@@ -28816,6 +28859,11 @@ FFakeStereoRenderingHook::get_native_stereo_frame_packet_for_submit(int32_t rend
     return packet;
 }
 
+bool FFakeStereoRenderingHook::ue59_dx11_split_pending(int32_t render_frame) const {
+    const auto clocks = m_ue59_dx11_split_clocks.load(std::memory_order_acquire);
+    return uevr::ue59_native::dx11::split_pending(clocks, g_frame_count, render_frame);
+}
+
 void FFakeStereoRenderingHook::sync_stalker2_native_experiment(bool enabled) {
     if (m_stalker2_native_experiment.exchange(enabled, std::memory_order_acq_rel) != enabled) {
         m_stalker2_native_packets.invalidate();
@@ -28928,9 +28976,14 @@ void FFakeStereoRenderingHook::reject_stalker2_native_packet(
     }
 }
 
-void FFakeStereoRenderingHook::note_native_stereo_frame_packet_consumed(uint64_t serial) {
+void FFakeStereoRenderingHook::note_native_stereo_frame_packet_consumed(uint64_t serial,
+    const uevr::ue59_native::dx11::Binding* submitted_dx11_binding) {
     const auto packet = m_native_stereo_frame_packet.load(std::memory_order_acquire);
-    if (packet == nullptr || packet->serial != serial) {
+    // xrEndFrame can finish after the next producer packet is published.
+    // A receipt still applies to the same immutable resource binding.
+    if (packet == nullptr || (submitted_dx11_binding
+            ? packet->ue59_dx11_binding.get() != submitted_dx11_binding || packet->serial < serial
+            : packet->serial != serial)) {
         return;
     }
 
@@ -32322,13 +32375,17 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
     }
 
     if (vr->is_native_stereo_fix_enabled()) {
+        const bool ue59_dx11_fix = is_ue59_dx11_backend();
+        if (ue59_dx11_fix && !vrmod::D3D11Component::ue59_native_fix_mode_supported(vr.get())) {
+            return 2;
+        }
         const bool hellblade_preserve_native_pair_while_warming =
             hellblade_is_current_game() &&
             is_ue_4_25_runtime() &&
             g_framework != nullptr &&
             g_framework->is_dx12();
         const auto bootstrap_failed = g_hook->m_native_stereo_localplayer_bootstrap_failed.load(std::memory_order_acquire);
-        const auto unavailable_view_count =
+        const auto unavailable_view_count = ue59_dx11_fix ? 2u :
             uevr::stellar_blade::warming_view_count(stellar_blade_ue426_dx12_runtime(),
                 hellblade_preserve_native_pair_while_warming || swgr_ue574_dx12_runtime(), bootstrap_failed);
 
@@ -32385,6 +32442,9 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
             return unavailable_view_count;
         }
 
+        // The linked renderer owns the status on this path. Do not overwrite a
+        // failed capability check with LearningEyePair every time views are requested.
+        if (ue59_dx11_fix) { return 2; }
         const auto native_fix_state =
             g_hook->m_native_stereo_fix_state.load(std::memory_order_acquire);
         if ((swgr_ue574_dx12_runtime() || goweday_ue561_dx12_runtime() || pbz_ue574_dx12_runtime()) && capture_snapshot->generation ==
