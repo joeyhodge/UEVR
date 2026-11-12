@@ -1014,6 +1014,55 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	unset(CMKR_SOURCES)
 endif()
 
+# Target dispatch-movie-tests
+if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
+	set(CMKR_TARGET dispatch-movie-tests)
+	set(dispatch-movie-tests_SOURCES "")
+
+	list(APPEND dispatch-movie-tests_SOURCES
+		"tests/DispatchMovieTests.cpp"
+	)
+
+	list(APPEND dispatch-movie-tests_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${dispatch-movie-tests_SOURCES})
+	add_executable(dispatch-movie-tests)
+
+	if(dispatch-movie-tests_SOURCES)
+		target_sources(dispatch-movie-tests PRIVATE ${dispatch-movie-tests_SOURCES})
+	endif()
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT dispatch-movie-tests)
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${dispatch-movie-tests_SOURCES})
+
+	target_compile_features(dispatch-movie-tests PRIVATE
+		cxx_std_23
+	)
+
+	target_include_directories(dispatch-movie-tests PRIVATE
+		"src/"
+	)
+
+	target_link_libraries(dispatch-movie-tests PRIVATE
+		d3d11
+		d3d12
+		dxgi
+		openxr_loader
+	)
+
+	add_test(NAME dispatch-movie-tests COMMAND dispatch-movie-tests)
+	set_tests_properties(dispatch-movie-tests PROPERTIES TIMEOUT 60)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
 # Target native-openxr-array-tests
 if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	set(CMKR_TARGET native-openxr-array-tests)
@@ -1610,6 +1659,7 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/CVarManager.cpp"
 	"src/mods/vr/D3D11Component.cpp"
 	"src/mods/vr/D3D12Component.cpp"
+	"src/mods/vr/DispatchMovie.cpp"
 	"src/mods/vr/FFakeStereoRenderingHook.cpp"
 	"src/mods/vr/GalacticRacerLetterboxing.cpp"
 	"src/mods/vr/GalacticRacerPanini.cpp"
@@ -1676,6 +1726,11 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/ControllerTouchBindings.hpp"
 	"src/mods/vr/D3D11Component.hpp"
 	"src/mods/vr/D3D12Component.hpp"
+	"src/mods/vr/DispatchMovie.hpp"
+	"src/mods/vr/DispatchMovieD3D11.hpp"
+	"src/mods/vr/DispatchMovieD3D12.hpp"
+	"src/mods/vr/DispatchMovieOpenXR.hpp"
+	"src/mods/vr/DispatchMoviePolicy.hpp"
 	"src/mods/vr/DuneFrameHandoff.hpp"
 	"src/mods/vr/DuneFrameHandoffDiscovery.hpp"
 	"src/mods/vr/DuneNativeTransaction.hpp"
@@ -1728,6 +1783,7 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/NativeFrameDiagnosticsJson.hpp"
 	"src/mods/vr/NativeOpenXRArrayD3D12.hpp"
 	"src/mods/vr/NativeOpenXRArrayPolicy.hpp"
+	"src/mods/vr/NativeOpenXRAsyncWorker.hpp"
 	"src/mods/vr/OverlayComponent.hpp"
 	"src/mods/vr/PhantomBladeZeroNative.hpp"
 	"src/mods/vr/PhantomBladeZeroUI.hpp"
@@ -1902,3 +1958,4 @@ add_custom_command(
 
 unset(CMKR_TARGET)
 unset(CMKR_SOURCES)
+
