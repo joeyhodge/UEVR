@@ -1167,6 +1167,7 @@ bool OpenXR::discard_synced_frame_without_layers(const char* reason) {
 }
 
 void OpenXR::prepare_resolution_scale_reconfigure(const char* reason) {
+    std::scoped_lock frame_lock{sync_mtx};
     const auto safe_reason = reason != nullptr ? reason : "resolution_scale_reconfigure";
     const auto had_synced = this->frame_synced;
     const auto had_began = this->frame_began;
@@ -1206,6 +1207,37 @@ void OpenXR::prepare_resolution_scale_reconfigure(const char* reason) {
         closed_pending_frame,
         this->get_session_state_string(this->session_state),
         this->session_ready);
+}
+
+std::optional<uevr::native_array::FrameKey> OpenXR::native_async_wait_request() {
+    std::unique_lock lock{sync_mtx, std::try_to_lock};
+    if (!lock.owns_lock() || wants_reinitialize || !ever_submitted) { return std::nullopt; }
+    const uevr::native_array::FrameKey key{reinterpret_cast<uintptr_t>(session), native_async_session_generation,
+        last_wait_trace_sequence, frame_state.predictedDisplayTime};
+    if (!uevr::native_array::can_async_wait(key, key, can_run_frame_loop(), frame_synced, frame_began)) { return std::nullopt; }
+    return key;
+}
+
+std::optional<uevr::native_array::FrameKey> OpenXR::synchronize_native_async_frame(uevr::native_array::FrameKey request) {
+    std::scoped_lock lock{sync_mtx};
+    const uevr::native_array::FrameKey current{reinterpret_cast<uintptr_t>(session), native_async_session_generation,
+        last_wait_trace_sequence, frame_state.predictedDisplayTime};
+    if (wants_reinitialize || !uevr::native_array::can_async_wait(request, current, can_run_frame_loop(), frame_synced, frame_began)) {
+        return std::nullopt;
+    }
+    // Retain the normal frame-loop serialization and publish its actual display time.
+    const auto result = synchronize_frame(std::nullopt, SyncFrameCallsite::VRVeryLatePostPresent);
+    if (result != Error::SUCCESS || !frame_synced || frame_began) { return std::nullopt; }
+    return uevr::native_array::FrameKey{reinterpret_cast<uintptr_t>(session), native_async_session_generation,
+        last_wait_trace_sequence, frame_state.predictedDisplayTime};
+}
+
+bool OpenXR::native_async_pre_acquire_allowed(uevr::native_array::FrameKey frame) {
+    std::scoped_lock lock{sync_mtx};
+    const uevr::native_array::FrameKey current{reinterpret_cast<uintptr_t>(session), native_async_session_generation,
+        last_wait_trace_sequence, frame_state.predictedDisplayTime};
+    return !wants_reinitialize && uevr::native_array::can_pre_acquire(frame, current, can_run_frame_loop(),
+        frame_synced, frame_began, frame_state.shouldRender == XR_TRUE);
 }
 
 VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, SyncFrameCallsite callsite) {
@@ -1336,7 +1368,7 @@ VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, 
 
     this->end_profile("xrWaitFrame");
 
-    if (result != XR_SUCCESS) {
+    if (result != XR_SUCCESS && result != XR_SESSION_LOSS_PENDING) {
         spdlog::error("[VR] xrWaitFrame failed: {}", this->get_result_string(result));
         return (VRRuntime::Error)result;
     } else {
@@ -1788,7 +1820,9 @@ VRRuntime::Error OpenXR::consume_events(std::function<void(void*)> callback) {
         }
 
         if (bh->type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED) {
+            std::scoped_lock frame_lock{sync_mtx};
             const auto ev = (XrEventDataSessionStateChanged*)&edb;
+            ++native_async_session_generation;
             this->session_state = ev->state;
 
             spdlog::info("VR: XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED {} ({})", (uint32_t)ev->state, this->get_session_state_string(ev->state));
@@ -2254,6 +2288,7 @@ void OpenXR::destroy() {
     }
 
     std::scoped_lock _{sync_mtx};
+    ++native_async_session_generation;
     if (VR::get()->mono_generation() != 0) { reset_mono_projection_history(); }
     if (m_stalker2_pair_pending.load(std::memory_order_acquire)) { set_stalker2_pair_submit(std::nullopt); }
 
