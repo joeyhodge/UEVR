@@ -40,6 +40,9 @@
 #include "GalacticRacerRenderTargets.hpp"
 #include "MonoD3D12.hpp"
 #include "PhantomBladeZeroNative.hpp"
+#include "DispatchMovie.hpp"
+#include "DispatchMovieD3D12.hpp"
+#include "DispatchMovieOpenXR.hpp"
 
 //#define AFR_DEPTH_TEMP_DISABLED
 
@@ -5333,6 +5336,20 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             quad_layers.clear();
 
             auto& openxr_overlay = vr->get_overlay_component().get_openxr();
+            uint64_t dispatch_movie_epoch{};
+            if (const auto movie=uevr::dispatch_movie::read(); movie && movie->texture12 &&
+                vr->is_using_native_stereo() && !use_2d_screen && !vr->is_using_mono() &&
+                !vr->is_dibr_rendering_method_selected() && !vr->is_stereo_emulation_enabled() && !vr->is_mono_transition_pending() &&
+                vr->m_openxr->frame_began &&
+                uevr::dispatch_movie::source_state(*movie,m_openxr.binding.device,m_openxr.binding.queue,g_framework->get_d3d12_hook()->get_swap_chain()) &&
+                m_openxr.ensure_dispatch_movie(movie->width,movie->height,movie->epoch)) {
+                if (m_openxr.copy_dispatch_movie(*movie) && uevr::dispatch_movie::current(*movie)) {
+                    if (const auto layer=openxr_overlay.generate_dispatch_movie_layer()) {
+                        quad_layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader*>(&layer->get()));
+                        dispatch_movie_epoch=movie->epoch;
+                    }
+                }
+            }
             const auto ui_pose_diagnostics_enabled = vr->is_ui_layer_pose_telemetry_enabled() || vr->is_ui_layer_pose_stabilizer_enabled();
             const auto ui_pose_basis = ui_pose_diagnostics_enabled ? vr->build_ui_layer_pose_basis(frame_count) : vrmod::UILayerPoseBasis{};
             const auto* ui_pose_basis_ptr = ui_pose_diagnostics_enabled ? &ui_pose_basis : nullptr;
@@ -5415,7 +5432,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 scene_depth_tex.Get() != nullptr &&
                     !native_stereo_array_submit_active &&
                     !dead_island_2_afr_depth_disabled,
-                (ui_composition_request & 1) ? &m_openxr.ui_composition : nullptr);
+                (ui_composition_request & 1) ? &m_openxr.ui_composition : nullptr, nullptr, dispatch_movie_epoch);
             record_native_submit(frame_diag::Runtime::openxr, frame_diag::Stage::submit_result, static_cast<int32_t>(result));
 
             if (result == XR_ERROR_LAYER_INVALID) {
@@ -5425,7 +5442,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
                 spdlog::info("[VR] Calling xrEndFrame again");
                 record_native_submit(frame_diag::Runtime::openxr, frame_diag::Stage::submit_attempt, 0, 2, 1);
-                result = vr->m_openxr->end_frame(quad_layers);
+                result = vr->m_openxr->end_frame(quad_layers,false,nullptr,nullptr,dispatch_movie_epoch);
                 record_native_submit(frame_diag::Runtime::openxr, frame_diag::Stage::submit_result, static_cast<int32_t>(result), 2, 1);
             }
 
@@ -7100,7 +7117,124 @@ void D3D12Component::OpenXR::ensure_native_array(bool during_setup) {
     }
 }
 
+bool D3D12Component::OpenXR::ensure_dispatch_movie(uint32_t width, uint32_t height, uint64_t epoch) {
+    std::scoped_lock lock{mtx};
+    auto& runtime=*VR::get()->m_openxr;
+    std::scoped_lock swapchain_lock{runtime.swapchain_mtx};
+    constexpr auto index=static_cast<uint32_t>(runtimes::OpenXR::SwapchainIndex::DISPATCH_MOVIE);
+    const auto old=runtime.swapchains.find(index);
+    const auto context=contexts.find(index);
+    if (!epoch || dispatch_movie_failed_epoch == epoch || !uevr::dispatch_movie::extent(width,height)) { return false; }
+    if (context != contexts.end() && (context->second.dispatch_movie_gpu_fault || context->second.movie_access.failed)) { return false; }
+    if (old != runtime.swapchains.end() && context != contexts.end() &&
+        old->second.width == width && old->second.height == height && !context->second.textures.empty()) { return true; }
+    if (!retire_dispatch_movie(false)) { return false; }
+    if (context != contexts.end()) {
+        for (const auto& texture:context->second.texture_contexts) {
+            if (texture && !texture->commands.references_retired()) { return false; }
+        }
+    }
+    auto created=uevr::dispatch_movie::create_images<XrSwapchainImageD3D12KHR>(runtime.session,width,height,
+        XR_TYPE_SWAPCHAIN_IMAGE_D3D12_KHR,DXGI_FORMAT_B8G8R8A8_UNORM_SRGB);
+    SwapchainContext replacement;
+    if (created) {
+        replacement.textures=std::move(created->images);
+        for (size_t i=0;i<replacement.textures.size();++i) {
+            auto texture=std::make_unique<d3d12::TextureContext>();
+            texture->texture=replacement.textures[i].texture;
+            if (!texture->commands.setup(L"Dispatch movie copy")) { created.reset(); break; }
+            replacement.texture_contexts.push_back(std::move(texture));
+        }
+    }
+    if (!created || (old != runtime.swapchains.end() && XR_FAILED(xrDestroySwapchain(old->second.handle)))) {
+        dispatch_movie_failed_epoch=epoch;
+        SPDLOG_WARN("[Dispatch][Movie][D3D12] Could not create/retire movie swapchain; keeping the original presentation");
+        return false;
+    }
+    contexts[index]=std::move(replacement);
+    contexts[index].mono_sources.resize(contexts[index].textures.size());
+    runtime.swapchains[index]={std::exchange(created->handle,XR_NULL_HANDLE),static_cast<int32_t>(width),static_cast<int32_t>(height)};
+    SPDLOG_INFO("[Dispatch][Movie][D3D12] Independent opaque movie swapchain {}x{}",width,height);
+    return true;
+}
+
+bool D3D12Component::OpenXR::retire_dispatch_movie(bool drain) {
+    std::scoped_lock lock{mtx};
+    constexpr auto index=static_cast<uint32_t>(runtimes::OpenXR::SwapchainIndex::DISPATCH_MOVIE);
+    const auto found=contexts.find(index);
+    if (found == contexts.end()) { return true; }
+    auto& ctx=found->second;
+    if (ctx.dispatch_movie_gpu_fault) { return false; }
+    const auto retired=[&] {
+        return std::all_of(ctx.texture_contexts.begin(),ctx.texture_contexts.end(),[](const auto& texture) {
+            return texture && texture->commands.references_retired();
+        });
+    };
+    if (drain && !retired()) {
+        for (auto& texture:ctx.texture_contexts) {
+            if (!texture) { continue; }
+            auto& commands=texture->commands;
+            if (!commands.references_retired() && commands.ready() && commands.waiting_for_fence && commands.fence &&
+                commands.fence->GetCompletedValue() != UINT64_MAX) { commands.wait(2000); }
+        }
+    }
+    auto& runtime=*VR::get()->m_openxr;
+    const auto chain=runtime.swapchains.find(index);
+    const bool safe=retired() && chain != runtime.swapchains.end() && ctx.movie_access.retire(chain->second.handle,retired);
+    if (!safe && drain) { ctx.dispatch_movie_gpu_fault=true; }
+    return safe;
+}
+
+bool D3D12Component::OpenXR::copy_dispatch_movie(const uevr::dispatch_movie::Frame& frame) {
+    std::scoped_lock lock{mtx};
+    auto& runtime=*VR::get()->m_openxr;
+    constexpr auto index=static_cast<uint32_t>(runtimes::OpenXR::SwapchainIndex::DISPATCH_MOVIE);
+    auto context=contexts.find(index);
+    const auto chain=runtime.swapchains.find(index);
+    auto& hook=g_framework->get_d3d12_hook();
+    if (context == contexts.end() || chain == runtime.swapchains.end() || !runtime.frame_began ||
+        runtime.frame_state.shouldRender != XR_TRUE || !frame.texture12 || !uevr::dispatch_movie::current(frame) ||
+        binding.device != hook->get_device() || binding.queue != hook->get_command_queue()) { return false; }
+    auto& ctx=context->second;
+    auto& image=ctx.movie_access;
+    if (ctx.dispatch_movie_gpu_fault) { return false; }
+    if (image.release_pending) { retire_dispatch_movie(false); return false; }
+    if (!image.acquire(chain->second.handle)) {
+        if (image.failed) { SPDLOG_WARN("[Dispatch][Movie][D3D12] Image acquisition failed: {}",int32_t(image.error)); }
+        return false;
+    }
+    if (image.index >= ctx.texture_contexts.size() || image.index >= ctx.mono_sources.size() ||
+        image.index >= ctx.textures.size() || !ctx.texture_contexts[image.index]) { image.failed=true; return false; }
+    auto& commands=ctx.texture_contexts[image.index]->commands;
+    if (!commands.references_retired() || !commands.try_wait()) { return false; }
+    if (!commands.ready()) { ctx.dispatch_movie_gpu_fault=true; return false; }
+    // Recheck the engine state after the successful nonblocking XR wait.
+    const auto state=uevr::dispatch_movie::source_state(frame,binding.device,binding.queue,hook->get_swap_chain());
+    if (!state) { image.retire(chain->second.handle,[&]{return commands.references_retired();}); return false; }
+    ctx.mono_sources[image.index]=frame.texture12;
+    const bool recorded=uevr::dispatch_movie::copy_movie(commands.cmd_list.Get(),ctx.textures[image.index].texture,frame.texture12.Get(),*state);
+    if (!recorded) {
+        dispatch_movie_failed_epoch=frame.epoch;
+        image.retire(chain->second.handle,[&]{return commands.references_retired();});
+        return false;
+    }
+    commands.has_commands=true;
+    const auto before=commands.fence_value;
+    commands.execute();
+    if (!uevr::native_array::copy_enqueued(recorded,commands.ready(),commands.waiting_for_fence,before,commands.fence_value) ||
+        binding.device != hook->get_device() || binding.queue != hook->get_command_queue()) {
+        ctx.dispatch_movie_gpu_fault=true;
+        SPDLOG_ERROR("[Dispatch][Movie] Unproven submission; retaining the source, destination, image and allocator");
+        return false;
+    }
+    const bool released=image.release(chain->second.handle);
+    if (!released) { SPDLOG_WARNING_EVERY_N_SEC(2,"[Dispatch][Movie][D3D12] Image release deferred: {}",int32_t(image.error)); }
+    if (released) { ctx.ever_acquired=true; }
+    return released;
+}
+
 void D3D12Component::OpenXR::destroy_swapchains() {
+    dispatch_movie_failed_epoch=0;
     m_native_array_generation.fetch_add(1, std::memory_order_acq_rel);
     m_native_array_session.store(XR_NULL_HANDLE, std::memory_order_release);
     m_native_array_copy_ok.store(false, std::memory_order_release);
@@ -7136,11 +7270,12 @@ void D3D12Component::OpenXR::destroy_swapchains() {
         auto& ctx = it.second;
         const auto i = it.first;
 
-        if (native_array_faulted(i)) {
+        if (native_array_faulted(i) || ctx.dispatch_movie_gpu_fault) {
             // Keep the complete generation, including destinations and command
             // allocators, rather than freeing references after an unknown fence.
             (void)new SwapchainContext(std::move(ctx));
-            spdlog::error("[OpenXR][native] Retaining array generation after unproven GPU/image retirement");
+            if (ctx.dispatch_movie_gpu_fault) { SPDLOG_ERROR("[Dispatch][Movie] Retaining movie generation after unproven GPU/image retirement"); }
+            else { spdlog::error("[OpenXR][native] Retaining array generation after unproven GPU/image retirement"); }
             continue;
         }
 
@@ -7227,6 +7362,10 @@ void D3D12Component::OpenXR::wait_for_all_copies(bool drain_native_array) {
     std::scoped_lock lock{mtx};
     constexpr auto array_index = static_cast<uint32_t>(runtimes::OpenXR::SwapchainIndex::NATIVE_STEREO_ARRAY);
     for (auto& [index, context] : contexts) {
+        if (index == static_cast<uint32_t>(runtimes::OpenXR::SwapchainIndex::DISPATCH_MOVIE)) {
+            retire_dispatch_movie(drain_native_array);
+            continue;
+        }
         if (native_array_faulted(index)) { continue; }
         if (index == array_index) {
             // Normal cleanup only polls. Actual destruction may drain once,

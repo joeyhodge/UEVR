@@ -27,10 +27,12 @@
 #include "d3d12/TextureContext.hpp"
 #include "UIAlpha.hpp"
 #include "UIComposition.hpp"
+#include "DispatchMovieOpenXR.hpp"
 #include "Stalker2NativeD3D12.hpp"
 #include "NativeOpenXRArrayPolicy.hpp"
 
 class VR;
+namespace uevr::dispatch_movie { struct Frame; }
 namespace runtimes { struct OpenXR; }
 namespace render {
 class FrameResourceInspector;
@@ -414,6 +416,10 @@ private:
         void initialize(XrSessionCreateInfo& session_info);
         std::optional<std::string> create_swapchains();
         void destroy_swapchains();
+        bool ensure_dispatch_movie(uint32_t width, uint32_t height, uint64_t epoch);
+        bool copy_dispatch_movie(const uevr::dispatch_movie::Frame& frame);
+        bool retire_dispatch_movie(bool drain);
+        uint64_t dispatch_movie_failed_epoch{};
         void ensure_native_array(bool during_setup = false);
         bool native_array_ready(XrSession session, uint32_t width, uint32_t height) const {
             return session != XR_NULL_HANDLE && m_native_array_session.load(std::memory_order_acquire) == session &&
@@ -484,12 +490,14 @@ private:
         void process_ui_alpha(uint32_t swapchain_idx, uint32_t texture_index);
 
         struct SwapchainContext {
+            uevr::dispatch_movie::ImageAccess movie_access;
             // Declared first so command contexts retire before these references are destroyed.
             std::vector<ComPtr<ID3D12Resource>> mono_sources{};
             std::vector<std::shared_ptr<uevr::stalker2_native::PairFrame>> stalker_pairs{};
             std::vector<NativeArraySources> native_array_sources{};
             uevr::native_array::ImageWait native_array_wait;
             bool native_array_release_pending{false};
+            bool dispatch_movie_gpu_fault{false};
             std::vector<XrSwapchainImageD3D12KHR> textures{};
             std::vector<std::unique_ptr<d3d12::TextureContext>> texture_contexts{};
             uint32_t num_textures_acquired{0};

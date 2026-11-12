@@ -1,5 +1,6 @@
 #include "mods/vr/MonoD3D11.hpp"
 #include "mods/vr/UE59NativeD3D11.hpp"
+#include "DispatchMovieD3D11Tests.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -238,6 +239,7 @@ int main() {
     device->CreateDeferredContext(0, &deferred);
     expect(!retirement.poll(deferred.Get(), 1), "deferred contexts cannot poll retirement");
     test_native_pair(device.Get(), context.Get());
+    dispatch_movie_tests::dx11(expect,device.Get(),context.Get());
     std::printf("Mono and Native Fix DX11 WARP copy/lifetime checks: %d failures\n", failures);
     return failures != 0;
 }

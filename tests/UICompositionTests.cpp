@@ -9,6 +9,7 @@
 #include <openxr/openxr_platform.h>
 #include "mods/vr/UIComposition.hpp"
 #include "mods/vr/UICompositionGPU.hpp"
+#include "mods/vr/DispatchMovieOpenXR.hpp"
 #include <d3d11sdklayers.h>
 #include <d3d12sdklayers.h>
 #include <cstring>
@@ -26,6 +27,7 @@ static ID3D11Device* device11{};
 static ID3D12Device* device12{};
 static unsigned creations{}, destructions{}, properties{}, acquisitions{}, releases{}, alive{};
 static bool fail_create{}, fail_release{}, timeout_wait{};
+static bool fail_movie_enumeration{};
 static int failures{};
 struct FakeSwapchain {
     std::array<ComPtr<ID3D11Texture2D>, 2> textures11;
@@ -87,6 +89,7 @@ extern "C" XRAPI_ATTR XrResult XRAPI_CALL xrEnumerateSwapchainImages(
     if (!capacity) {
         return XR_SUCCESS;
     }
+    if (fail_movie_enumeration) { return XR_ERROR_RUNTIME_FAILURE; }
     if (capacity != 2) {
         return XR_ERROR_SIZE_INSUFFICIENT;
     }
@@ -542,8 +545,76 @@ static void debug12(ID3D12Device* device) {
     }
 }
 
+static void dispatch_movie_layers() {
+    namespace movie=uevr::dispatch_movie;
+    const auto stage=reinterpret_cast<XrSpace>(uintptr_t{1});
+    const auto handle=reinterpret_cast<XrSwapchain>(uintptr_t{2});
+    XrCompositionLayerQuad layer{XR_TYPE_COMPOSITION_LAYER_QUAD};
+    layer.space=stage; layer.eyeVisibility=XR_EYE_VISIBILITY_BOTH;
+    layer.subImage.swapchain=handle; layer.subImage.imageRect.extent={64,32};
+    layer.pose.orientation.w=1; layer.pose.position.z=-2; layer.size={4,2};
+    std::array<XrCompositionLayerBaseHeader*,1> layers{reinterpret_cast<XrCompositionLayerBaseHeader*>(&layer)};
+    const auto valid=layer;
+    expect(movie::opaque_layer(layers,stage,handle,64,32),"Dispatch movie is a separate opaque BOTH-eye stage-space quad");
+    layer.layerFlags=XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+    expect(!movie::opaque_layer(layers,stage,handle,64,32),"transparent media alpha cannot authorize hiding the projection");
+    layer=valid; layer.eyeVisibility=XR_EYE_VISIBILITY_LEFT;
+    expect(!movie::opaque_layer(layers,stage,handle,64,32),"a one-eye movie cannot authorize hiding the projection");
+    layer=valid; layer.space=reinterpret_cast<XrSpace>(uintptr_t{3});
+    expect(!movie::opaque_layer(layers,stage,handle,64,32),"view-space/glued movie layers rejected");
+    layer=valid; layer.subImage.imageRect.extent.width=32;
+    expect(!movie::opaque_layer(layers,stage,handle,64,32),"half-eye or cropped movie layers rejected");
+    layer=valid; layer.pose.position.x=std::numeric_limits<float>::quiet_NaN();
+    expect(!movie::opaque_layer(layers,stage,handle,64,32),"invalid world pose cannot hide a working projection");
+    layer=valid; layer.pose.orientation.w=0;
+    expect(!movie::opaque_layer(layers,stage,handle,64,32),"zero movie orientation rejected");
+    expect(!movie::opaque_layer({},stage,handle,64,32),"no movie image means normal projection submission");
+}
+static void dispatch_movie_images() {
+    namespace movie=uevr::dispatch_movie;
+    const auto session=reinterpret_cast<XrSession>(uintptr_t{1});
+    const auto original=alive;
+    {
+        auto images=movie::create_images<XrSwapchainImageD3D11KHR>(session,64,32,XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR,DXGI_FORMAT_B8G8R8A8_UNORM_SRGB);
+        expect(images && images->handle && images->images.size()==2 && images->images[0].texture,"Dispatch movie enumerates an independent native image set");
+        if (images) {
+            auto moved=std::move(*images);
+            expect(!images->handle && moved.handle && alive==original+1,"movie image ownership moves once without premature destruction");
+        }
+    }
+    expect(alive==original,"unused movie candidate retires without touching scene/UI swapchains");
+    fail_create=true;
+    expect(!movie::create_images<XrSwapchainImageD3D11KHR>(session,64,32,XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR,DXGI_FORMAT_B8G8R8A8_UNORM_SRGB),"movie swapchain creation failure is closed");
+    fail_create=false; fail_movie_enumeration=true;
+    expect(!movie::create_images<XrSwapchainImageD3D11KHR>(session,64,32,XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR,DXGI_FORMAT_B8G8R8A8_UNORM_SRGB),"movie image enumeration failure is closed");
+    fail_movie_enumeration=false;
+    expect(alive==original,"failed movie enumeration rolls back the uncommitted swapchain");
+    {
+        auto images=movie::create_images<XrSwapchainImageD3D11KHR>(session,64,32,XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR,DXGI_FORMAT_B8G8R8A8_UNORM_SRGB);
+        if (!images) { expect(false,"movie protocol test image allocation"); return; }
+        movie::ImageAccess image;
+        const auto before=acquisitions, release_before=releases;
+        timeout_wait=true;
+        expect(!image.acquire(images->handle) && image.acquired && !image.writable,"movie XR timeout retains an unwritable acquisition");
+        const auto index=image.index;
+        expect(!image.acquire(images->handle) && acquisitions==before+1 && image.index==index,"movie timeout does not acquire a second image");
+        expect(!image.release(images->handle) && releases==release_before,"movie cannot release an image before a successful wait");
+        timeout_wait=false;
+        expect(image.acquire(images->handle) && image.writable && acquisitions==before+1,"movie resumes waiting for the original acquisition");
+        expect(!image.retire(images->handle,[]{return false;}) && releases==release_before,"movie cannot release while its GPU references are unretired");
+        fail_release=true;
+        expect(!image.release(images->handle) && image.release_pending && image.acquired,"failed movie release keeps image ownership");
+        expect(!image.acquire(images->handle) && acquisitions==before+1,"failed movie release cannot trigger a new acquisition");
+        fail_release=false;
+        expect(image.retire(images->handle,[]{return true;}) && !image.acquired && !image.writable && !image.release_pending,
+            "retired movie work releases exactly the retained image");
+    }
+    expect(alive==original,"movie protocol cleanup releases only its own swapchain");
+}
+
 int main() try {
     policies();
+    dispatch_movie_layers();
     ComPtr<ID3D11Device> d11;
     ComPtr<ID3D11DeviceContext> ctx;
     auto hr = D3D11CreateDevice(
@@ -552,6 +623,7 @@ int main() try {
         hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, &d11, nullptr, &ctx);
     require(hr, "DX11 WARP");
     device11 = d11.Get();
+    dispatch_movie_images();
     const auto pixels = input_pixels();
     D3D11_SUBRESOURCE_DATA data{pixels.data(), 64};
     D3D11_TEXTURE2D_DESC desc{
