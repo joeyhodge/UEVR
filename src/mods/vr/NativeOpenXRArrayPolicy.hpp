@@ -15,6 +15,19 @@ struct Key {
     bool operator==(const Key&) const = default;
     bool valid() const noexcept { return session && width && height && width <= 32768 && height <= 32768; }
 };
+struct FrameKey {
+    uintptr_t session{};
+    uint64_t generation{}, wait_sequence{};
+    int64_t display_time{};
+    bool operator==(const FrameKey&) const = default;
+    bool valid() const noexcept { return session != 0 && generation != 0 && display_time > 0; }
+};
+inline bool can_async_wait(FrameKey request, FrameKey current, bool running, bool synced, bool began) noexcept {
+    return request.valid() && request == current && running && !synced && !began;
+}
+inline bool can_pre_acquire(FrameKey request, FrameKey current, bool running, bool synced, bool began, bool render) noexcept {
+    return request.valid() && request == current && running && synced && !began && render;
+}
 inline bool current_copy(bool ready, bool afr, bool mono, int64_t copied_time, int64_t display_time) noexcept {
     return ready && !afr && !mono && display_time > 0 && copied_time == display_time;
 }
@@ -38,6 +51,21 @@ private:
     enum class State : uint8_t { empty, waiting, writable };
     State m_state{State::empty};
 };
+
+// A pending fence is not permission to reset an allocator or replace its sources.
+template<class Commands> bool reclaim_array_commands(Commands& commands) {
+    return commands.references_retired() && commands.try_wait() && commands.ready();
+}
+
+// Cleanup keeps the SAME acquisition on XR timeout, GPU backlog or release failure.
+// Neither callback may block; callers retain the generation and source references.
+template<class WaitImage, class Retired, class Release>
+bool poll_array_release(ImageWait& image, WaitImage wait_image, Retired retired, Release release) {
+    if (!image.writable() && (!image.pending() || !wait_image() || !image.writable())) { return false; }
+    if (!retired() || !release()) { return false; }
+    image.released();
+    return true;
+}
 
 // Render/copy-mutex owned. Failure never requests a full swapchain rebuild.
 // Retry only three times per request/session/extent, then require explicit re-arm.

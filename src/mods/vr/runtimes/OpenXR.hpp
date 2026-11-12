@@ -26,6 +26,7 @@
 
 #include "Mod.hpp"
 #include "../ControllerTouchBindings.hpp"
+#include "../NativeOpenXRArrayPolicy.hpp"
 
 #include "VRRuntime.hpp"
 
@@ -100,6 +101,9 @@ struct OpenXR final : public VRRuntime {
     VRRuntime::Error synchronize_frame(
         std::optional<uint32_t> frame_count = std::nullopt,
         SyncFrameCallsite callsite = SyncFrameCallsite::Unknown) override;
+    std::optional<uevr::native_array::FrameKey> native_async_wait_request();
+    std::optional<uevr::native_array::FrameKey> synchronize_native_async_frame(uevr::native_array::FrameKey request);
+    bool native_async_pre_acquire_allowed(uevr::native_array::FrameKey frame);
     VRRuntime::Error fix_frame() override {
         // sync if necessary.
         VRRuntime::fix_frame();
@@ -231,6 +235,7 @@ public:
     std::chrono::high_resolution_clock::time_point profiler_start_time{};
 
     std::recursive_mutex sync_mtx{};
+    uint64_t native_async_session_generation{1}; // sync_mtx owned, including session-state events.
     std::recursive_mutex sync_assignment_mtx{};
     std::recursive_mutex event_mtx{};
     std::recursive_mutex swapchain_mtx{};
