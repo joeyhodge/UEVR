@@ -1,5 +1,6 @@
 #include "mods/vr/NativeOpenXRArrayPolicy.hpp"
 #include "mods/vr/NativeOpenXRArrayD3D12.hpp"
+#include "NativeOpenXRAsyncTests.hpp"
 #include <d3d12sdklayers.h>
 #include <dxgi1_4.h>
 #include <wrl.h>
@@ -7,6 +8,7 @@
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
+#include <string_view>
 #include <vector>
 
 using Microsoft::WRL::ComPtr;
@@ -85,9 +87,10 @@ static void descriptor_tests() {
     }
 }
 
-static void warp_test() {
+static void warp_test(bool separate) {
     ComPtr<ID3D12Debug> debug;
     if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) { debug->EnableDebugLayer(); }
+    std::cout << "WARP " << (separate ? "separate" : "packed") << " sources; debug layer " << (debug ? "enabled" : "unavailable") << '\n';
     ComPtr<IDXGIFactory4> factory;ComPtr<IDXGIAdapter> warp;ComPtr<ID3D12Device> device;
     hr(CreateDXGIFactory1(IID_PPV_ARGS(&factory)));hr(factory->EnumWarpAdapter(IID_PPV_ARGS(&warp)));
     hr(D3D12CreateDevice(warp.Get(),D3D_FEATURE_LEVEL_11_0,IID_PPV_ARGS(&device)));
@@ -106,10 +109,10 @@ static void warp_test() {
         d.DepthOrArraySize=d.MipLevels=1;d.SampleDesc.Count=1;d.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
         return resource(d,heap,state);
     };
-    auto source_desc=desc(16);source_desc.Format=DXGI_FORMAT_B8G8R8A8_TYPELESS;
-    auto array_desc=desc(8,2);array_desc.Format=DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+    auto source_desc=desc(16);source_desc.Format=DXGI_FORMAT_B8G8R8A8_TYPELESS;source_desc.Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    auto array_desc=desc(8,2);array_desc.Format=DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;array_desc.Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     auto source=resource(source_desc,D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_STATE_COPY_DEST);
-    auto array=resource(array_desc,D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_STATE_COPY_DEST);
+    auto array=resource(array_desc,D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_STATE_RENDER_TARGET);
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT upload_layout{};UINT64 upload_bytes{};
     device->GetCopyableFootprints(&source_desc,0,1,0,&upload_layout,nullptr,nullptr,&upload_bytes);
     auto upload=buffer(upload_bytes,D3D12_HEAP_TYPE_UPLOAD,D3D12_RESOURCE_STATE_GENERIC_READ);
@@ -128,14 +131,61 @@ static void warp_test() {
         commands->ResourceBarrier(1,&b);
     };
     transition(source.Get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_COPY_SOURCE);
-    const D3D12_BOX boxes[2]{{0,0,0,8,8,1},{8,0,0,16,8,1}};
-    expect(p::pair_copy(source_desc,source_desc,array_desc,boxes[0],boxes[1]), "WARP copy plan rejected");
-    for(unsigned eye=0;eye<2;++eye) {
+    D3D12_BOX boxes[2]{{0,0,0,8,8,1},{8,0,0,16,8,1}};
+    ComPtr<ID3D12Resource> right=source;
+    if(separate) {
+        auto right_desc=source_desc;right_desc.Width=8;
+        right=resource(right_desc,D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_STATE_COPY_DEST);
         from={};from.pResource=source.Get();from.Type=D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-        to={};to.pResource=array.Get();to.Type=D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;to.SubresourceIndex=eye;
-        commands->CopyTextureRegion(&to,0,0,0,&from,&boxes[eye]);
+        to={};to.pResource=right.Get();to.Type=D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        commands->CopyTextureRegion(&to,0,0,0,&from,&boxes[1]);
+        transition(right.Get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        boxes[1]=boxes[0];
     }
-    transition(array.Get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_COPY_SOURCE);
+    transition(source.Get(),D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_RENDER_TARGET);
+    const auto right_state=separate ? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_RENDER_TARGET;
+    const auto plan=p::array_copy_plan(source.Get(),right.Get(),array.Get(),boxes[0],boxes[1],D3D12_RESOURCE_STATE_RENDER_TARGET,right_state);
+    expect(plan.has_value() && plan->count==(separate ? 3u : 2u), "paired-copy barriers did not deduplicate sources");
+    struct Recorder {
+        std::array<std::vector<D3D12_RESOURCE_BARRIER>,2> barriers;
+        unsigned barrier_calls{}, copies{};
+        void ResourceBarrier(UINT count,const D3D12_RESOURCE_BARRIER* list) {
+            expect(barrier_calls<2,"more than two barrier batches");barriers[barrier_calls++].assign(list,list+count);
+        }
+        void CopyTextureRegion(const D3D12_TEXTURE_COPY_LOCATION* to,UINT x,UINT y,UINT z,
+            const D3D12_TEXTURE_COPY_LOCATION* from,const D3D12_BOX* box) {
+            expect(barrier_calls==1 && copies<2 && to->SubresourceIndex==copies && from->SubresourceIndex==0 &&
+                x==0 && y==0 && z==0 && box,"eye copy has wrong slice/origin/order");++copies;
+        }
+    } recorder;
+    const auto ignore=[](bool,UINT,const D3D12_RESOURCE_BARRIER*) {};
+    plan->record(recorder,ignore);
+    expect(recorder.barrier_calls==2 && recorder.copies==2,"paired-copy did not record both eyes as one transaction");
+    for(UINT i=0;i<plan->count;++i) {
+        const auto& before=recorder.barriers[0][i].Transition;
+        const auto& after=recorder.barriers[1][i].Transition;
+        expect(before.pResource==after.pResource && before.StateBefore==after.StateAfter && before.StateAfter==after.StateBefore &&
+            before.Subresource==D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,"paired-copy did not restore original resource states");
+    }
+    expect(!p::array_copy_plan(nullptr,right.Get(),array.Get(),boxes[0],boxes[1],D3D12_RESOURCE_STATE_RENDER_TARGET,right_state),"null source accepted");
+    expect(!p::array_copy_plan(source.Get(),right.Get(),source.Get(),boxes[0],boxes[1],D3D12_RESOURCE_STATE_RENDER_TARGET,right_state),"source/destination alias accepted");
+    expect(!p::array_copy_plan(source.Get(),source.Get(),array.Get(),boxes[0],boxes[1],D3D12_RESOURCE_STATE_RENDER_TARGET,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),"aliased source with contradictory states accepted");
+    auto bad_box=boxes[0];++bad_box.right;
+    expect(!p::array_copy_plan(source.Get(),right.Get(),array.Get(),bad_box,boxes[1],D3D12_RESOURCE_STATE_RENDER_TARGET,right_state),"invalid copy extent accepted");
+    for (const auto left_state : {D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_COPY_SOURCE}) {
+        for (const auto tested_right : {D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_COPY_SOURCE}) {
+            const auto candidate=p::array_copy_plan(source.Get(),right.Get(),array.Get(),boxes[0],boxes[1],left_state,tested_right);
+            expect(candidate.has_value()==(separate || left_state==tested_right),"aliased-state validation differs from independent-state validation");
+            if(candidate) {
+                const auto sources=UINT(left_state!=D3D12_RESOURCE_STATE_COPY_SOURCE)+
+                    UINT(separate && tested_right!=D3D12_RESOURCE_STATE_COPY_SOURCE);
+                expect(candidate->count==sources+1,"unnecessary or missing source/array transition");
+            }
+        }
+    }
+    plan->record(*commands.Get(),ignore);
+    transition(array.Get(),D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_COPY_SOURCE);
     std::array<D3D12_PLACED_SUBRESOURCE_FOOTPRINT,2> layouts{};UINT64 bytes{};
     device->GetCopyableFootprints(&array_desc,0,2,0,layouts.data(),nullptr,nullptr,&bytes);
     auto readback=buffer(bytes,D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_STATE_COPY_DEST);
@@ -163,8 +213,13 @@ static void warp_test() {
     }
 }
 
-int main() try {
-    policy_tests();descriptor_tests();warp_test();
-    std::cout<<"Native OpenXR array: scope/retry/frame/image-wait/fence/bounds and WARP two-slice pixels passed\n";
+int main(int argc,char** argv) try {
+    policy_tests();descriptor_tests();native_async_tests::run();
+    if(argc==2 && std::string_view{argv[1]}=="--worker-only") {
+        std::cout<<"Native OpenXR worker/cancellation/drain/retirement tests passed\n";return 0;
+    }
+    expect(argc==1,"unrecognized test option");
+    warp_test(false);warp_test(true);
+    std::cout<<"Native OpenXR array: scope/retry/frame/worker/drain/retirement and production paired WARP copies passed\n";
     return 0;
 } catch(const std::exception& e) { std::cerr<<e.what()<<'\n';return 1; }
