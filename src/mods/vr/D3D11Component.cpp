@@ -26,6 +26,9 @@ namespace pixel_shader1 {
 
 #include "D3D11Component.hpp"
 #include "UE59NativeD3D11.hpp"
+#include "DispatchMovie.hpp"
+#include "DispatchMovieD3D11.hpp"
+#include "DispatchMovieOpenXR.hpp"
 
 //#define VERBOSE_D3D11
 
@@ -1550,6 +1553,19 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
 
             auto& openxr_overlay = vr->get_overlay_component().get_openxr();
 
+            uint64_t dispatch_movie_epoch{};
+            if (const auto movie=uevr::dispatch_movie::read(); movie && movie->texture &&
+                vr->is_using_native_stereo() && !vr->is_using_2d_screen() && !vr->is_using_mono() &&
+                !vr->is_dibr_rendering_method_selected() && !vr->is_stereo_emulation_enabled() && !vr->is_mono_transition_pending() &&
+                vr->m_openxr->frame_began && m_openxr.ensure_dispatch_movie(movie->width,movie->height,movie->epoch)) {
+                if (m_openxr.copy_dispatch_movie(*movie) && uevr::dispatch_movie::current(*movie)) {
+                    if (const auto layer=openxr_overlay.generate_dispatch_movie_layer()) {
+                        quad_layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader*>(&layer->get()));
+                        dispatch_movie_epoch=movie->epoch;
+                    }
+                }
+            }
+
             if (vr->m_2d_screen_mode->value()) {
                 const auto left_layer = openxr_overlay.generate_slate_layer(runtimes::OpenXR::SwapchainIndex::UI, XrEyeVisibility::XR_EYE_VISIBILITY_LEFT);
                 const auto right_layer = openxr_overlay.generate_slate_layer(runtimes::OpenXR::SwapchainIndex::UI_RIGHT, XrEyeVisibility::XR_EYE_VISIBILITY_RIGHT);
@@ -1606,7 +1622,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
             record_native_submit(frame_diag::Runtime::openxr, frame_diag::Stage::submit_attempt);
             auto result = vr->m_openxr->end_frame(quad_layers, scene_depth_tex != nullptr,
                 (ui_composition_request & 1) ? &m_openxr.ui_composition : nullptr,
-                ue59_dx11_split ? &packed_stereo : nullptr);
+                ue59_dx11_split ? &packed_stereo : nullptr, dispatch_movie_epoch);
             record_native_submit(frame_diag::Runtime::openxr, frame_diag::Stage::submit_result, static_cast<int32_t>(result));
             if (packed_stereo.submitted && ue59_dx11_packet &&
                 get_ue59_native_fix_binding() == native_stereo_packet->ue59_dx11_binding) {
@@ -3431,7 +3447,66 @@ std::optional<std::string> D3D11Component::OpenXR::create_swapchains() {
     return std::nullopt;
 }
 
+bool D3D11Component::OpenXR::ensure_dispatch_movie(uint32_t width, uint32_t height, uint64_t epoch) {
+    std::scoped_lock lock{mtx};
+    auto& runtime=*VR::get()->m_openxr;
+    std::scoped_lock swapchain_lock{runtime.swapchain_mtx};
+    constexpr auto index=static_cast<uint32_t>(runtimes::OpenXR::SwapchainIndex::DISPATCH_MOVIE);
+    const auto old=runtime.swapchains.find(index);
+    const auto context=contexts.find(index);
+    if (!epoch || dispatch_movie_failed_epoch == epoch || !uevr::dispatch_movie::extent(width,height)) { return false; }
+    if (context != contexts.end() && context->second.movie_access.failed) { return false; }
+    if (old != runtime.swapchains.end() && context != contexts.end() &&
+        old->second.width == width && old->second.height == height && !context->second.textures.empty()) { return true; }
+    if (context != contexts.end() && old != runtime.swapchains.end() &&
+        !context->second.movie_access.retire(old->second.handle,[]{return true;})) { return false; }
+    auto created=uevr::dispatch_movie::create_images<XrSwapchainImageD3D11KHR>(runtime.session,width,height,
+        XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR,DXGI_FORMAT_B8G8R8A8_UNORM_SRGB);
+    if (!created || (old != runtime.swapchains.end() && XR_FAILED(xrDestroySwapchain(old->second.handle)))) {
+        dispatch_movie_failed_epoch=epoch;
+        SPDLOG_WARN("[Dispatch][Movie][D3D11] Could not create/retire movie swapchain; keeping the original presentation");
+        return false;
+    }
+    SwapchainContext replacement;
+    replacement.textures=std::move(created->images);
+    replacement.mono_sources.resize(replacement.textures.size());
+    contexts[index]=std::move(replacement);
+    runtime.swapchains[index]={std::exchange(created->handle,XR_NULL_HANDLE),static_cast<int32_t>(width),static_cast<int32_t>(height)};
+    SPDLOG_INFO("[Dispatch][Movie][D3D11] Independent opaque movie swapchain {}x{}",width,height);
+    return true;
+}
+
+bool D3D11Component::OpenXR::copy_dispatch_movie(const uevr::dispatch_movie::Frame& frame) {
+    std::scoped_lock lock{mtx};
+    auto& runtime=*VR::get()->m_openxr;
+    constexpr auto index=static_cast<uint32_t>(runtimes::OpenXR::SwapchainIndex::DISPATCH_MOVIE);
+    auto context=contexts.find(index);
+    const auto chain=runtime.swapchains.find(index);
+    if (context == contexts.end() || chain == runtime.swapchains.end() || !runtime.frame_began ||
+        runtime.frame_state.shouldRender != XR_TRUE || !frame.texture || !uevr::dispatch_movie::current(frame) ||
+        binding.device != g_framework->get_d3d11_hook()->get_device()) { return false; }
+    auto& ctx=context->second;
+    auto& image=ctx.movie_access;
+    if (image.release_pending) { image.retire(chain->second.handle,[]{return true;}); return false; }
+    if (!image.acquire(chain->second.handle)) {
+        if (image.failed) { SPDLOG_WARN("[Dispatch][Movie][D3D11] Image acquisition failed: {}",int32_t(image.error)); }
+        return false;
+    }
+    if (image.index >= ctx.textures.size() || image.index >= ctx.mono_sources.size()) { image.failed=true; return false; }
+    ComPtr<ID3D11DeviceContext> immediate;
+    binding.device->GetImmediateContext(&immediate);
+    ctx.mono_sources[image.index]=frame.texture;
+    const bool copied=uevr::dispatch_movie::current(frame) &&
+        uevr::dispatch_movie::copy_movie(immediate.Get(),ctx.textures[image.index].texture,frame.texture.Get());
+    const bool released=image.release(chain->second.handle);
+    if (!released) { SPDLOG_WARNING_EVERY_N_SEC(2,"[Dispatch][Movie][D3D11] Image release deferred: {}",int32_t(image.error)); }
+    if (!copied) { dispatch_movie_failed_epoch=frame.epoch; }
+    if (released && copied) { ctx.ever_acquired=true; }
+    return released && copied;
+}
+
 void D3D11Component::OpenXR::destroy_swapchains() {
+    dispatch_movie_failed_epoch=0;
     std::scoped_lock _{this->mtx};
     this->parent->m_ue59_native_fix_binding.store(nullptr, std::memory_order_release);
     const bool composition_retired = this->ui_composition.reset();
@@ -3447,6 +3522,16 @@ void D3D11Component::OpenXR::destroy_swapchains() {
     for (auto& it : this->contexts) {
         auto& ctx = it.second;
         const auto i = it.first;
+
+        if (i == static_cast<uint32_t>(runtimes::OpenXR::SwapchainIndex::DISPATCH_MOVIE)) {
+            const auto chain=VR::get()->m_openxr->swapchains.find(i);
+            if (chain == VR::get()->m_openxr->swapchains.end() ||
+                !ctx.movie_access.retire(chain->second.handle,[]{return true;})) {
+                (void)new SwapchainContext(std::move(ctx));
+                SPDLOG_ERROR("[Dispatch][Movie][D3D11] Retaining unproven image acquisition during teardown");
+                continue;
+            }
+        }
 
         std::vector<ID3D11Resource*> needs_release{};
 
