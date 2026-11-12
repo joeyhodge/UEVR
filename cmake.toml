@@ -323,6 +323,18 @@ add_test(NAME ue59-native-d3d11-tests COMMAND ue59-native-d3d11-tests)
 set_tests_properties(ue59-native-d3d11-tests PROPERTIES TIMEOUT 30)
 """
 
+[target.dispatch-movie-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/DispatchMovieTests.cpp"]
+include-directories = ["src/"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["d3d11", "d3d12", "dxgi", "openxr_loader"]
+cmake-after = """
+add_test(NAME dispatch-movie-tests COMMAND dispatch-movie-tests)
+set_tests_properties(dispatch-movie-tests PROPERTIES TIMEOUT 60)
+"""
+
 [target.native-openxr-array-tests]
 condition = "compatibility-policy-tests"
 type = "executable"

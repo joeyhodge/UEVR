@@ -15,8 +15,10 @@
 
 #include <DirectXMath.h>
 #include <SpriteBatch.h>
+#include "DispatchMovieOpenXR.hpp"
 
 class VR;
+namespace uevr::dispatch_movie { struct Frame; }
 namespace render {
 class FrameResourceInspector;
 }
@@ -233,6 +235,8 @@ private:
         void initialize(XrSessionCreateInfo& session_info);
         std::optional<std::string> create_swapchains();
         void destroy_swapchains();
+        bool ensure_dispatch_movie(uint32_t width, uint32_t height, uint64_t epoch);
+        bool copy_dispatch_movie(const uevr::dispatch_movie::Frame& frame);
         bool copy(uint32_t swapchain_idx, ID3D11Texture2D* resource, D3D11_BOX* src_box = nullptr, std::function<void(ID3D11Texture2D*)> pre_commands = nullptr);
 
         bool ever_acquired(uint32_t swapchain_idx) {
@@ -249,6 +253,8 @@ private:
         XrGraphicsBindingD3D11KHR binding{XR_TYPE_GRAPHICS_BINDING_D3D11_KHR};
 
         struct SwapchainContext {
+            std::vector<ComPtr<ID3D11Texture2D>> movie_sources{};
+            uevr::dispatch_movie::ImageAccess movie_access;
             std::vector<XrSwapchainImageD3D11KHR> textures{};
             uint32_t num_textures_acquired{0};
             bool ever_acquired{false};
@@ -256,6 +262,7 @@ private:
 
         std::unordered_map<uint32_t, SwapchainContext> contexts{};
         std::recursive_mutex mtx{};
+        uint64_t dispatch_movie_failed_epoch{};
         std::array<uint32_t, 2> last_resolution{};
         bool made_depth_with_null_defaults{false};
 
