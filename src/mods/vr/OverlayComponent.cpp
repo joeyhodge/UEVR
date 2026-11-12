@@ -11,6 +11,7 @@
 #include "../utility/ImGui.hpp"
 
 #include "OverlayComponent.hpp"
+#include "DispatchMoviePolicy.hpp"
 
 namespace vrmod {
 void OverlayComponent::on_reset() {
@@ -845,6 +846,36 @@ const char* get_ui_layer_pose_refusal_reason(const UILayerPoseBasis* pose_basis,
 
     return "none";
 }
+}
+
+std::optional<std::reference_wrapper<XrCompositionLayerQuad>> OverlayComponent::OpenXR::generate_dispatch_movie_layer() {
+    const auto& vr=VR::get();
+    const auto index=static_cast<uint32_t>(runtimes::OpenXR::SwapchainIndex::DISPATCH_MOVIE);
+    if (!vr || !vr->m_openxr || vr->m_openxr->stage_space == XR_NULL_HANDLE) { return {}; }
+    const auto it=vr->m_openxr->swapchains.find(index);
+    if (it == vr->m_openxr->swapchains.end()) { return {}; }
+    const auto& swapchain=it->second;
+    const auto size=uevr::dispatch_movie::geometry(swapchain.width,swapchain.height,m_parent->m_slate_size->value());
+    if (!size.height) { return {}; }
+    const auto pre=vr->is_decoupled_pitch_enabled() && vr->is_decoupled_pitch_ui_adjust_enabled()
+        ? vr->get_pre_flattened_rotation() : glm::quat{1.0f,0.0f,0.0f,0.0f};
+    auto matrix=glm::mat4{make_slate_stage_rotation(vr.get(),vr->get_rotation_offset(),pre)};
+    matrix[3]+=vr->get_standing_origin();
+    matrix[3]-=matrix[2]*m_parent->m_slate_distance->value();
+    matrix[3]+=m_parent->m_slate_x_offset->value()*matrix[0]+m_parent->m_slate_y_offset->value()*matrix[1];
+    matrix[3].w=1.0f;
+    // Dedicated storage: generating the normal Slate layer below cannot
+    // overwrite this quad, its alpha policy, or its world-space placement.
+    auto& layer=m_dispatch_movie_layer;
+    layer={XR_TYPE_COMPOSITION_LAYER_QUAD};
+    layer.space=vr->m_openxr->stage_space;
+    layer.eyeVisibility=XR_EYE_VISIBILITY_BOTH;
+    layer.subImage.swapchain=swapchain.handle;
+    layer.subImage.imageRect.extent={swapchain.width,swapchain.height};
+    layer.size={size.width,size.height};
+    layer.pose.orientation=runtimes::OpenXR::to_openxr(glm::quat_cast(matrix));
+    layer.pose.position=runtimes::OpenXR::to_openxr(matrix[3]);
+    return std::ref(layer);
 }
 
 std::optional<std::reference_wrapper<XrCompositionLayerQuad>> OverlayComponent::OpenXR::generate_slate_quad(
