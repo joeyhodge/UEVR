@@ -1121,7 +1121,7 @@ private:
     bool is_any_action_down();
     bool can_recover_gamepad_input() const;
     void update_shf_auto_2d_mode(sdk::UGameEngine* engine);
-    void update_dispatch_auto_2d_mode(sdk::UGameEngine* engine);
+    void update_dispatch_movie_state(sdk::UGameEngine* engine);
     void update_mixtape_auto_2d_mode(sdk::UGameEngine* engine);
     void update_the_sinking_city_2_bink_ui_state(sdk::UGameEngine* engine);
     void update_halo_electra_cinematic_state(sdk::UGameEngine* engine);
@@ -1430,9 +1430,6 @@ private:
     std::chrono::steady_clock::time_point m_shf_auto_2d_last_sample{};
     bool m_shf_auto_2d_active{false};
     bool m_shf_auto_2d_previous_mode{false};
-    std::chrono::steady_clock::time_point m_dispatch_auto_2d_last_sample{};
-    bool m_dispatch_auto_2d_active{false};
-    bool m_dispatch_auto_2d_previous_mode{false};
     std::chrono::steady_clock::time_point m_mixtape_auto_2d_last_sample{};
     std::atomic_bool m_mixtape_auto_2d_active{false};
     bool m_mixtape_auto_2d_previous_mode{false};
@@ -1936,6 +1933,7 @@ private:
     const ModToggle::Ptr m_compatibility_head_turn_camera_stabilizer{ ModToggle::create(generate_name("Compatibility_HeadTurnCameraStabilizer"), false, true) };
     const ModToggle::Ptr m_compatibility_ui_layer_pose_telemetry{ ModToggle::create(generate_name("Compatibility_UILayerPoseTelemetry"), false, true) };
     const ModToggle::Ptr m_compatibility_ui_layer_pose_stabilizer{ ModToggle::create(generate_name("Compatibility_UILayerPoseStabilizer"), false, true) };
+    const ModToggle::Ptr m_compatibility_dispatch_world_locked_movies{ ModToggle::create(generate_name("Compatibility_DispatchWorldLockedMovies"), false, true) };
     const ModToggle::Ptr m_compatibility_pre57_slate_ui_observation{ ModToggle::create(generate_name("Compatibility_Pre57SlateUIObservation"), false, true) };
     const ModToggle::Ptr m_compatibility_swgr_bink_seek_budget{ ModToggle::create(generate_name("Compatibility_SWGRBinkSeekBudget"), false, true) };
     const ModToggle::Ptr m_compatibility_swgr_disable_panini{ ModToggle::create(generate_name("Compatibility_SWGRDisablePanini"), false, true) };
@@ -2417,6 +2415,7 @@ public:
             *m_compatibility_head_turn_camera_stabilizer,
             *m_compatibility_ui_layer_pose_telemetry,
             *m_compatibility_ui_layer_pose_stabilizer,
+            *m_compatibility_dispatch_world_locked_movies,
             *m_compatibility_pre57_slate_ui_observation,
             *m_compatibility_swgr_bink_seek_budget,
             *m_compatibility_swgr_disable_panini,

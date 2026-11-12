@@ -27,6 +27,8 @@
 #include "../NativeOpenXRArrayPolicy.hpp"
 #include "../UIComposition.hpp"
 #include "../SteamFrameBindings.hpp"
+#include "../DispatchMovie.hpp"
+#include "../DispatchMovieOpenXR.hpp"
 
 using namespace nlohmann;
 
@@ -3911,7 +3913,7 @@ void OpenXR::note_native_array_copy(bool success) {
 }
 
 XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& quad_layers, bool has_depth,
-    uevr::ui_composition::Compositor* ui_composition, PackedStereoSubmission* packed_stereo) {
+    uevr::ui_composition::Compositor* ui_composition, PackedStereoSubmission* packed_stereo, uint64_t dispatch_movie_epoch) {
     std::scoped_lock _{sync_mtx};
     if (packed_stereo) { packed_stereo->submitted = false; }
 
@@ -3935,10 +3937,22 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
     auto vr = VR::get();
     const auto is_afr = vr->is_using_afr();
     const bool mono = vr->is_using_mono();
+    bool movie_override=false;
+    if (dispatch_movie_epoch && !is_afr && !mono && !vr->is_dibr_rendering_method_selected() &&
+        !vr->is_stereo_emulation_enabled() && !vr->is_mono_transition_pending() &&
+        vr->is_using_native_stereo() && !vr->is_using_2d_screen()) {
+        const auto image=swapchains.find(static_cast<uint32_t>(SwapchainIndex::DISPATCH_MOVIE));
+        const auto movie=uevr::dispatch_movie::read();
+        movie_override=movie && movie->epoch == dispatch_movie_epoch && image != swapchains.end() &&
+            image->second.width == movie->width && image->second.height == movie->height &&
+            uevr::dispatch_movie::opaque_layer(quad_layers,stage_space,image->second.handle,image->second.width,image->second.height);
+    }
     if (!uevr::ui_composition::eligible(true, mono, vr->is_dibr_rendering_method_selected(),
             vr->is_mono_transition_pending(), vr->is_using_2d_screen()) ||
         !(vr->get_overlay_component().get_ui_composition_request() & 1)) { ui_composition = nullptr; }
     if (mono) { has_depth = false; }
+    if (dispatch_movie_epoch) { ui_composition=nullptr; }
+    if (movie_override) { has_depth=false; }
     if (is_afr && is_dead_island_2_ue425_executable()) {
         has_depth = false;
         SPDLOG_INFO_ONCE("[DeadIsland2][UE4.25][OpenXR] Submitting the AFR projection layer without depth");
@@ -4162,12 +4176,14 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
         layer.views = projection_layer_views.data();
         layer.layerFlags = 0;
 
-        if (should_push_dummy) {
+        if (should_push_dummy && !movie_override) {
             layers.push_back((XrCompositionLayerBaseHeader*)&dummy_projection_layer);
         }
 
-        for (auto& l : projection_layer_cache) {
-            layers.push_back((XrCompositionLayerBaseHeader*)&l);
+        if (!movie_override) {
+            for (auto& l : projection_layer_cache) {
+                layers.push_back((XrCompositionLayerBaseHeader*)&l);
+            }
         }
 
         if (ui_composition && pipelined_stage_views.size() == 2) {
@@ -4190,7 +4206,12 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
         if (composed_ui && composed_ui.count == quad_layers.size()) {
             for (uint32_t i = 0; i < composed_ui.count; ++i) { layers.push_back(composed_ui.layers[i]); }
         } else {
-            for (auto* l : quad_layers) { layers.push_back(l); }
+            for (auto* l : quad_layers) {
+                const auto movie=dispatch_movie_epoch ? swapchains.find(static_cast<uint32_t>(SwapchainIndex::DISPATCH_MOVIE)) : swapchains.end();
+                if (!movie_override && movie != swapchains.end() && l && l->type == XR_TYPE_COMPOSITION_LAYER_QUAD &&
+                    reinterpret_cast<XrCompositionLayerQuad*>(l)->subImage.swapchain == movie->second.handle) { continue; }
+                layers.push_back(l);
+            }
         }
     } else if (debug_submit_empty) {
         SPDLOG_INFO_EVERY_N_SEC(
@@ -4223,6 +4244,7 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
         ? std::chrono::steady_clock::now()
         : std::chrono::steady_clock::time_point{};
     auto result = xrEndFrame(this->session, &frame_end_info);
+    uevr::dispatch_movie::note_submission(movie_override,result == XR_SUCCESS && !debug_submit_empty && !layers.empty());
     if (packed_stereo) {
         packed_stereo->submitted = result == XR_SUCCESS && !projection_layer_cache.empty() &&
             projection_layer_views.size() == 2 &&

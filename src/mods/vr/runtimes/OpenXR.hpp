@@ -180,7 +180,8 @@ public:
         bool submitted{};
     };
     XrResult end_frame(const std::vector<XrCompositionLayerBaseHeader*>& quad_layers, bool has_depth = false,
-        uevr::ui_composition::Compositor* ui_composition = nullptr, PackedStereoSubmission* packed_stereo = nullptr);
+        uevr::ui_composition::Compositor* ui_composition = nullptr, PackedStereoSubmission* packed_stereo = nullptr,
+        uint64_t dispatch_movie_epoch = 0);
     XrResult recover_wedged_frame(const char* reason);
     bool close_synced_frame_without_layers(const char* reason);
     bool discard_synced_frame_without_layers(const char* reason);
@@ -583,6 +584,9 @@ public:
 
         STANDARD_COUNT = STANDARD_END - STANDARD_START,
         EXTRA_COUNT = EXTRA_END - EXTRA_START,
+
+        // Independent of scene/UI ranges; never changes existing indices.
+        DISPATCH_MOVIE = 100,
     };
 
     void clear_cached_swapchain_dimensions() {

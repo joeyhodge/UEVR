@@ -18,8 +18,10 @@
 #include "MonoD3D11.hpp"
 #include "UIAlpha.hpp"
 #include "UIComposition.hpp"
+#include "DispatchMovieOpenXR.hpp"
 
 class VR;
+namespace uevr::dispatch_movie { struct Frame; }
 namespace render {
 class FrameResourceInspector;
 }
@@ -240,6 +242,8 @@ private:
         void initialize(XrSessionCreateInfo& session_info);
         std::optional<std::string> create_swapchains();
         void destroy_swapchains();
+        bool ensure_dispatch_movie(uint32_t width, uint32_t height, uint64_t epoch);
+        bool copy_dispatch_movie(const uevr::dispatch_movie::Frame& frame);
         bool copy(uint32_t swapchain_idx, ID3D11Texture2D* resource, D3D11_BOX* src_box = nullptr,
             std::function<void(ID3D11Texture2D*)> pre_commands = nullptr, ID3D11Texture2D* retained_mono_source = nullptr);
 
@@ -260,6 +264,7 @@ private:
         void process_ui_alpha(uint32_t swapchain_idx, uint32_t texture_index);
 
         struct SwapchainContext {
+            uevr::dispatch_movie::ImageAccess movie_access;
             std::vector<XrSwapchainImageD3D11KHR> textures{};
             // Replaced only after xrWaitSwapchainImage reacquires this image.
             // D3D11 additionally retains resources referenced by queued commands.
@@ -270,6 +275,7 @@ private:
 
         std::unordered_map<uint32_t, SwapchainContext> contexts{};
         std::recursive_mutex mtx{};
+        uint64_t dispatch_movie_failed_epoch{};
         std::array<uint32_t, 2> last_resolution{};
         bool made_depth_with_null_defaults{false};
 

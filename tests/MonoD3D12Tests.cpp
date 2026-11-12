@@ -1,4 +1,5 @@
 #include "mods/vr/MonoD3D12.hpp"
+#include "DispatchMovieD3D12Tests.hpp"
 
 #include <d3d12sdklayers.h>
 #include <dxgi1_4.h>
@@ -134,6 +135,7 @@ int main() try {
         require(commands->Reset(allocator.Get(), nullptr), "retired list reset");
     }
     require(commands->Close(), "final empty list close");
+    dispatch_movie_tests::dx12(expect,device.Get(),queue.Get());
     if (messages) {
         for (UINT64 i = 0; i != messages->GetNumStoredMessagesAllowedByRetrievalFilter(); ++i) {
             SIZE_T size = 0;
