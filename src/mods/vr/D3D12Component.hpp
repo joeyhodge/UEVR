@@ -31,6 +31,7 @@
 #include "NativeOpenXRArrayPolicy.hpp"
 
 class VR;
+namespace runtimes { struct OpenXR; }
 namespace render {
 class FrameResourceInspector;
 }
@@ -425,8 +426,12 @@ private:
         const char* native_array_status() const;
         using NativeArraySources = std::array<ComPtr<ID3D12Resource>, 2>;
         bool wait_native_array_image(uint32_t swapchain_idx, XrDuration timeout);
+        bool wait_native_array_image(runtimes::OpenXR& runtime, uint32_t swapchain_idx, XrDuration timeout);
         bool native_array_faulted(uint32_t swapchain_idx) const;
-        bool pre_acquire(uint32_t swapchain_idx);
+        void fault_native_array(uint64_t generation);
+        void retire_native_array_sources();
+        uint64_t native_array_generation() const { return m_native_array_generation.load(std::memory_order_acquire); }
+        bool pre_acquire_native_array(runtimes::OpenXR& runtime, uevr::native_array::FrameKey frame, uint64_t generation);
         void release_acquired(uint32_t swapchain_idx);
         bool copy(uint32_t swapchain_idx, ID3D12Resource* src,
             std::optional<std::function<void(d3d12::CommandContext&, ID3D12Resource*)>> pre_commands = std::nullopt,
@@ -449,20 +454,7 @@ private:
             ID3D12Resource* src,
             uint64_t source_generation,
             D3D12_RESOURCE_STATES src_state = D3D12_RESOURCE_STATE_PRESENT);
-        void wait_for_all_copies() {
-            std::scoped_lock _{this->mtx};
-
-            for (auto& it : this->contexts) {
-                if (native_array_faulted(it.first)) { continue; }
-                if (it.second.num_textures_acquired > 0) {
-                    release_acquired(it.first);
-                }
-
-                for (auto& texture_ctx : it.second.texture_contexts) {
-                    texture_ctx->commands.wait(INFINITE);
-                }
-            }
-        }
+        void wait_for_all_copies(bool drain_native_array = false);
 
         bool ever_acquired(uint32_t swapchain_idx) {
             std::scoped_lock _{this->mtx};
@@ -497,6 +489,7 @@ private:
             std::vector<std::shared_ptr<uevr::stalker2_native::PairFrame>> stalker_pairs{};
             std::vector<NativeArraySources> native_array_sources{};
             uevr::native_array::ImageWait native_array_wait;
+            bool native_array_release_pending{false};
             std::vector<XrSwapchainImageD3D12KHR> textures{};
             std::vector<std::unique_ptr<d3d12::TextureContext>> texture_contexts{};
             uint32_t num_textures_acquired{0};
@@ -528,6 +521,8 @@ private:
         std::atomic_bool m_native_array_requested{false};
         std::atomic_bool m_native_array_copy_ok{false};
         std::atomic_bool m_native_array_acquired{false};
+        std::atomic_bool m_native_array_references_pending{false};
+        std::atomic<uint64_t> m_native_array_generation{1};
         uevr::native_array::Retry m_native_array_retry;
         bool m_native_array_gpu_fault{false}; // Copy-mutex owned; an unproven submission cannot be reused.
 

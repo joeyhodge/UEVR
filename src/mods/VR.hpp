@@ -35,6 +35,7 @@
 #include "vr/RenderingMethodSetting.hpp"
 #include "vr/SteamFrameInput.hpp"
 #include "vr/GamepadRecovery.hpp"
+#include "vr/NativeOpenXRAsyncWorker.hpp"
 
 #undef max
 #include <tracy/Tracy.hpp>
@@ -952,9 +953,8 @@ public:
     bool should_defer_stalker2_openxr_frame_for_transition(const char* reason);
     bool is_native_openxr_async_wait_active() const;
     bool request_native_openxr_async_wait();
-    void ensure_native_openxr_async_wait_worker();
     void stop_native_openxr_async_wait_worker();
-    void native_openxr_async_wait_worker_loop(std::stop_token stop_token);
+    void shutdown_native_openxr_async_wait_worker();
 
     bool is_ghosting_fix_enabled() const {
         if (is_using_mono() || is_mono_transition_quiescing()) { return false; }
@@ -1214,6 +1214,13 @@ private:
 
     std::optional<std::string> reinitialize_openxr() {
         spdlog::info("Reinitializing OpenXR");
+        m_native_openxr_async_worker.cancel_pending();
+        if (m_native_openxr_async_worker.busy()) {
+            // Reinitialization is retried by post-present; never join an XR wait
+            // while holding a lock its callback might need.
+            return "Waiting for the previous OpenXR worker before reinitializing";
+        }
+        stop_native_openxr_async_wait_worker();
         std::scoped_lock _{m_openvr_mtx};
 
         if (m_is_d3d12) {
@@ -2265,11 +2272,12 @@ private:
     bool m_subnautica2_save_thumbnail_fallback_logged{false};
     bool m_subnautica2_save_thumbnail_guard_warned_exhausted{false};
     bool m_subnautica2_save_thumbnail_guard_found_candidate{false};
-    std::jthread m_native_openxr_async_wait_thread{};
-    std::mutex m_native_openxr_async_wait_mtx{};
-    std::condition_variable m_native_openxr_async_wait_cv{};
-    std::atomic_bool m_native_openxr_async_wait_inflight{false};
-    bool m_native_openxr_async_wait_pending{false};
+    struct NativeOpenXRAsyncRequest {
+        std::shared_ptr<runtimes::OpenXR> runtime;
+        uevr::native_array::FrameKey frame;
+        uint64_t array_generation{};
+    };
+    uevr::native_array::AsyncWorker<NativeOpenXRAsyncRequest> m_native_openxr_async_worker;
     uint32_t m_subnautica2_save_thumbnail_guard_full_sweeps{0};
     uint32_t m_subnautica2_save_thumbnail_guard_patched_objects{0};
     int32_t m_subnautica2_save_thumbnail_guard_cursor{0};

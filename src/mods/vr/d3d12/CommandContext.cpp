@@ -10,6 +10,7 @@
 #include "TextureContext.hpp"
 #include "CommandContext.hpp"
 #include "utility/GpuRetirement.hpp"
+#include "../NativeOpenXRArrayD3D12.hpp"
 
 namespace {
 constexpr auto FENCE_PROFILER_LOG_INTERVAL = std::chrono::seconds(5);
@@ -382,6 +383,19 @@ bool CommandContext::try_wait() {
 
     this->has_commands = false;
     this->poisoned = false;
+    return true;
+}
+bool CommandContext::copy_pair_to_array(ID3D12Resource* left, ID3D12Resource* right, ID3D12Resource* dst,
+    const D3D12_BOX& left_box, const D3D12_BOX& right_box,
+    D3D12_RESOURCE_STATES left_state, D3D12_RESOURCE_STATES right_state) {
+    std::scoped_lock lock{mtx};
+    if (!ready() || waiting_for_fence) { return false; }
+    const auto plan = uevr::native_array::array_copy_plan(left, right, dst, left_box, right_box, left_state, right_state);
+    if (!plan) { return false; }
+    plan->record(*cmd_list.Get(), [](bool restore, UINT count, const D3D12_RESOURCE_BARRIER* barriers) {
+        record_barriers(restore ? "VR::CommandContext::copy_pair_to_array/Restore" : "VR::CommandContext::copy_pair_to_array/ToCopy", count, barriers);
+    });
+    has_commands = true;
     return true;
 }
 

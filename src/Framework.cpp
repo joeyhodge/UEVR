@@ -541,6 +541,9 @@ Framework::~Framework() {
     spdlog::info("Framework shutting down...");
 
     m_terminating = true;
+    // VR outlives renderer members. Drain its XR worker before those dependencies
+    // are torn down, and reject any late-present request during shutdown.
+    if (m_vr) { m_vr->shutdown_native_openxr_async_wait_worker(); }
     m_d3d_monitor_thread->request_stop();
     m_command_thread->request_stop();
     if (m_d3d_monitor_thread->joinable()) {
