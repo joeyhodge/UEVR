@@ -41,7 +41,7 @@ template<class Expect> void run(const Expect& expect) {
     }
     expect(ring.snapshot(sample) && sample.retained == 4 && sample.total == 6 && sample.overwritten == 2 &&
         sample.events[0].frame == 3 && sample.events[3].frame == 6,
-        "ring overwrite keeps completion order and exact counters");
+        "ring overwrite keeps publication order and exact counters");
     ring.set_enabled(false);
     expect(ring.snapshot(sample) && !sample.enabled && sample.retained == 4 && !ring.record(first, {}),
         "stop retains data and rejects in-flight producer completions");
@@ -136,5 +136,23 @@ template<class Expect> void run(const Expect& expect) {
     expect(real["retained"] == 2 && real["events"][0]["thread_id"].get<uint32_t>() != 0 &&
         real["events"][0]["wait_owner"] == "wait_only_worker" && real["events"][1]["wait_owner"] == "array_preacquire_worker",
         "production spans complete once and retain actual thread/immutable worker operation");
+    production.set_enabled(true);
+    {
+        ScopedEvent interrupted{Stage::wait_frame};
+        interrupted.complete_cpu_interval(interrupted.data().start_ns + 123, 0);
+        interrupted.data().wait_sequence = 9;
+        // Later bookkeeping/unwinding must not inflate the completed API interval.
+    }
+    {
+        ScopedEvent completed{Stage::wait_frame};
+        completed.finish_at(completed.data().start_ns + 456, -1);
+        completed.finish();
+    }
+    production.set_enabled(false);
+    const auto precise = export_json(production);
+    expect(precise["retained"] == 2 && precise["events"][0]["duration_cpu_ms"] == 0.000123 &&
+        precise["events"][0]["api_result"] == 0 && precise["events"][0]["observed_runtime_wait_sequence"] == 9 &&
+        precise["events"][1]["duration_cpu_ms"] == 0.000456 && precise["events"][1]["api_result"] == -1,
+        "completed API intervals survive later publication/unwinding without double recording or added CPU time");
 }
 }
