@@ -161,6 +161,35 @@ inline void pose_admission() {
     }
 }
 
+inline void uncertain_wait() {
+    w::Handoff gate;
+    const a::FrameKey before{1,2,3,40};
+    require(gate.reserve(before,10,false).has_value(), "exception reservation failed");
+    {
+        w::WaitFailureGuard guard{gate};
+    }
+    require(!gate.faulted() && gate.pending(), "normal scope exit quarantined a valid pending wait");
+    struct WitnessMutex {
+        w::Handoff& gate;
+        bool fault_before_unlock{};
+        void lock() {}
+        void unlock() { fault_before_unlock = gate.faulted(); }
+    } mutex{gate};
+    try {
+        std::scoped_lock lock{mutex};
+        w::WaitFailureGuard guard{gate};
+        throw std::runtime_error("fake uncertain XR wait");
+    } catch (const std::runtime_error&) {}
+    require(gate.faulted() && !gate.pending() && mutex.fault_before_unlock,
+        "an exception allowed another consumer into an unproven XR frame loop");
+    gate.rearm(); gate.reset(); gate.waiting_frame(); gate.normal_pacing();
+    require(gate.faulted() && gate.progress() == w::Progress::failed && !gate.reserve(before,11,false),
+        "off/on or a focus/resolution event reopened uncertain XR call order");
+    w::Handoff replacement;
+    require(!replacement.faulted() && replacement.reserve({2,1,1,50},11,false).has_value(),
+        "fault from an old runtime poisoned its replacement");
+}
+
 // A bounded XR stand-in exercises the production worker, dispatch, frame key and
 // handoff together. It does not replace a real runtime/HMD transition test.
 struct Runtime {
@@ -288,7 +317,11 @@ inline void wiring(const std::filesystem::path& root) {
         "a skipped next ring slot could admit a wait below an already-published future pose");
     require(cpp.find("cfg.get<bool>(m_native_openxr_wait_only->get_config_name()), set_defaults)") != std::string::npos,
         "missing profile key can inherit a previously enabled wait-only setting");
+    const auto sync = xr.find("VRRuntime::Error OpenXR::synchronize_frame(");
+    require(xr.find("wait_only_failure.emplace(native_wait_only_handoff)",sync) < xr.find("xrWaitFrame(this->session",sync) &&
+        cpp.find("runtime->is_openxr() && m_openxr->native_wait_only_handoff.faulted()") != std::string::npos,
+        "uncertain wait does not quarantine before unlocking/request control-thread recovery");
 }
 
-inline void run() { policy(); dispatch(); handoff(); pose_admission(); races(); }
+inline void run() { policy(); dispatch(); handoff(); pose_admission(); uncertain_wait(); races(); }
 }
