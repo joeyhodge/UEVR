@@ -98,6 +98,42 @@ These checks are **not** HMD/game validation. Before treating the mode as stable
    bundle includes requested/effective mode, generation and Mono status. Compare
    CPU/GPU timings at identical resolution/settings before judging performance.
 
+## Dune UI-only menus
+
+Dune: Awakening (validated Steam UE5.2.1, DX12/OpenXR) can deliberately stop
+rendering the world for inventory/settings screens. Those frames do not enter
+`BeginRenderingViewFamily`, so they cannot satisfy Mono's real-scene gate.
+An independent, read-only Draw/getter/setter contract identifies the viewport's
+world-suppression bit; live engine ownership and class layout must also match.
+This reader is not enabled for an unverified image/layout or the GDK executable.
+
+While that suppression is current, Mono submits the game's full UI image in the
+normal runtime UI layer for both eyes, without copying or projecting a world
+image. It does not force world rendering, call `SetEnableWorldRendering`, alter
+menu behavior or change saved settings. UI alpha inversion, normal layer shape
+and placement, ImGui and the enabled desktop mirror are retained. UI-only menus
+use runtime layers rather than the optional per-eye UI projection experiment.
+
+Each UI-only frame uses its own normal OpenXR wait/begin/end lifecycle and
+display time, independently of game-thread scene-pose extrapolation. It never
+publishes a scene pose or projection. Source/device/extents are checked, source leases survive through
+copy retirement, and a layer is submitted only after a confirmed queued copy and
+image release. Uncertain images are quarantined instead of entering the legacy
+indefinite-fence recovery. Returning to the world requires a newly rendered
+scene with a newer pose; an old scene is never retimed to a UI-only wait.
+UI drawing buffers are committed on this path, and retiring UI consumers retain
+their resources and descriptor heaps across menu closure and resolution changes.
+
+No extra checkbox is needed: this path is limited to the already opt-in Mono
+method and the validated suppression case. Main/pause menus with a rendered
+background keep the existing Mono scene path. Other games, DIBR, Native,
+Native Fix and Synced keep their existing paths.
+
+Offline contract, owner/clock/transition and DX12 WARP pixel/state checks do not
+replace the HMD test: compare inventory/settings, background-rendered Escape
+menu, repeated close/reopen, head movement, ImGui, resize and switching back to
+Native. Status distinguishes an active UI-only menu from a fresh world scene.
+
 ## Optional per-eye UI composition (Mono/DIBR)
 
 In **Overlay Options**, select **UI Composition (Mono/DIBR) -> Per-eye projection

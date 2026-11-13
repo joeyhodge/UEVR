@@ -26,6 +26,7 @@
 
 #include "Mod.hpp"
 #include "../MonoRenderingPolicy.hpp"
+#include "../DuneMonoMenu.hpp"
 #include "../ControllerTouchBindings.hpp"
 #include "../NativeOpenXRArrayPolicy.hpp"
 #include "../NativeOpenXRWaitOnly.hpp"
@@ -412,6 +413,9 @@ public:
     std::optional<Stalker2PairSubmit> m_stalker2_pair_submit{}; // sync_assignment_mtx
     std::atomic_bool m_stalker2_pair_pending{};
     void end_mono_transition_frame();
+    std::optional<uevr::dune_menu::Frame> begin_dune_mono_ui_frame(const uevr::dune_menu::Observation& owner);
+    XrResult end_dune_mono_ui_frame(const uevr::dune_menu::Frame& frame,
+        std::span<const XrCompositionLayerBaseHeader* const> layers);
     void reset_mono_projection_history();
     void note_mono_projection();
     void note_mono_main_family(uint32_t frame, bool main_family);
@@ -426,6 +430,12 @@ public:
     };
     std::array<MonoFrame, QUEUE_SIZE> mono_frames{}; // protected by sync_assignment_mtx
     std::optional<uint32_t> mono_copied_frame; // exact copy producer, not a later render callback
+    uevr::dune_menu::SceneCutoff dune_mono_ui_cutoff; // sync_assignment_mtx; never retimes a scene
+    std::optional<uevr::dune_menu::Frame> dune_mono_ui_frame; // sync_mtx; only the Present owner may finish this wait
+    uint64_t dune_mono_ui_serial{}; // sync_mtx
+    XrFrameState dune_mono_last_wait{XR_TYPE_FRAME_STATE}; // sync_mtx; actual wait result, never GT extrapolation
+    std::array<XrView, 2> dune_mono_ui_views{}; // sync_mtx; optional VD dummy poses from this UI wait
+    bool dune_mono_ui_views_valid{};
     bool capture_everspace2_submit_snapshot(uint32_t frame_count, PipelineState& snapshot);
     bool is_everspace2_snapshot_fresh(
         const PipelineState& snapshot,

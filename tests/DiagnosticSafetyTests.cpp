@@ -21,6 +21,7 @@
 #include "DispatchMoviePolicyTests.hpp"
 #include "PacingRecorderTests.hpp"
 #include "SupportHealthTests.hpp"
+#include "DiagnosticSnapshotTests.hpp"
 #include "SceneStateValidationTests.hpp"
 #include "SceneStateWindowsTests.hpp"
 #include "utility/PostInitValidation.hpp"
@@ -642,6 +643,7 @@ int main() {
     dispatch_movie_tests::run(expect);
     pacing_recorder_tests::run(expect);
     support_health_tests::run(expect);
+    diagnostic_snapshot_tests::run(expect);
     scene_state_validation_tests::run(expect);
     scene_state_windows_tests::run(expect);
     test_scene_capture_lifecycle();

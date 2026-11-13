@@ -34,7 +34,7 @@
 using namespace nlohmann;
 
 namespace runtimes {
-static std::optional<uevr::mono::Geometry> mono_geometry(const std::vector<XrView>& views);
+static std::optional<uevr::mono::Geometry> mono_geometry(std::span<const XrView> views);
 namespace {
 constexpr auto FRAME_BEGIN_STUCK_RECOVERY_THRESHOLD = 180u;
 constexpr auto FRAME_BEGIN_SKIP_SUMMARY_INTERVAL = std::chrono::minutes(1);
@@ -725,6 +725,8 @@ void OpenXR::trace_begin_frame_request(const char* caller) {
 }
 
 void OpenXR::clear_frame_synced(const char* reason) {
+    dune_mono_ui_frame.reset();
+    dune_mono_ui_views_valid = false;
     this->frame_synced = false;
     this->last_frame_synced_clear_reason = reason != nullptr ? reason : "unknown";
     this->last_frame_synced_clear_time = std::chrono::steady_clock::now();
@@ -1271,6 +1273,12 @@ void OpenXR::fail_native_wait_only(uevr::openxr_wait::Reservation request) {
 
 VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, SyncFrameCallsite callsite) {
     std::scoped_lock _{sync_mtx};
+    // A menu can run the game thread very far ahead without a world renderer.
+    // Its pose requests must not trigger stuck-frame recovery inside the
+    // Present owner's acquired/copied UI image interval.
+    if (dune_mono_ui_frame && frame_synced && frame_began && can_run_frame_loop() && !wants_reinitialize) {
+        return VRRuntime::Error::UNSPECIFIED;
+    }
     if (native_wait_only_handoff.faulted()) { return VRRuntime::Error::UNSPECIFIED; }
     return uevr::openxr_wait::guarded_wait(native_wait_only_handoff, [&]() -> VRRuntime::Error {
 
@@ -1426,6 +1434,7 @@ VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, 
         }
 
         this->frame_state = local_frame_state;
+        dune_mono_last_wait = local_frame_state;
 
         // Initialize all the existing frame states if they aren't already so we don't get some random error when calling xrEndFrame
         for (auto& pipeline_state : this->pipeline_states) {
@@ -2005,7 +2014,7 @@ VRRuntime::Error OpenXR::consume_events(std::function<void(void*)> callback) {
     return VRRuntime::Error::SUCCESS;
 }
 
-static std::optional<uevr::mono::Geometry> mono_geometry(const std::vector<XrView>& views) {
+static std::optional<uevr::mono::Geometry> mono_geometry(std::span<const XrView> views) {
     if (views.size() != 2) { return {}; }
     std::array<uevr::mono::Eye, 2> eyes{};
     for (size_t i = 0; i != 2; ++i) {
@@ -2022,6 +2031,7 @@ void OpenXR::reset_mono_projection_history() {
     std::scoped_lock lock{this->sync_assignment_mtx, this->pose_mtx};
     mono_frames = {};
     mono_copied_frame.reset();
+    dune_mono_ui_cutoff.reset();
     this->should_recalculate_eye_projections = true;
     this->should_update_eye_matrices = true;
 }
@@ -2054,6 +2064,7 @@ bool OpenXR::has_mono_frame(uint32_t frame) {
     const auto& entry = mono_frames[frame % QUEUE_SIZE];
     return entry.pose_valid && uevr::mono::frame_matches(VR::get()->mono_generation(), entry.generation,
         frame, entry.pose_frame, entry.projection_frame, entry.main_family) &&
+        dune_mono_ui_cutoff.allows(pipeline_states[frame % QUEUE_SIZE].frame_state.predictedDisplayTime) &&
         (!VR::get()->is_using_mono() || entry.geometry.has_value());
 }
 
@@ -2084,6 +2095,131 @@ void OpenXR::end_mono_transition_frame() {
     }
     this->frame_began = false;
     this->clear_frame_synced("mono_transition");
+}
+
+std::optional<uevr::dune_menu::Frame> OpenXR::begin_dune_mono_ui_frame(const uevr::dune_menu::Observation& owner) {
+    std::scoped_lock lock{sync_mtx};
+    const auto vr = VR::get();
+    const auto current = vr->get_fake_stereo_hook()->get_dune_mono_menu_observation();
+    if (!owner.world_disabled || !current || !current->world_disabled || !uevr::dune_menu::same_owner(owner, *current) ||
+        !vr->is_using_mono() || vr->is_mono_transition_pending() || wants_reinitialize || !ready() || !can_run_frame_loop() ||
+        dune_mono_ui_frame || dune_mono_ui_serial == std::numeric_limits<uint64_t>::max()) { return {}; }
+    if ((!frame_began && synchronize_frame(std::nullopt, SyncFrameCallsite::RuntimeFixFrame) != VRRuntime::Error::SUCCESS) ||
+        !frame_synced || !got_first_poses) { return {}; }
+    if (!frame_began) { begin_frame("dune_mono_ui_only"); }
+    if (!frame_began || !last_wait_trace_sequence || dune_mono_last_wait.predictedDisplayTime <= 0) { return {}; }
+    // GT poses can legitimately extrapolate frame_state while a menu has no
+    // renderer. The UI owns the immutable xrWaitFrame result, not that clock
+    // or any pipeline slot. It never publishes a world pose/projection.
+    dune_mono_ui_frame = uevr::dune_menu::Frame{owner, native_async_session_generation,
+        dune_mono_last_wait.predictedDisplayTime, ++dune_mono_ui_serial, last_wait_trace_sequence,
+        dune_mono_last_wait.shouldRender == XR_TRUE};
+    {
+        std::scoped_lock assignment{sync_assignment_mtx};
+        dune_mono_ui_cutoff.observe(dune_mono_ui_frame->display_time);
+        mono_frames = {};
+        mono_copied_frame.reset();
+        has_render_frame_count = false;
+    }
+    dune_mono_ui_views_valid = false;
+    if (push_dummy_projection && dune_mono_ui_frame->should_render) {
+        for (auto& view : dune_mono_ui_views) { view = {XR_TYPE_VIEW}; }
+        XrViewLocateInfo locate{XR_TYPE_VIEW_LOCATE_INFO};
+        locate.viewConfigurationType = view_config;
+        locate.displayTime = dune_mono_ui_frame->display_time;
+        locate.space = stage_space;
+        XrViewState state{XR_TYPE_VIEW_STATE};
+        uint32_t count{};
+        constexpr auto flags = XR_VIEW_STATE_POSITION_VALID_BIT | XR_VIEW_STATE_ORIENTATION_VALID_BIT;
+        dune_mono_ui_views_valid = XR_SUCCEEDED(xrLocateViews(session, &locate, &state,
+            static_cast<uint32_t>(dune_mono_ui_views.size()), &count, dune_mono_ui_views.data())) &&
+            count == 2 && (state.viewStateFlags & flags) == flags && mono_geometry(dune_mono_ui_views).has_value();
+    }
+    return dune_mono_ui_frame;
+}
+
+XrResult OpenXR::end_dune_mono_ui_frame(const uevr::dune_menu::Frame& frame,
+    std::span<const XrCompositionLayerBaseHeader* const> requested_layers) {
+    std::scoped_lock lock{sync_mtx};
+    if (!dune_mono_ui_frame || !uevr::dune_menu::same_lease(*dune_mono_ui_frame, frame) ||
+        !uevr::dune_menu::same_frame(frame, native_async_session_generation, last_wait_trace_sequence)) {
+        return XR_ERROR_CALL_ORDER_INVALID;
+    }
+    if (!can_run_frame_loop() || !frame_synced || !frame_began) {
+        dune_mono_ui_frame.reset();
+        return XR_ERROR_SESSION_NOT_READY;
+    }
+    const auto vr = VR::get();
+    const auto current = vr->get_fake_stereo_hook()->get_dune_mono_menu_observation();
+    bool valid = vr->is_using_mono() && !vr->is_mono_transition_pending() && current && current->world_disabled &&
+        uevr::dune_menu::same_owner(frame.owner, *current) && frame.should_render && requested_layers.size() <= 2;
+    bool game_ui_present{};
+    if (valid) {
+        for (const auto* layer : requested_layers) {
+            XrSwapchain image{};
+            if (!layer || (layer->space != stage_space && layer->space != view_space)) { valid = false; break; }
+            if (layer->type == XR_TYPE_COMPOSITION_LAYER_QUAD) {
+                image = reinterpret_cast<const XrCompositionLayerQuad*>(layer)->subImage.swapchain;
+            } else if (layer->type == XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR && is_cylinder_layer_allowed()) {
+                image = reinterpret_cast<const XrCompositionLayerCylinderKHR*>(layer)->subImage.swapchain;
+            } else { valid = false; break; }
+            const auto ui = swapchains.find(static_cast<uint32_t>(SwapchainIndex::UI));
+            const auto framework = swapchains.find(static_cast<uint32_t>(SwapchainIndex::FRAMEWORK_UI));
+            if (image == XR_NULL_HANDLE || ((ui == swapchains.end() || image != ui->second.handle) &&
+                (framework == swapchains.end() || image != framework->second.handle))) { valid = false; break; }
+            game_ui_present |= ui != swapchains.end() && image == ui->second.handle;
+        }
+    }
+    std::array<const XrCompositionLayerBaseHeader*, 3> layers{};
+    uint32_t layer_count{};
+    XrCompositionLayerProjection dummy{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+    std::array<XrCompositionLayerProjectionView, 2> dummy_views{};
+    if (valid && !requested_layers.empty()) {
+        // Honor the existing VD composition workaround using this wait's fresh
+        // poses and its transparent dummy image, never a retained world image.
+        const auto image = swapchains.find(static_cast<uint32_t>(SwapchainIndex::DUMMY_VIRTUAL_DESKTOP));
+        if (push_dummy_projection && dune_mono_ui_views_valid && image != swapchains.end()) {
+            for (size_t i = 0; i < dummy_views.size(); ++i) {
+                dummy_views[i] = {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW};
+                dummy_views[i].pose = dune_mono_ui_views[i].pose;
+                dummy_views[i].fov = dune_mono_ui_views[i].fov;
+                dummy_views[i].subImage = {image->second.handle,
+                    {{static_cast<int32_t>(i * (image->second.width / 2)), 0}, {image->second.width / 2, image->second.height}}, 0};
+            }
+            dummy.space = stage_space;
+            dummy.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+            dummy.viewCount = static_cast<uint32_t>(dummy_views.size());
+            dummy.views = dummy_views.data();
+            layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&dummy);
+        }
+        for (auto* layer : requested_layers) { layers[layer_count++] = layer; }
+    }
+    XrFrameEndInfo info{XR_TYPE_FRAME_END_INFO};
+    info.displayTime = frame.display_time;
+    info.environmentBlendMode = blend_mode;
+    info.layerCount = layer_count;
+    info.layers = layers.data();
+    utility::pacing::ScopedEvent timing{utility::pacing::Stage::end_frame};
+    timing.data().runtime_id = diagnostic_id;
+    timing.data().session_generation = native_async_session_generation;
+    timing.data().wait_sequence = last_wait_trace_sequence;
+    timing.data().display_time = info.displayTime;
+    const auto result = xrEndFrame(session, &info);
+    timing.finish(static_cast<int32_t>(result));
+    frame_began = false;
+    clear_frame_synced("dune_mono_ui_only");
+    needs_pose_update = true;
+    if (XR_SUCCEEDED(result)) {
+        ever_submitted = true;
+        last_successful_end_frame = std::chrono::steady_clock::now();
+        vr->set_mono_status(valid && game_ui_present
+            ? "Active: Dune UI-only menu; world rendering remains disabled"
+            : "Waiting: Dune UI-only menu image or owner is not current");
+    } else {
+        SPDLOG_WARNING_EVERY_N_SEC(2, "[Dune][MonoMenu] UI-only xrEndFrame failed: {} serial={} displayTime={}",
+            get_result_string(result), frame.serial, frame.display_time);
+    }
+    return result;
 }
 
 VRRuntime::Error OpenXR::update_matrices(float nearz, float farz) {

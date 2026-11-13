@@ -30,6 +30,7 @@
 #include "DispatchMovieOpenXR.hpp"
 #include "Stalker2NativeD3D12.hpp"
 #include "NativeOpenXRArrayPolicy.hpp"
+#include "DuneMonoMenu.hpp"
 
 class VR;
 namespace uevr::dispatch_movie { struct Frame; }
@@ -120,6 +121,10 @@ private:
     friend class render::FrameResourceInspector;
     uint64_t m_mono_generation{};
     bool m_mono_block_post_present{};
+    bool m_dune_mono_ui_only_active{};
+    std::array<uint64_t, 3> m_dune_mono_ui_resize_key{};
+    bool copy_dune_mono_menu_ui(VR* vr);
+    void submit_dune_mono_ui_only(VR* vr, const uevr::dune_menu::Observation& owner);
 
     bool setup();
     std::unique_ptr<DirectX::DX12::SpriteBatch> setup_sprite_batch_pso(
@@ -135,7 +140,8 @@ private:
         std::optional<D3D12_RESOURCE_STATES> game_tex_state = std::nullopt,
         bool prefer_left_eye = false,
         bool source_is_single_eye = false,
-        d3d12::TextureContext* ui_tex_override = nullptr);
+        d3d12::TextureContext* ui_tex_override = nullptr,
+        bool ui_only = false);
     bool carry_forward_spectator_backbuffer();
     bool ensure_ue58_spectator_texture(ID3D12Device* device, ID3D12Resource* source);
     void reset_ue58_converted_ui_textures(bool reset_sources = true);
@@ -416,6 +422,10 @@ private:
         void initialize(XrSessionCreateInfo& session_info);
         std::optional<std::string> create_swapchains();
         void destroy_swapchains();
+        bool retained_ui_gpu_unproven() {
+            return m_retained_ui_gpu_unproven.load(std::memory_order_acquire);
+        }
+        std::atomic_bool m_retained_ui_gpu_unproven{};
         bool ensure_dispatch_movie(uint32_t width, uint32_t height, uint64_t epoch);
         bool copy_dispatch_movie(const uevr::dispatch_movie::Frame& frame);
         bool retire_dispatch_movie(bool drain);
@@ -497,6 +507,8 @@ private:
             std::vector<NativeArraySources> native_array_sources{};
             uevr::native_array::ImageWait native_array_wait;
             bool native_array_release_pending{false};
+            bool retained_ui_copy_faulted{false};
+            uevr::native_array::ImageWait retained_ui_wait;
             bool dispatch_movie_gpu_fault{false};
             std::vector<XrSwapchainImageD3D12KHR> textures{};
             std::vector<std::unique_ptr<d3d12::TextureContext>> texture_contexts{};

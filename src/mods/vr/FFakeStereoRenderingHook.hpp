@@ -45,6 +45,7 @@ struct Binding;
 #include "utility/BufferedRTTextureCall.hpp"
 #include "Subnautica2BetaRenderTarget.hpp"
 #include "StupidNeverDiesUI.hpp"
+#include "DuneMonoMenu.hpp"
 #include "NativeFrameDiagnostics.hpp"
 #include "Stalker2NativePolicy.hpp"
 #include "UE57SlateSymbols.hpp"
@@ -873,6 +874,8 @@ public:
     bool dune_has_live_pawn() const {
         return m_dune_has_live_pawn.load(std::memory_order_acquire);
     }
+
+    std::optional<uevr::dune_menu::Observation> get_dune_mono_menu_observation();
 
     struct DuneTrueStereoFrameSnapshot {
         uint32_t render_frame{};
