@@ -61,6 +61,9 @@ inline void dispatch() {
 inline void handoff() {
     w::Handoff gate;
     const a::FrameKey before{1,2,3,40}, after{1,2,4,50};
+    require(!w::frame_at_or_after(9,10) && w::frame_at_or_after(10,10) && w::frame_at_or_after(12,10) &&
+        w::frame_at_or_after(2,0xfffffff0u) && !w::frame_at_or_after(0xfffffff0u,2),
+        "future/skipped/wrapped engine poses escaped wait admission");
     require(!gate.pending() && gate.progress() == w::Progress::idle, "new handoff is not inert");
     require(!gate.reserve({},10,false) && !gate.reserve(before,0,false), "invalid clock/frame reserved a wait");
     require(!gate.reserve(before,10,true) && gate.progress() == w::Progress::pose_ahead,
@@ -224,6 +227,8 @@ inline void wiring(const std::filesystem::path& root) {
     const auto reset = xr.find("void OpenXR::prepare_resolution_scale_reconfigure(");
     require(xr.find("native_wait_only_handoff.reset();",reset) < xr.find("const auto safe_reason",reset),
         "resolution reconfigure leaves stale wait tickets authorized");
+    require(xr.find("uevr::openxr_wait::frame_at_or_after(last_pose_update_frame_count, next)") != std::string::npos,
+        "a skipped next ring slot could admit a wait below an already-published future pose");
     require(cpp.find("cfg.get<bool>(m_native_openxr_wait_only->get_config_name()), set_defaults)") != std::string::npos,
         "missing profile key can inherit a previously enabled wait-only setting");
 }
