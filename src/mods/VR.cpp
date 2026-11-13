@@ -2635,6 +2635,7 @@ const char* VR::native_openxr_wait_only_status() const {
     const auto scope = native_openxr_wait_only_scope();
     if (!scope.enabled()) { return uevr::openxr_wait::text(scope.blocked()); }
     if (m_native_openxr_async_worker.closed()) { return "unavailable: worker is shutting down"; }
+    if (m_openxr->native_wait_only_handoff.faulted()) { return "fell back: uncertain frame wait; OpenXR reinitialization required"; }
     if (m_native_openxr_async_worker.failed()) { return "fell back: worker failed; reinitialize OpenXR to retry"; }
     return uevr::openxr_wait::text(m_openxr->native_wait_only_handoff.progress());
 }
