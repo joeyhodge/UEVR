@@ -154,11 +154,13 @@ public:
     ScopedEvent(const ScopedEvent&) = delete;
     ScopedEvent& operator=(const ScopedEvent&) = delete;
     Event& data() noexcept { return m_event; }
+    void complete_cpu_interval(uint64_t end_ns, int32_t result) noexcept;
     void finish() noexcept;
     void finish_at(uint64_t end_ns, int32_t result) noexcept;
     void finish(int32_t result) noexcept { m_event.result = result; m_event.result_known = true; finish(); }
 private:
     uint64_t m_token{};
+    bool m_interval_fixed{};
     Event m_event{};
 };
 struct Context {
