@@ -40,6 +40,10 @@ progress from eligibility, queued work and fallback. Support diagnostics export
 these counters. No per-frame log spam or additional expensive diagnostics are
 enabled. An exceptional worker failure requires OpenXR reinitialization; an
 ordinary rejected runtime wait can be re-armed by toggling off/on after recovery.
+An exception during a reserved wait instead quarantines that runtime before its
+frame lock is released. Further frame calls stay blocked and the control thread
+requests OpenXR reinitialization; a focus/resize event or checkbox retry cannot
+pretend the uncertain wait never happened.
 
 ## Validation and limits
 
