@@ -151,4 +151,27 @@ private:
     std::atomic_uint64_t m_pending{}, m_worker_waits{}, m_cooperative_waits{};
     std::atomic<Progress> m_progress{Progress::idle};
 };
+
+// Reservation takes clock -> assignment. Recheck after taking assignment so a
+// pose that started just before reserve() cannot slip past its pending bit.
+// Release assignment/extra before taking clock: never invert that lock order.
+template<class ClockLock, class AssignmentLock, class ExtraLock, class Service>
+bool lock_pose_clock(Handoff& handoff, ClockLock& clock, AssignmentLock& assignment,
+    ExtraLock& extra, bool use_extra, Service service) {
+    if (handoff.pending()) {
+        clock.lock();
+        if (!service()) { return false; }
+    }
+    if (use_extra) { extra.lock(); }
+    assignment.lock();
+    if (!clock.owns_lock() && handoff.pending()) {
+        assignment.unlock();
+        if (extra.owns_lock()) { extra.unlock(); }
+        clock.lock();
+        if (!service()) { return false; }
+        if (use_extra) { extra.lock(); }
+        assignment.lock();
+    }
+    return true;
+}
 }
