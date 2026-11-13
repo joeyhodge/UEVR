@@ -237,13 +237,34 @@ set_tests_properties(gamepad-recovery-tests PROPERTIES TIMEOUT 30)
 [target.diagnostic-safety-tests]
 condition = "compatibility-policy-tests"
 type = "executable"
-sources = ["tests/DiagnosticSafetyTests.cpp", "tests/BufferedRTTextureCallTests.cpp", "tests/UObjectBrowserCostTests.cpp", "tests/CadenceReplayTests.cpp", "tests/LoggingDisabledTests.cpp", "tests/CachedCVarReadTests.cpp", "tests/ConsoleTextTests.cpp", "tests/UE58UIInitializationTests.cpp", "tests/KtjLOpenXRFactoryTests.cpp", "src/mods/vr/KtjLOpenXRFactory.cpp", "dependencies/submodules/UESDK/tests/DiscoveryValidationTests.cpp", "dependencies/submodules/UESDK/tests/LayoutSafetyTests.cpp"]
+sources = ["tests/DiagnosticSafetyTests.cpp", "tests/BufferedRTTextureCallTests.cpp", "tests/UObjectBrowserCostTests.cpp", "tests/CadenceReplayTests.cpp", "tests/LoggingDisabledTests.cpp", "tests/CachedCVarReadTests.cpp", "tests/ConsoleTextTests.cpp", "tests/UE58UIInitializationTests.cpp", "tests/KtjLOpenXRFactoryTests.cpp", "src/mods/vr/KtjLOpenXRFactory.cpp", "src/utility/PacingRecorder.cpp", "dependencies/submodules/UESDK/tests/DiscoveryValidationTests.cpp", "dependencies/submodules/UESDK/tests/LayoutSafetyTests.cpp"]
 include-directories = ["src/", "dependencies/submodules/UESDK/src"]
 compile-features = ["cxx_std_23"]
 link-libraries = ["nlohmann_json", "spdlog", "uesdk", "Version", "imgui"]
 cmake-after = """
 add_test(NAME diagnostic-safety-tests COMMAND diagnostic-safety-tests)
+add_dependencies(diagnostic-safety-tests support-capture-fixture support-capture-host)
+find_program(UEVR_SUPPORT_PWSH NAMES pwsh PATHS "C:/Program Files/PowerShell/7" REQUIRED)
+add_test(NAME support-capture-safety-tests COMMAND "${UEVR_SUPPORT_PWSH}"
+    -NoProfile -NonInteractive -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/SupportCaptureTests.ps1"
+    -SourceRoot "${CMAKE_CURRENT_SOURCE_DIR}" -Fixture "$<TARGET_FILE:support-capture-fixture>"
+    -CaptureHost "$<TARGET_FILE:support-capture-host>")
+set_tests_properties(support-capture-safety-tests PROPERTIES TIMEOUT 60)
 """
+
+[target.support-capture-fixture]
+condition = "compatibility-policy-tests"
+type = "shared"
+sources = ["tests/SupportCaptureFixture.cpp"]
+compile-features = ["cxx_std_17"]
+compile-options = ["/Zi"]
+link-options = ["/DEBUG"]
+
+[target.support-capture-host]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/SupportCaptureHost.cpp"]
+compile-features = ["cxx_std_17"]
 
 [target.kananlib-decode-window-tests]
 condition = "compatibility-policy-tests"
@@ -546,5 +567,8 @@ add_custom_command(
 add_custom_command(
     TARGET uevr POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:openvr> $<TARGET_FILE_DIR:uevr>)
+add_custom_command(
+    TARGET uevr POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/support" "$<TARGET_FILE_DIR:uevr>/support")
 
 """
