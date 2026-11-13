@@ -805,7 +805,11 @@ std::optional<double> CVarManager::CVarData::read_diagnostic_value() try {
 } catch (...) { return std::nullopt; }
 
 nlohmann::json CVarManager::get_diagnostic_snapshot() const {
-    std::scoped_lock lock{m_diagnostic_snapshot_mutex};
+    std::unique_lock lock{m_diagnostic_snapshot_mutex, std::try_to_lock};
+    if (!lock.owns_lock()) {
+        return {{"sampled", false}, {"snapshot_busy", true},
+            {"refresh_requested", m_diagnostic_snapshot_requested.load(std::memory_order_acquire)}};
+    }
     auto result = m_diagnostic_snapshot;
     result["refresh_requested"] = m_diagnostic_snapshot_requested.load(std::memory_order_acquire);
     return result;

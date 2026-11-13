@@ -663,6 +663,7 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 		"tests/UE58UIInitializationTests.cpp"
 		"tests/KtjLOpenXRFactoryTests.cpp"
 		"src/mods/vr/KtjLOpenXRFactory.cpp"
+		"src/utility/PacingRecorder.cpp"
 		"dependencies/submodules/UESDK/tests/DiscoveryValidationTests.cpp"
 		"dependencies/submodules/UESDK/tests/LayoutSafetyTests.cpp"
 	)
@@ -703,6 +704,86 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	)
 
 	add_test(NAME diagnostic-safety-tests COMMAND diagnostic-safety-tests)
+	add_dependencies(diagnostic-safety-tests support-capture-fixture support-capture-host)
+	find_program(UEVR_SUPPORT_PWSH NAMES pwsh PATHS "C:/Program Files/PowerShell/7" REQUIRED)
+	add_test(NAME support-capture-safety-tests COMMAND "${UEVR_SUPPORT_PWSH}"
+	    -NoProfile -NonInteractive -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/SupportCaptureTests.ps1"
+	    -SourceRoot "${CMAKE_CURRENT_SOURCE_DIR}" -Fixture "$<TARGET_FILE:support-capture-fixture>"
+	    -CaptureHost "$<TARGET_FILE:support-capture-host>")
+	set_tests_properties(support-capture-safety-tests PROPERTIES TIMEOUT 60)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
+# Target support-capture-fixture
+if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
+	set(CMKR_TARGET support-capture-fixture)
+	set(support-capture-fixture_SOURCES "")
+
+	list(APPEND support-capture-fixture_SOURCES
+		"tests/SupportCaptureFixture.cpp"
+	)
+
+	list(APPEND support-capture-fixture_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${support-capture-fixture_SOURCES})
+	add_library(support-capture-fixture SHARED)
+
+	if(support-capture-fixture_SOURCES)
+		target_sources(support-capture-fixture PRIVATE ${support-capture-fixture_SOURCES})
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${support-capture-fixture_SOURCES})
+
+	target_compile_features(support-capture-fixture PUBLIC
+		cxx_std_17
+	)
+
+	target_compile_options(support-capture-fixture PUBLIC
+		"/Zi"
+	)
+
+	target_link_options(support-capture-fixture PUBLIC
+		"/DEBUG"
+	)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
+# Target support-capture-host
+if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
+	set(CMKR_TARGET support-capture-host)
+	set(support-capture-host_SOURCES "")
+
+	list(APPEND support-capture-host_SOURCES
+		"tests/SupportCaptureHost.cpp"
+	)
+
+	list(APPEND support-capture-host_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${support-capture-host_SOURCES})
+	add_executable(support-capture-host)
+
+	if(support-capture-host_SOURCES)
+		target_sources(support-capture-host PRIVATE ${support-capture-host_SOURCES})
+	endif()
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT support-capture-host)
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${support-capture-host_SOURCES})
+
+	target_compile_features(support-capture-host PRIVATE
+		cxx_std_17
+	)
 
 	unset(CMKR_TARGET)
 	unset(CMKR_SOURCES)
@@ -2025,6 +2106,7 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/FFakeStereoRenderingHook.cpp"
 	"src/mods/vr/GalacticRacerLetterboxing.cpp"
 	"src/mods/vr/GalacticRacerPanini.cpp"
+	"src/mods/vr/HealthDiagnostics.cpp"
 	"src/mods/vr/IXRTrackingSystemHook.cpp"
 	"src/mods/vr/KtjLOpenXRFactory.cpp"
 	"src/mods/vr/OverlayComponent.cpp"
@@ -2058,6 +2140,7 @@ list(APPEND uevr_SOURCES
 	"src/utility/ImGui.cpp"
 	"src/utility/Nascar25HookCompatibility.cpp"
 	"src/utility/Nascar26HookCompatibility.cpp"
+	"src/utility/PacingRecorder.cpp"
 	"src/ExceptionHandler.hpp"
 	"src/Framework.hpp"
 	"src/LicenseStrings.hpp"
@@ -2257,6 +2340,8 @@ list(APPEND uevr_SOURCES
 	"src/utility/Nascar26HookCompatibility.hpp"
 	"src/utility/NascarHookCompatibility.hpp"
 	"src/utility/OpaqueStateRegistry.hpp"
+	"src/utility/PacingRecorder.hpp"
+	"src/utility/PacingRecorderJson.hpp"
 	"src/utility/PostInitCodeMemory.hpp"
 	"src/utility/PostInitValidation.hpp"
 	"src/utility/ProtectedHookTrampoline.hpp"
@@ -2264,12 +2349,14 @@ list(APPEND uevr_SOURCES
 	"src/utility/SceneCaptureLifecycle.hpp"
 	"src/utility/SceneStateValidation.hpp"
 	"src/utility/SupportDiagnostics.hpp"
+	"src/utility/SupportHealth.hpp"
 	"src/utility/UObjectAllocatorDiscovery.hpp"
 	"src/utility/UObjectArrayBrowser.hpp"
 	"src/utility/UObjectCandidateSnapshot.hpp"
 	"src/utility/UObjectMetadataFilter.hpp"
 	"src/utility/UObjectScanBudget.hpp"
 	"src/utility/ValidationThreshold.hpp"
+	"src/utility/VirtualSlotValidation.hpp"
 	"src/uevr-imgui/imgui_impl_dx11.h"
 	"src/uevr-imgui/imgui_impl_dx12.h"
 	"src/uevr-imgui/imgui_impl_win32.h"
@@ -2365,6 +2452,9 @@ add_custom_command(
 add_custom_command(
     TARGET uevr POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:openvr> $<TARGET_FILE_DIR:uevr>)
+add_custom_command(
+    TARGET uevr POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/tools/support" "$<TARGET_FILE_DIR:uevr>/support")
 
 unset(CMKR_TARGET)
 unset(CMKR_SOURCES)

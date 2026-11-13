@@ -12,8 +12,11 @@
 #include <spdlog/spdlog.h>
 #include <sdk/Math.hpp>
 #include <utility/Config.hpp>
+#include <utility/PacingRecorder.hpp>
 
 struct VRRuntime {
+    // Observation identity only; never participates in timing or frame ownership.
+    const uint64_t diagnostic_id{utility::pacing::next_runtime_id()};
     enum class Error : int64_t {
         UNSPECIFIED = -1,
         SUCCESS = 0,

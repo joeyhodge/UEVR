@@ -57,6 +57,7 @@
 #include "GearsEDayNativeFix.hpp"
 #include "utility/HookDiagnostics.hpp"
 #include "utility/ValidationThreshold.hpp"
+#include "utility/VirtualSlotValidation.hpp"
 #include "utility/SceneStateValidation.hpp"
 #include "ProSpiSlateValidation.hpp"
 #include "UE521ViewExtensionCode.hpp"
@@ -26347,7 +26348,6 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             {
                 std::scoped_lock lock{g_hook->m_sceneview_data.mtx};
                 const auto& metadata = g_hook->m_sceneview_data.native_stereo_views;
-                const bool share_state_type = is_ue_4_27_runtime() && prospi_is_current_game();
                 auto scene_state_checks = utility::scene_state_validation::batch<2>(
                     [](uintptr_t address, uintptr_t& value) { return safe_read_value(address, value); },
                     [](uintptr_t table, uintptr_t first) {
@@ -26379,9 +26379,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
                         pair_reject_reason = "PlayerIndex is outside the validated range";
                         break;
                     }
-                    if (item.state == nullptr || !(share_state_type
-                            ? scene_state_checks.check(reinterpret_cast<uintptr_t>(item.state))
-                            : ghosting_is_valid_scene_state(item.state))) {
+                    if (item.state == nullptr || !scene_state_checks.check(reinterpret_cast<uintptr_t>(item.state))) {
                         pair_valid = false;
                         pair_reject_reason = "scene state is null or invalid";
                         break;
@@ -33720,30 +33718,16 @@ bool borderlands4_slate_vtable_object(uintptr_t object) {
 
 bool try_call_slate_viewport_bool_slot(sdk::ISlateViewport* viewport, size_t slot, bool& out) {
     out = false;
-
-    if (viewport == nullptr || !looks_like_vtable_object(viewport)) {
-        return false;
-    }
-
-    uintptr_t vtable{};
-    if (!safe_read_value((uintptr_t)viewport, vtable) ||
-        !is_readable_process_range(vtable + (slot * sizeof(void*)), sizeof(void*)))
-    {
-        return false;
-    }
-
-    uintptr_t fn{};
-    if (!safe_read_value(vtable + (slot * sizeof(void*)), fn) ||
-        fn == 0 ||
-        !is_executable_process_range(fn, 1))
-    {
-        return false;
-    }
+    const auto fn = utility::validation::virtual_slot(reinterpret_cast<uintptr_t>(viewport), slot,
+        [](uintptr_t address, uintptr_t& value) { return safe_read_value(address, value); },
+        [](uintptr_t table) { return looks_like_virtual_function_table(table); },
+        [](uintptr_t function) { return is_executable_process_range(function, 1); });
+    if (!fn) { return false; }
 
     using BoolVirtualFn = bool (*)(sdk::ISlateViewport*);
 
     __try {
-        out = ((BoolVirtualFn)fn)(viewport);
+        out = ((BoolVirtualFn)*fn)(viewport);
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;

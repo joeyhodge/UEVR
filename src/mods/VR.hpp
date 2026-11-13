@@ -54,6 +54,8 @@
 class VR : public Mod {
 public:
     nlohmann::json get_support_diagnostics();
+    nlohmann::json get_health_snapshot();
+    void draw_health_diagnostics();
     ~VR() override;
 
     enum RenderingMethod {
@@ -164,6 +166,7 @@ public:
             {"Keybinds", false},
             {"Console/CVars", true},
             {"Compatibility", true},
+            {"Health / Diagnostics", false},
             {"Debug", true},
         };
     }
@@ -1622,6 +1625,9 @@ private:
     const ModToggle::Ptr m_enable_gui{ ModToggle::create(generate_name("EnableGUI"), true) };
     const ModToggle::Ptr m_enable_depth{ ModToggle::create(generate_name("PassDepthToRuntime"), false, true) };
     const ModToggle::Ptr m_openxr_afr_depth_target_stability{ ModToggle::create(generate_name("OpenXRAFRDepthTargetStability"), false, true) };
+    std::string m_health_snapshot_text{}, m_health_export_status{};
+    nlohmann::json m_health_snapshot{};
+    uint64_t m_health_cvar_revision{};
     const ModToggle::Ptr m_enable_hitch_diagnostics{ ModToggle::create(generate_name("EnableHitchDiagnostics"), false, true) };
     const ModToggle::Ptr m_ktjl_openxr_factory_repair{ ModToggle::create(generate_name("KTJLOpenXRFactoryRepair"), false, true) };
     const ModToggle::Ptr m_decoupled_pitch{ ModToggle::create(generate_name("DecoupledPitch"), false) };

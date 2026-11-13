@@ -19,6 +19,8 @@
 #include "utility/UObjectAllocatorDiscovery.hpp"
 #include "utility/SceneCaptureLifecycle.hpp"
 #include "DiagnosticSnapshotTests.hpp"
+#include "PacingRecorderTests.hpp"
+#include "SupportHealthTests.hpp"
 #include "DispatchMoviePolicyTests.hpp"
 #include "utility/PostInitValidation.hpp"
 #include "utility/PostInitCodeMemory.hpp"
@@ -636,6 +638,8 @@ void test_uobject_allocator_discovery() {
 }
 
 int main() {
+    pacing_recorder_tests::run(expect);
+    support_health_tests::run(expect);
     dispatch_movie_tests::run(expect);
     diagnostic_snapshot_tests::run(expect);
     test_scene_capture_lifecycle();
