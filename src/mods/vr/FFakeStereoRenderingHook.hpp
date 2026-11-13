@@ -1159,6 +1159,10 @@ public:
     static void pre_render_dune_frame(ISceneViewExtension* extension, void* graph, sdk::FSceneViewFamily& family);
 
     const char* get_ghosting_fix_status_text();
+    const char* try_get_ghosting_fix_status_text() {
+        std::unique_lock lock{m_sceneview_data.mtx, std::try_to_lock};
+        return lock.owns_lock() ? get_ghosting_fix_status_text() : "snapshot busy; refresh later";
+    }
     const char* get_native_stereo_fix_status_text() const;
     bool is_native_stereo_fix_operational() const;
     bool is_hook_provenance_diagnostics_enabled() const noexcept {
@@ -1167,6 +1171,10 @@ public:
     const char* get_pre57_slate_ui_observation_status() const {
         std::scoped_lock lock{m_pre57_slate_observation_mutex};
         return uevr::pre57_slate::name(m_pre57_slate_observation.state);
+    }
+    const char* try_get_pre57_slate_ui_observation_status() const {
+        std::unique_lock lock{m_pre57_slate_observation_mutex, std::try_to_lock};
+        return lock.owns_lock() ? uevr::pre57_slate::name(m_pre57_slate_observation.state) : "snapshot busy; refresh later";
     }
     uevr::vr_compatibility::UE58DedicatedUICapability get_ue58_dedicated_ui_capability() const {
         return m_ue58_slate_ui_capability.capability.load(std::memory_order_acquire);

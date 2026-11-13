@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<WindowsPerformanceRecorder Version="1.0">
+  <Profiles>
+    <SystemCollector Id="UEVRWaitCollector" Name="UEVR CPU waits">
+      <BufferSize Value="256" />
+      <Buffers Value="128" />
+    </SystemCollector>
+    <SystemProvider Id="UEVRWaitProvider">
+      <Keywords>
+        <Keyword Value="ProcessThread" />
+        <Keyword Value="Loader" />
+        <Keyword Value="CSwitch" />
+        <Keyword Value="ReadyThread" />
+        <Keyword Value="SampledProfile" />
+      </Keywords>
+      <Stacks>
+        <Stack Value="CSwitch" />
+        <Stack Value="ReadyThread" />
+        <Stack Value="SampledProfile" />
+      </Stacks>
+    </SystemProvider>
+    <Profile Id="UEVRWaits.Verbose.File" Name="UEVRWaits"
+             Description="Bounded CPU and wait attribution; no game hooks"
+             LoggingMode="File" DetailLevel="Verbose">
+      <Collectors>
+        <SystemCollectorId Value="UEVRWaitCollector">
+          <SystemProviderId Value="UEVRWaitProvider" />
+        </SystemCollectorId>
+      </Collectors>
+    </Profile>
+  </Profiles>
+</WindowsPerformanceRecorder>

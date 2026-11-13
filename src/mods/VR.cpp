@@ -46,6 +46,10 @@
 
 #include <tracy/Tracy.hpp>
 #include "utility/SupportDiagnostics.hpp"
+#include "utility/BuildIdentity.hpp"
+#include "utility/PacingRecorder.hpp"
+#include "utility/PacingRecorderJson.hpp"
+#include "utility/SupportHealth.hpp"
 
 #include "Framework.hpp"
 #include "frameworkConfig.hpp"
@@ -2675,7 +2679,10 @@ bool VR::request_native_openxr_async_wait() {
     }
     // The existing request owns the wait. Do not fall back to a second,
     // synchronous post-present wait just because its worker is still busy.
-    if (m_native_openxr_async_worker.busy()) { return true; }
+    if (m_native_openxr_async_worker.busy()) {
+        utility::pacing::decision(utility::pacing::Reason::worker_busy);
+        return true;
+    }
     const auto openxr = m_openxr;
     NativeOpenXRAsyncRequest request{};
     request.runtime = openxr;
@@ -4394,14 +4401,20 @@ nlohmann::json VR::get_support_diagnostics() {
             xr["native_wait_only"] = std::move(wait_only_info);
         }
     }
-    const auto ui = get_ui_layer_pose_telemetry_snapshot();
+    std::optional<UILayerPoseTelemetrySnapshot> ui;
+    {
+        std::unique_lock lock{m_ui_layer_pose_telemetry_mtx, std::try_to_lock};
+        if (lock.owns_lock()) { ui = m_ui_layer_pose_snapshot; }
+    }
     nlohmann::json result{
         {"rendering_method", {{"requested", requested_rendering_method()}, {"effective", m_rendering_method->value()},
             {"mono_generation", mono_generation()}, {"mono_status", mono_status()}, {"transition_pending", is_mono_transition_pending()}}},
         {"read_only", true}, {"cvars", std::move(cvars)}, {"openxr", std::move(xr)},
         {"pacing", utility::support::pacing(display_period, cap)},
-        {"ui_pose_telemetry", {{"sample_count", ui.sample_count},
-            {"last_pose_age_ms", ui.last_pose_age_ms}, {"last_image_age_frames", ui.last_ui_image_age_frames},
+        {"ui_pose_telemetry", {{"snapshot_read", ui.has_value()}, {"sampled", ui && ui->sample_count > 0},
+            {"sample_count", ui ? nlohmann::json(ui->sample_count) : nlohmann::json(nullptr)},
+            {"last_pose_age_ms", ui ? nlohmann::json(ui->last_pose_age_ms) : nlohmann::json(nullptr)},
+            {"last_image_age_frames", ui ? nlohmann::json(ui->last_ui_image_age_frames) : nlohmann::json(nullptr)},
             {"note", "Ages belong to the last telemetry sample, not necessarily this export; zero samples means unavailable."}}},
         {"native_fix_same_pass", is_native_stereo_fix_same_pass_enabled()},
         {"native_fix_preserve_secondary_pass", is_native_stereo_fix_preserve_secondary_pass_enabled()},
@@ -8460,6 +8473,7 @@ void VR::on_frame() {
 }
 
 void VR::on_present() {
+    utility::pacing::ScopedEvent pacing_present{utility::pacing::Stage::present};
     ZoneScopedN(__FUNCTION__);
 
     m_present_thread_id = GetCurrentThreadId();
@@ -8473,6 +8487,8 @@ void VR::on_present() {
     }};
 
     m_frame_count = get_runtime()->internal_render_frame_count;
+    pacing_present.data().domain = m_frame_count >= 0 ? utility::pacing::Domain::uevr_render : utility::pacing::Domain::unknown;
+    pacing_present.data().frame = static_cast<uint32_t>(m_frame_count);
 
     if (!is_using_afr() || m_render_frame_count % 2 == m_left_eye_interval) {
         ResetEvent(m_present_finished_event);
@@ -8607,12 +8623,15 @@ void VR::on_present() {
 }
 
 void VR::on_post_present() {
+    utility::pacing::ScopedEvent pacing_post_present{utility::pacing::Stage::post_present};
     FrameMarkNamed("Present");
     ZoneScopedN(__FUNCTION__);
 
     const auto is_same_frame = m_render_frame_count > 0 && m_render_frame_count == m_frame_count;
 
     const auto completed_present_frame = m_frame_count;
+    pacing_post_present.data().domain = completed_present_frame >= 0 ? utility::pacing::Domain::uevr_render : utility::pacing::Domain::unknown;
+    pacing_post_present.data().frame = completed_present_frame;
     m_render_frame_count = completed_present_frame;
     if (m_fake_stereo_hook != nullptr) {
         m_fake_stereo_hook->observe_native_frame_present(completed_present_frame);
@@ -8753,6 +8772,7 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         PAGE_KEYBINDS,
         PAGE_CONSOLE,
         PAGE_COMPATIBILITY,
+        PAGE_HEALTH,
         PAGE_DEBUG,
     };
 
@@ -8819,6 +8839,9 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         break;
     case "Debug"_fnv:
         selected_page = PAGE_DEBUG;
+        break;
+    case "Health / Diagnostics"_fnv:
+        selected_page = PAGE_HEALTH;
         break;
     default:
         ImGui::Text("Unknown page selected");
@@ -9862,6 +9885,10 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         }
     }
     
+    if (selected_page == PAGE_HEALTH) {
+        draw_health_diagnostics();
+    }
+
     if (selected_page == PAGE_DEBUG) {
         if (m_fake_stereo_hook != nullptr) {
             m_fake_stereo_hook->on_draw_ui();

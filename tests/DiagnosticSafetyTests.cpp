@@ -19,6 +19,10 @@
 #include "utility/UObjectAllocatorDiscovery.hpp"
 #include "utility/SceneCaptureLifecycle.hpp"
 #include "DispatchMoviePolicyTests.hpp"
+#include "PacingRecorderTests.hpp"
+#include "SupportHealthTests.hpp"
+#include "SceneStateValidationTests.hpp"
+#include "SceneStateWindowsTests.hpp"
 #include "utility/PostInitValidation.hpp"
 #include "utility/PostInitCodeMemory.hpp"
 // Some backend translation units still include Windows headers without NOMINMAX.
@@ -636,6 +640,10 @@ void test_uobject_allocator_discovery() {
 
 int main() {
     dispatch_movie_tests::run(expect);
+    pacing_recorder_tests::run(expect);
+    support_health_tests::run(expect);
+    scene_state_validation_tests::run(expect);
+    scene_state_windows_tests::run(expect);
     test_scene_capture_lifecycle();
     test_source_post_init_validation();
     test_opaque_states();
