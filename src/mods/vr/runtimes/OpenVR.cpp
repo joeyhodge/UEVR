@@ -2,6 +2,7 @@
 
 #include "OpenVR.hpp"
 #include "../SteamFrameInput.hpp"
+#include "utility/PacingRecorder.hpp"
 
 namespace runtimes {
 VRRuntime::Error OpenVR::synchronize_frame(std::optional<uint32_t> frame_count, SyncFrameCallsite callsite) {
@@ -17,7 +18,12 @@ VRRuntime::Error OpenVR::synchronize_frame(std::optional<uint32_t> frame_count, 
 
     std::unique_lock _{ this->pose_mtx };
     vr::VRCompositor()->SetTrackingSpace(vr::TrackingUniverseStanding);
+    utility::pacing::ScopedEvent pacing_wait{utility::pacing::Stage::wait_poses,
+        frame_count ? utility::pacing::Domain::engine : utility::pacing::Domain::unknown, frame_count.value_or(0)};
+    pacing_wait.data().callsite = static_cast<uint32_t>(callsite);
+    pacing_wait.data().runtime_id = diagnostic_id;
     auto ret = vr::VRCompositor()->WaitGetPoses(this->real_render_poses.data(), vr::k_unMaxTrackedDeviceCount, this->real_game_poses.data(), vr::k_unMaxTrackedDeviceCount);
+    pacing_wait.finish(static_cast<int32_t>(ret));
 
     if (ret == vr::VRCompositorError_None) {
         this->got_first_valid_poses = true;
