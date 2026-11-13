@@ -3,7 +3,6 @@
 #include "NativeOpenXRArrayPolicy.hpp"
 #include <atomic>
 #include <cstdint>
-#include <exception>
 #include <optional>
 
 namespace uevr::openxr_wait {
@@ -161,18 +160,15 @@ private:
     std::atomic_bool m_faulted{};
 };
 
-// Construct only for a reserved wait, AFTER its runtime lock. On unwinding,
-// quarantine uncertain XR call order BEFORE releasing that lock to consumers.
-class WaitFailureGuard {
-public:
-    explicit WaitFailureGuard(Handoff& handoff) noexcept : m_handoff{handoff}, m_exceptions{std::uncaught_exceptions()} {}
-    ~WaitFailureGuard() {
-        if (std::uncaught_exceptions() > m_exceptions && m_handoff.pending()) { m_handoff.fault(); }
+// Invoke while holding the runtime frame lock. Catch in that scope, including
+// foreign exceptions under the backend's /EHa, before a consumer can re-enter.
+template<class Work> decltype(auto) guarded_wait(Handoff& handoff, Work work) {
+    try { return work(); }
+    catch (...) {
+        if (handoff.pending()) { handoff.fault(); }
+        throw;
     }
-private:
-    Handoff& m_handoff;
-    int m_exceptions;
-};
+}
 
 // Reservation takes clock -> assignment. Recheck after taking assignment so a
 // pose that started just before reserve() cannot slip past its pending bit.
