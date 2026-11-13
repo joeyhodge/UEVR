@@ -1,6 +1,7 @@
 #include "mods/vr/NativeOpenXRArrayPolicy.hpp"
 #include "mods/vr/NativeOpenXRArrayD3D12.hpp"
 #include "NativeOpenXRAsyncTests.hpp"
+#include "NativeOpenXRWaitOnlyTests.hpp"
 #include <d3d12sdklayers.h>
 #include <dxgi1_4.h>
 #include <wrl.h>
@@ -214,11 +215,12 @@ static void warp_test(bool separate) {
 }
 
 int main(int argc,char** argv) try {
-    policy_tests();descriptor_tests();native_async_tests::run();
+    policy_tests();descriptor_tests();native_async_tests::run();native_wait_only_tests::run();
     if(argc==2 && std::string_view{argv[1]}=="--worker-only") {
         std::cout<<"Native OpenXR worker/cancellation/drain/retirement tests passed\n";return 0;
     }
-    expect(argc==1,"unrecognized test option");
+    if(argc==2) { native_wait_only_tests::wiring(argv[1]); }
+    expect(argc<=2,"unrecognized test option");
     warp_test(false);warp_test(true);
     std::cout<<"Native OpenXR array: scope/retry/frame/worker/drain/retirement and production paired WARP copies passed\n";
     return 0;

@@ -1298,7 +1298,7 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 		dxgi
 	)
 
-	add_test(NAME native-openxr-array-tests COMMAND native-openxr-array-tests)
+	add_test(NAME native-openxr-array-tests COMMAND native-openxr-array-tests "${CMAKE_CURRENT_SOURCE_DIR}")
 	set_tests_properties(native-openxr-array-tests PROPERTIES TIMEOUT 30)
 
 	unset(CMKR_TARGET)
@@ -2153,6 +2153,7 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/NativeOpenXRArrayD3D12.hpp"
 	"src/mods/vr/NativeOpenXRArrayPolicy.hpp"
 	"src/mods/vr/NativeOpenXRAsyncWorker.hpp"
+	"src/mods/vr/NativeOpenXRWaitOnly.hpp"
 	"src/mods/vr/OverlayComponent.hpp"
 	"src/mods/vr/PhantomBladeZeroNative.hpp"
 	"src/mods/vr/PhantomBladeZeroUI.hpp"
