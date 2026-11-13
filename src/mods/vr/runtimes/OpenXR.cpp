@@ -1260,8 +1260,11 @@ std::optional<uevr::openxr_wait::Reservation> OpenXR::native_wait_only_request()
     }
     const auto next = last_submit_state.frame_count + 1;
     const auto& pose = pipeline_states[next % QUEUE_SIZE];
-    // Do not advance the clock beneath an already-published engine pose.
-    return native_wait_only_handoff.reserve(key, next, pose.frame_count == next && !pose.stage_views.empty());
+    // The game thread may already be further ahead than this ring slot. Do not
+    // advance the clock under ANY next/future pose, including a skipped frame.
+    return native_wait_only_handoff.reserve(key, next,
+        uevr::openxr_wait::frame_at_or_after(last_pose_update_frame_count, next) ||
+        (pose.frame_count == next && !pose.stage_views.empty()));
 }
 
 bool OpenXR::synchronize_native_wait_only(uevr::openxr_wait::Reservation request) {

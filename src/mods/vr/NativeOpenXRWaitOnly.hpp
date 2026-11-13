@@ -11,6 +11,9 @@ inline constexpr bool default_enabled = false;
 inline bool load_setting(std::optional<bool> saved, bool defaults) noexcept {
     return !defaults && saved.value_or(default_enabled);
 }
+inline bool frame_at_or_after(uint32_t frame, uint32_t reference) noexcept {
+    return static_cast<int32_t>(frame - reference) >= 0;
+}
 
 template<class WaitOnly, class WaitFrame, class Acquire, class Cancelled>
 void run_operation(Operation operation, WaitOnly wait_only, WaitFrame wait_frame, Acquire acquire, Cancelled cancelled) {
@@ -106,7 +109,7 @@ public:
         return true;
     }
     bool applies_to(uint32_t frame) const noexcept {
-        return pending() && (frame == 0 || static_cast<int32_t>(frame - m_reservation.next_frame) >= 0);
+        return pending() && (frame == 0 || frame_at_or_after(frame, m_reservation.next_frame));
     }
     Reservation reservation() const noexcept { return m_reservation; }
 
