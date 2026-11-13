@@ -70,7 +70,7 @@ struct OpenXR final : public VRRuntime {
     }
 
     bool can_run_frame_loop() const {
-        return ready() &&
+        return ready() && !native_wait_only_handoff.faulted() &&
             (this->session_state == XR_SESSION_STATE_READY ||
              this->session_state == XR_SESSION_STATE_SYNCHRONIZED ||
              this->session_state == XR_SESSION_STATE_VISIBLE ||
