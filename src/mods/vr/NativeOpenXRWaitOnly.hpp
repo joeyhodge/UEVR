@@ -3,6 +3,7 @@
 #include "NativeOpenXRArrayPolicy.hpp"
 #include <atomic>
 #include <cstdint>
+#include <exception>
 #include <optional>
 
 namespace uevr::openxr_wait {
@@ -85,11 +86,12 @@ class Handoff {
 public:
     bool pending() const noexcept { return m_pending.load(std::memory_order_acquire) != 0; }
     Progress progress() const noexcept { return m_progress.load(std::memory_order_acquire); }
+    bool faulted() const noexcept { return m_faulted.load(std::memory_order_acquire); }
     uint64_t worker_waits() const noexcept { return m_worker_waits.load(std::memory_order_relaxed); }
     uint64_t cooperative_waits() const noexcept { return m_cooperative_waits.load(std::memory_order_relaxed); }
 
     std::optional<Reservation> reserve(native_array::FrameKey before, uint32_t next_frame, bool posed) noexcept {
-        if (pending() || progress() == Progress::failed) { return std::nullopt; }
+        if (pending() || faulted() || progress() == Progress::failed) { return std::nullopt; }
         if (!before.valid() || !next_frame) { waiting_frame(); return std::nullopt; }
         if (posed) { m_progress.store(Progress::pose_ahead, std::memory_order_release); return std::nullopt; }
         if (++m_serial == 0) { ++m_serial; }
@@ -137,11 +139,17 @@ public:
         if (!pending() && progress() != Progress::failed) { m_progress.store(Progress::normal_pacing, std::memory_order_release); }
     }
     void rearm() noexcept {
-        if (!pending() && progress() == Progress::failed) { m_progress.store(Progress::idle, std::memory_order_release); }
+        if (!pending() && !faulted() && progress() == Progress::failed) { m_progress.store(Progress::idle, std::memory_order_release); }
     }
     void reset() noexcept {
         m_worker = false;
-        m_progress.store(Progress::idle, std::memory_order_release);
+        m_progress.store(faulted() ? Progress::failed : Progress::idle, std::memory_order_release);
+        m_pending.store(0, std::memory_order_release);
+    }
+    void fault() noexcept {
+        m_faulted.store(true, std::memory_order_release);
+        m_worker = false;
+        m_progress.store(Progress::failed, std::memory_order_release);
         m_pending.store(0, std::memory_order_release);
     }
 private:
@@ -150,6 +158,20 @@ private:
     bool m_worker{};
     std::atomic_uint64_t m_pending{}, m_worker_waits{}, m_cooperative_waits{};
     std::atomic<Progress> m_progress{Progress::idle};
+    std::atomic_bool m_faulted{};
+};
+
+// Construct only for a reserved wait, AFTER its runtime lock. On unwinding,
+// quarantine uncertain XR call order BEFORE releasing that lock to consumers.
+class WaitFailureGuard {
+public:
+    explicit WaitFailureGuard(Handoff& handoff) noexcept : m_handoff{handoff}, m_exceptions{std::uncaught_exceptions()} {}
+    ~WaitFailureGuard() {
+        if (std::uncaught_exceptions() > m_exceptions && m_handoff.pending()) { m_handoff.fault(); }
+    }
+private:
+    Handoff& m_handoff;
+    int m_exceptions;
 };
 
 // Reservation takes clock -> assignment. Recheck after taking assignment so a

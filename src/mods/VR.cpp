@@ -8625,6 +8625,12 @@ void VR::on_post_present() {
 
     std::scoped_lock _{m_openvr_mtx};
 
+    if (runtime->is_openxr() && m_openxr->native_wait_only_handoff.faulted()) {
+        // Only the control thread requests reinitialization. The worker's
+        // atomic fault flag already blocks an unproven second wait/begin/end.
+        runtime->wants_reinitialize = true;
+    }
+
     if (!m_is_d3d12) {
         m_d3d11.on_post_present(this);
     } else {
