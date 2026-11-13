@@ -12756,6 +12756,123 @@ private:
 };
 } // namespace breathedge_inventory
 
+namespace dune_mono_menu {
+utility::diagnostics::Snapshot<uevr::dune_menu::Observation> observation;
+
+int64_t now_ns() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+bool validated_contract() try {
+    static const bool validated = [] {
+        const auto module = utility::get_executable();
+        const auto path = utility::get_module_pathw(module);
+        const auto version = sdk::get_file_version_info();
+        if (!path || !uevr::games::is_dune_awakening_executable_path(*path) ||
+            uevr::games::is_dune_awakening_gdk_executable_path(*path) ||
+            version.dwFileVersionMS != 0x00050002 || version.dwFileVersionLS != 0x00010000 ||
+            !validated_dune_frame_handoff()) { return false; }
+        const auto draw = sdk::UGameViewportClient::get_draw_function();
+        DWORD64 base{};
+        const auto fn = draw ? RtlLookupFunctionEntry(*draw, &base, nullptr) : nullptr;
+        if (!fn || base != reinterpret_cast<uintptr_t>(module) || base + fn->BeginAddress != *draw ||
+            fn->EndAddress <= fn->BeginAddress || fn->EndAddress - fn->BeginAddress > 0x4000) { return false; }
+        std::vector<uint8_t> code(fn->EndAddress - fn->BeginAddress);
+        if (!read_dune_frame_memory(*draw, code.data(), code.size()) || !uevr::dune_menu::valid_draw(code)) { return false; }
+        const auto prove_field = [&](const auto& bytes) {
+            std::string pattern;
+            for (const auto byte : bytes) {
+                if (!pattern.empty()) { pattern += ' '; }
+                pattern += fmt::format("{:02X}", byte);
+            }
+            const auto found = find_unique_dune_code_pattern(module, pattern);
+            DWORD64 owner_base{};
+            const auto owner = found ? RtlLookupFunctionEntry(*found, &owner_base, nullptr) : nullptr;
+            return owner && owner_base == base && owner->EndAddress > owner->BeginAddress &&
+                owner->EndAddress - owner->BeginAddress <= 0x400 &&
+                *found >= base + owner->BeginAddress && *found + bytes.size() <= base + owner->EndAddress;
+        };
+        return prove_field(uevr::dune_menu::read_code) && prove_field(uevr::dune_menu::write_code);
+    }();
+    return validated;
+} catch (...) { return false; }
+
+bool live(sdk::UObject* object, GhostingUObjectIdentity& identity) {
+    uint32_t flags{};
+    return ghosting_is_live_uobject(object, GhostingUObjectValidationMode::ObjectArray, nullptr, &identity) &&
+        safe_read_value(reinterpret_cast<uintptr_t>(object) + sdk::UObjectBase::get_object_flags_offset(), flags) &&
+        !(flags & (0x10u | 0x20u | 0x200u | 0x8000u | 0x10000u)) && !object->is_pending_kill_or_unreachable();
+}
+
+void sample(void* dispatch, sdk::FViewport* viewport) noexcept try {
+    const auto vr = VR::get();
+    if (!vr || !g_framework || !g_framework->is_game_data_intialized() || !GameThreadWorker::get().is_same_thread() ||
+        !g_framework->is_dx12() || !vr->is_using_mono() || vr->is_mono_transition_pending() ||
+        !vr->get_runtime()->is_openxr()) { return; }
+    static const bool candidate = [] {
+        const auto path = utility::get_module_pathw(utility::get_executable());
+        return path && uevr::games::is_dune_awakening_executable_path(*path) &&
+            !uevr::games::is_dune_awakening_gdk_executable_path(*path);
+    }();
+    if (!candidate) { return; }
+    if (!validated_contract()) {
+        SPDLOG_WARN_ONCE("[Dune][MonoMenu] World-suppression code contract did not validate; ordinary Mono checks unchanged");
+        return;
+    }
+
+    uevr::dune_menu::Observation value{};
+    value.observed_ns = now_ns();
+    value.generation = vr->mono_generation();
+    value.request = vr->mono_request_token();
+    const auto publish = utility::ScopeGuard{[&] { observation.try_publish(value); }};
+    auto* client = reinterpret_cast<sdk::UObject*>(uevr::dune_menu::canonical_client(reinterpret_cast<uintptr_t>(dispatch)));
+    auto* engine = sdk::UEngine::get();
+    GhostingUObjectIdentity engine_id{}, client_id{}, engine_class_id{}, client_class_id{};
+    if (!viewport || !valid_dune_frame_object(reinterpret_cast<uintptr_t>(viewport)) ||
+        !live(engine, engine_id) || !live(client, client_id)) { return; }
+    auto* engine_class = reinterpret_cast<sdk::UClass*>(engine_id.object_class);
+    auto* client_class = reinterpret_cast<sdk::UClass*>(client_id.object_class);
+    if (!live(engine_class, engine_class_id) || !live(client_class, client_class_id)) { return; }
+
+    // Cache only reflected offsets by live class identity. Read the actual
+    // engine owner and suppression bit anew on every game-thread Draw.
+    struct Layout {
+        GhostingUObjectIdentity engine{}, client{};
+        uint32_t game_viewport{};
+        bool valid{};
+    };
+    static Layout layout;
+    const auto same = [](const auto& a, const auto& b) {
+        return a.object_class == b.object_class && a.serial == b.serial && a.vtable == b.vtable && a.internal_index == b.internal_index;
+    };
+    if (!layout.valid || !same(layout.engine, engine_class_id) || !same(layout.client, client_class_id)) {
+        layout = {};
+        if (client_class->get_full_name() != L"Class /Script/DuneSandbox.DuneGameViewportClient") { return; }
+        const auto field = engine_class->find_property(L"GameViewport");
+        const auto players = client_class->find_property(L"MaxSplitscreenPlayers");
+        const auto property_type = [](auto* property, std::wstring_view name) {
+            if (!property || !is_readable_process_range(reinterpret_cast<uintptr_t>(property), 0x90)) { return false; }
+            auto* type = property->get_class();
+            return type && is_readable_process_range(reinterpret_cast<uintptr_t>(type), 0x20) && type->get_name().to_string() == name;
+        };
+        if (!property_type(field, L"ObjectProperty") || !property_type(players, L"IntProperty") || players->get_offset() != 0x68) { return; }
+        const auto offset = field->get_offset(), size = engine_class->get_properties_size();
+        if (offset < 0x28 || size < 8 || size > 0x10000 || offset > size - 8) { return; }
+        layout = {engine_class_id, client_class_id, static_cast<uint32_t>(offset), true};
+    }
+    sdk::UObject* owned_client{};
+    uint32_t flags{};
+    if (!safe_read_value(reinterpret_cast<uintptr_t>(engine) + layout.game_viewport, owned_client) || owned_client != client ||
+        !safe_read_value(reinterpret_cast<uintptr_t>(client) + uevr::dune_menu::viewport_flags_offset, flags)) { return; }
+    value.viewport = reinterpret_cast<uintptr_t>(viewport);
+    value.client = reinterpret_cast<uintptr_t>(client);
+    value.client_serial = client_id.serial;
+    value.world_disabled = (flags & uevr::dune_menu::disable_world_mask) != 0;
+    SPDLOG_INFO_ONCE("[Dune][MonoMenu] Read-only viewport owner, class layout and world-suppression reader validated");
+} catch (...) { observation.try_clear(); }
+} // namespace dune_mono_menu
+
 bool ghosting_resolve_view_state_slots(
     uintptr_t header_address,
     sdk::FSceneViewStateInterface* left_state,
@@ -21740,6 +21857,7 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
 
     auto call_orig = [=]() {
         ZoneScopedN("UGameViewportClient::Draw");
+        utility::ScopeGuard menu_observation{[&] { dune_mono_menu::sample(draw_dispatch_this, viewport); }};
         {
             breathedge_inventory::DrawScope inventory_world{draw_dispatch_this, viewport};
             g_hook->call_game_viewport_draw_original(draw_dispatch_this, viewport, canvas, a4);
@@ -29079,6 +29197,16 @@ const char* FFakeStereoRenderingHook::get_dibr_single_view_status_text() const {
 
 bool FFakeStereoRenderingHook::is_dibr_single_view_active() const {
     return m_dibr_single_view_status.load(std::memory_order_acquire) == DIBR_SINGLE_VIEW_ACTIVE;
+}
+
+std::optional<uevr::dune_menu::Observation> FFakeStereoRenderingHook::get_dune_mono_menu_observation() {
+    const auto vr = VR::get();
+    if (!vr || !g_framework || !g_framework->is_dx12() || !vr->is_using_mono() ||
+        vr->is_mono_transition_pending() || !vr->get_runtime()->is_openxr()) { return {}; }
+    const auto value = dune_mono_menu::observation.try_read().value;
+    if (!value || !uevr::dune_menu::current(*value, vr->mono_generation(), vr->mono_request_token(),
+        reinterpret_cast<uintptr_t>(get_render_target_manager()->get_viewport()), dune_mono_menu::now_ns())) { return {}; }
+    return value;
 }
 
 void FFakeStereoRenderingHook::pre_render_dune_frame(

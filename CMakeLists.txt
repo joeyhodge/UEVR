@@ -2187,6 +2187,8 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/DispatchMoviePolicy.hpp"
 	"src/mods/vr/DuneFrameHandoff.hpp"
 	"src/mods/vr/DuneFrameHandoffDiscovery.hpp"
+	"src/mods/vr/DuneMonoMenu.hpp"
+	"src/mods/vr/DuneMonoMenuD3D12.hpp"
 	"src/mods/vr/DuneNativeTransaction.hpp"
 	"src/mods/vr/DuneRendererAbi.hpp"
 	"src/mods/vr/DuneSmartGI.hpp"
