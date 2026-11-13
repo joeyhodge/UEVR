@@ -40,7 +40,7 @@ nlohmann::json export_json(Recorder<Capacity, Gate>& source) {
         {"enabled", trace->enabled}, {"epoch", trace->epoch}, {"capacity", Capacity}, {"retained", trace->retained},
         {"total", trace->total}, {"overwritten", trace->overwritten}, {"dropped_lifetime", trace->dropped_lifetime},
         {"gpu_timing_available", false}, {"changes_frame_pacing", false},
-        {"note", "CPU intervals only, including blocking API time. Nested intervals overlap; do not sum stages or infer GPU cost. Events are completion-ordered, not start-time ordered. Missing events are not zero-cost frames. The observed wait sequence is the runtime clock, not a guarantee that it produced a pipelined submitted image; use display time and frame domain."},
+        {"note", "CPU intervals only, including blocking API time. Nested intervals overlap; do not sum stages or infer GPU cost. Event sequence is publication order, not start/end-time order. Missing events are not zero-cost frames. The observed wait sequence is the runtime clock, not a guarantee that it produced a pipelined submitted image; use display time and frame domain."},
         {"retained_stage_totals", std::move(stages)}, {"retained_wait_decisions", std::move(decisions)}, {"events", std::move(rows)}};
 }
 }

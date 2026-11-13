@@ -52,7 +52,9 @@ clock. Unknown frames/results/display times remain null. The observed wait
 sequence is the runtime's clock at the observation; it does not prove which
 wait generated an older pipelined submitted image. Actual API display times
 are recorded. QPC/steady-clock bracketing in health exports supports ETW
-correlation. Event sequence is completion order, not start order.
+correlation. Event sequence is publication order, not start/end-time order.
+The wait API's end timestamp/result is fixed before later clock publication,
+logging or unwinding, so that bookkeeping cannot inflate its measured interval.
 
 **These are CPU intervals, including time blocked inside an API. They are not
 GPU execution times or motion-to-photon latency.** Nested scopes overlap and
