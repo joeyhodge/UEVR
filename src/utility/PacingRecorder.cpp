@@ -21,17 +21,20 @@ ScopedEvent::ScopedEvent(Stage stage, Domain domain, uint32_t frame) noexcept
 }
 void ScopedEvent::finish() noexcept {
     if (!m_token) { return; }
-    m_event.duration_ns = now_ns() - m_event.start_ns;
+    if (!m_interval_fixed) { m_event.duration_ns = now_ns() - m_event.start_ns; }
     recorder().record(m_token, m_event);
     m_token = 0;
 }
-void ScopedEvent::finish_at(uint64_t end_ns, int32_t result) noexcept {
+void ScopedEvent::complete_cpu_interval(uint64_t end_ns, int32_t result) noexcept {
     if (!m_token) { return; }
     m_event.duration_ns = end_ns >= m_event.start_ns ? end_ns - m_event.start_ns : 0;
     m_event.result = result;
     m_event.result_known = true;
-    recorder().record(m_token, m_event);
-    m_token = 0;
+    m_interval_fixed = true;
+}
+void ScopedEvent::finish_at(uint64_t end_ns, int32_t result) noexcept {
+    complete_cpu_interval(end_ns, result);
+    finish();
 }
 void decision(Reason reason, Context context) noexcept {
     ScopedEvent event{Stage::wait_decision, context.next_frame ? Domain::next_engine : Domain::unknown, context.next_frame};
