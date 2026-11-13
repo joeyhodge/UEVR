@@ -1408,6 +1408,8 @@ VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, 
     pacing_wait.data().display_time = local_frame_state.predictedDisplayTime;
     const auto pacing_wait_end = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
         wait_frame_end.time_since_epoch()).count());
+    pacing_wait.complete_cpu_interval(pacing_wait_end, static_cast<int32_t>(result));
+    pacing_wait.data().wait_sequence = last_wait_trace_sequence;
     if (collect_openxr_frame_timing()) {
         this->wait_frame_timing.add(wait_frame_duration);
 
