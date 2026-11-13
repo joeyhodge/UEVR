@@ -1289,6 +1289,12 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 		cxx_std_23
 	)
 
+	if(MSVC) # msvc
+		target_compile_options(native-openxr-array-tests PRIVATE
+			"/EHa"
+		)
+	endif()
+
 	target_include_directories(native-openxr-array-tests PRIVATE
 		"src/"
 	)

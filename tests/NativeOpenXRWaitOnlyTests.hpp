@@ -6,6 +6,9 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#ifdef _MSC_VER
+#include <windows.h>
+#endif
 
 namespace native_wait_only_tests {
 namespace w = uevr::openxr_wait;
@@ -165,9 +168,7 @@ inline void uncertain_wait() {
     w::Handoff gate;
     const a::FrameKey before{1,2,3,40};
     require(gate.reserve(before,10,false).has_value(), "exception reservation failed");
-    {
-        w::WaitFailureGuard guard{gate};
-    }
+    require(w::guarded_wait(gate,[] { return 7; }) == 7, "wait wrapper changed a normal result");
     require(!gate.faulted() && gate.pending(), "normal scope exit quarantined a valid pending wait");
     struct WitnessMutex {
         w::Handoff& gate;
@@ -177,8 +178,7 @@ inline void uncertain_wait() {
     } mutex{gate};
     try {
         std::scoped_lock lock{mutex};
-        w::WaitFailureGuard guard{gate};
-        throw std::runtime_error("fake uncertain XR wait");
+        w::guarded_wait(gate,[] { throw std::runtime_error("fake uncertain XR wait"); });
     } catch (const std::runtime_error&) {}
     require(gate.faulted() && !gate.pending() && mutex.fault_before_unlock,
         "an exception allowed another consumer into an unproven XR frame loop");
@@ -188,6 +188,20 @@ inline void uncertain_wait() {
     w::Handoff replacement;
     require(!replacement.faulted() && replacement.reserve({2,1,1,50},11,false).has_value(),
         "fault from an old runtime poisoned its replacement");
+#ifdef _MSC_VER
+    // Match the backend's /EHa, not just std::uncaught_exceptions(), which does
+    // not establish that a foreign/driver SEH exception was quarantined in time.
+    w::Handoff foreign;
+    require(foreign.reserve(before,10,false).has_value(), "foreign exception reservation failed");
+    WitnessMutex witness{foreign};
+    bool caught{};
+    try {
+        std::scoped_lock lock{witness};
+        w::guarded_wait(foreign,[] { RaiseException(0xE0421001u,0,0,nullptr); });
+    } catch (...) { caught = true; }
+    require(caught && foreign.faulted() && witness.fault_before_unlock,
+        "foreign wait exception escaped quarantine before runtime lock release");
+#endif
 }
 
 // A bounded XR stand-in exercises the production worker, dispatch, frame key and
@@ -318,7 +332,7 @@ inline void wiring(const std::filesystem::path& root) {
     require(cpp.find("cfg.get<bool>(m_native_openxr_wait_only->get_config_name()), set_defaults)") != std::string::npos,
         "missing profile key can inherit a previously enabled wait-only setting");
     const auto sync = xr.find("VRRuntime::Error OpenXR::synchronize_frame(");
-    require(xr.find("wait_only_failure.emplace(native_wait_only_handoff)",sync) < xr.find("xrWaitFrame(this->session",sync) &&
+    require(xr.find("return uevr::openxr_wait::guarded_wait(native_wait_only_handoff,",sync) < xr.find("xrWaitFrame(this->session",sync) &&
         cpp.find("runtime->is_openxr() && m_openxr->native_wait_only_handoff.faulted()") != std::string::npos,
         "uncertain wait does not quarantine before unlocking/request control-thread recovery");
 }
