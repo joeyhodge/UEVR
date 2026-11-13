@@ -3979,6 +3979,27 @@ bool VR::is_native_openxr_async_wait_active() const {
         get_runtime()->is_openxr() && is_native_stereo_array_ready() && m_d3d12.openxr().native_array_last_copy_ok();
 }
 
+uevr::openxr_wait::Scope VR::native_openxr_wait_only_scope() const {
+    if (!m_native_openxr_wait_only->value()) { return {}; }
+    const auto* runtime = get_runtime();
+    return {true, g_framework != nullptr && g_framework->is_dx12(),
+        runtime != nullptr && runtime == m_openxr.get() && runtime->is_openxr() && runtime->loaded,
+        is_using_native_stereo(), static_cast<SynchronizeStage>(m_sync_mode->value()) == SynchronizeStage::VERY_LATE,
+        m_native_stereo_fix_async_openxr_wait->value(), m_native_stereo_fix_texture_array_submit->value(),
+        m_disable_vr || is_using_afr() || m_extreme_compat_mode->value() || m_sceneview_compatibility_mode->value() ||
+        is_using_2d_screen() || is_stereo_emulation_enabled() || is_splitscreen_compatibility_enabled() ||
+        is_mono_transition_pending() || uevr::nascar::is_target() ||
+        is_dune_awakening_executable_cached() || is_stalker2_legacy_ue51_runtime_cached()};
+}
+
+const char* VR::native_openxr_wait_only_status() const {
+    const auto scope = native_openxr_wait_only_scope();
+    if (!scope.enabled()) { return uevr::openxr_wait::text(scope.blocked()); }
+    if (m_native_openxr_async_worker.closed()) { return "unavailable: worker is shutting down"; }
+    if (m_native_openxr_async_worker.failed()) { return "fell back: worker failed; reinitialize OpenXR to retry"; }
+    return uevr::openxr_wait::text(m_openxr->native_wait_only_handoff.progress());
+}
+
 void VR::stop_native_openxr_async_wait_worker() {
     m_native_openxr_async_worker.stop();
 }
@@ -3988,37 +4009,71 @@ void VR::shutdown_native_openxr_async_wait_worker() {
 }
 
 bool VR::request_native_openxr_async_wait() {
+    using uevr::openxr_wait::Operation;
+    const bool wait_only_requested = m_native_openxr_wait_only->value();
+    if (m_native_openxr_wait_only_was_requested && !wait_only_requested && m_openxr) {
+        m_openxr->native_wait_only_handoff.rearm();
+    }
+    m_native_openxr_wait_only_was_requested = wait_only_requested;
+    if (m_native_openxr_async_worker.closed()) { return false; }
     if (m_native_openxr_async_worker.failed()) {
         SPDLOG_WARNING_EVERY_N_SEC(5, "[OpenXR][native] Async worker failed; using normal frame pacing");
         return false;
     }
-    if (!is_native_openxr_async_wait_active()) {
+    const bool array_active = is_native_openxr_async_wait_active();
+    const bool wait_only_active = native_openxr_wait_only_scope().enabled();
+    const auto operation = array_active ? Operation::array_pre_acquire : Operation::wait_only;
+    const bool was_wait_only = m_native_openxr_async_operation.load(std::memory_order_acquire) == Operation::wait_only;
+    if (!array_active && !wait_only_active) {
         m_native_openxr_async_worker.cancel_pending();
-        return false;
+        // Turning an option/mode off cannot cancel an xrWaitFrame already in progress.
+        return was_wait_only && m_native_openxr_async_worker.busy();
+    }
+    if (m_native_openxr_async_worker.busy() && operation != m_native_openxr_async_operation.load(std::memory_order_acquire)) {
+        m_native_openxr_async_worker.cancel_pending();
+        return m_native_openxr_async_worker.busy();
     }
     // The existing request owns the wait. Do not fall back to a second,
     // synchronous post-present wait just because its worker is still busy.
     if (m_native_openxr_async_worker.busy()) { return true; }
     const auto openxr = m_openxr;
-    const auto frame = openxr ? openxr->native_async_wait_request() : std::nullopt;
-    if (!frame) { return false; }
+    NativeOpenXRAsyncRequest request{};
+    request.runtime = openxr;
+    request.operation = operation;
+    if (!openxr) { return false; }
+    if (operation == Operation::wait_only) {
+        const auto reservation = openxr->native_wait_only_request();
+        if (!reservation) { return false; }
+        request.frame = reservation->before;
+        request.wait_only = *reservation;
+    } else {
+        const auto frame = openxr->native_async_wait_request();
+        if (!frame) { return false; }
+        request.frame = *frame;
+        request.array_generation = m_d3d12.openxr().native_array_generation();
+    }
     try {
+        m_native_openxr_async_operation.store(operation, std::memory_order_release);
         return m_native_openxr_async_worker.submit(
-            NativeOpenXRAsyncRequest{openxr, *frame, m_d3d12.openxr().native_array_generation()},
+            std::move(request),
             [this](const NativeOpenXRAsyncRequest& request, const auto& cancellation) {
                 try {
                     thread_local const auto named = SetThreadDescription(GetCurrentThread(), L"UEVR Native OpenXR Wait");
                     (void)named;
-                    if (cancellation.cancelled()) { return; }
-                    const auto frame = request.runtime->synchronize_native_async_frame(request.frame);
-                    if (frame && !cancellation.cancelled()) {
-                        m_d3d12.openxr().pre_acquire_native_array(*request.runtime, *frame, request.array_generation);
-                    }
+                    uevr::openxr_wait::run_operation(request.operation,
+                        [&] { request.runtime->synchronize_native_wait_only(request.wait_only); },
+                        [&] { return request.runtime->synchronize_native_async_frame(request.frame); },
+                        [&](const auto& frame) { m_d3d12.openxr().pre_acquire_native_array(*request.runtime, frame, request.array_generation); },
+                        [&] { return cancellation.cancelled(); });
                 } catch (...) {
                     // An exception can leave acquisition ownership unproven.
                     // Do not reuse that generation or poison a replacement one.
-                    m_d3d12.openxr().fault_native_array(request.array_generation);
-                    spdlog::error("[OpenXR][native] Async worker failed; retaining its array generation and using normal pacing");
+                    if (request.operation == Operation::array_pre_acquire) {
+                        m_d3d12.openxr().fault_native_array(request.array_generation);
+                    } else {
+                        request.runtime->fail_native_wait_only(request.wait_only);
+                    }
+                    spdlog::error("[OpenXR][native] Async worker failed; preserving owned frame/resources and using normal pacing");
                     throw;
                 }
             });
@@ -5681,6 +5736,10 @@ nlohmann::json VR::get_support_diagnostics() {
             xr["unavailable_reason"] = "OpenXR is not the active runtime";
         } else {
             const auto& runtime = m_openxr;
+            const auto& wait_only = runtime->native_wait_only_handoff;
+            nlohmann::json wait_only_info{{"requested", m_native_openxr_wait_only->value()},
+                {"status", native_openxr_wait_only_status()}, {"worker_waits", wait_only.worker_waits()},
+                {"cooperative_waits", wait_only.cooperative_waits()}};
             std::unique_lock events{runtime->event_mtx, std::try_to_lock};
             std::unique_lock assignment{runtime->sync_assignment_mtx, std::try_to_lock};
             if (events.owns_lock() && assignment.owns_lock()) {
@@ -5692,6 +5751,7 @@ nlohmann::json VR::get_support_diagnostics() {
             } else {
                 xr["unavailable_reason"] = "XR state busy; refresh later";
             }
+            xr["native_wait_only"] = std::move(wait_only_info);
         }
     }
     const auto ui = get_ui_layer_pose_telemetry_snapshot();
@@ -13962,6 +14022,10 @@ void VR::on_config_load(const utility::Config& cfg, bool set_defaults) {
     for (IModValue& option : m_options) {
         option.config_load(cfg, set_defaults);
     }
+    // A profile without this new key must not inherit an enabled experiment
+    // from an earlier in-process configuration reload.
+    m_native_openxr_wait_only->value() = uevr::openxr_wait::load_setting(
+        cfg.get<bool>(m_native_openxr_wait_only->get_config_name()), set_defaults);
     m_prospi_camera_trace_requested.store(is_prospi_executable() && m_prospi_camera_trace_enabled->value(), std::memory_order_release);
     m_prospi_camera_trace_keys[0].store(m_prospi_camera_trace_bad_key->value());
     m_prospi_camera_trace_keys[1].store(m_prospi_camera_trace_good_key->value());
@@ -15300,7 +15364,10 @@ void VR::on_post_present() {
     }
 
     bool native_openxr_async_wait_requested = false;
-    if (m_is_d3d12 && runtime->is_openxr() && is_native_openxr_async_wait_active() && !runtime->wants_reinitialize) {
+    const bool wait_only_owned = m_native_openxr_async_operation.load(std::memory_order_acquire) == uevr::openxr_wait::Operation::wait_only &&
+        m_native_openxr_async_worker.busy();
+    if (m_is_d3d12 && runtime->is_openxr() && !runtime->wants_reinitialize &&
+        (is_native_openxr_async_wait_active() || m_native_openxr_wait_only->value() || m_native_openxr_wait_only_was_requested || wait_only_owned)) {
         native_openxr_async_wait_requested = request_native_openxr_async_wait();
         if (native_openxr_async_wait_requested) {
             SPDLOG_INFO_ONCE("[OpenXR][native] Running opt-in xrWaitFrame asynchronously after D3D12 submit");
@@ -15852,6 +15919,28 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             ImGui::TextWrapped(
                 "Default off and only active with texture-array submit. Moves xrWaitFrame/pre-acquire off the render thread opportunistically; "
                 "it never auto-enables per game and falls back to the normal wait path if it cannot queue safely.");
+            ImGui::TreePop();
+        }
+
+        ImGui::SetNextItemOpen(true, ImGuiCond_::ImGuiCond_Once);
+        if (ImGui::TreeNode("Native OpenXR Wait Only")) {
+            m_native_openxr_wait_only->draw("Experimental Async Wait Only (Same Pass compatible)");
+            const auto scope = native_openxr_wait_only_scope();
+            const bool active = scope.enabled() && !m_native_openxr_async_worker.failed() && !m_native_openxr_async_worker.closed() &&
+                m_openxr->native_wait_only_handoff.progress() == uevr::openxr_wait::Progress::active;
+            draw_status_badge("Wait-only status:", native_openxr_wait_only_status(),
+                !m_native_openxr_wait_only->value() ? skipped_color : active ? active_color : fallback_color);
+            if (m_native_openxr_wait_only->value() && m_openxr) {
+                ImGui::Text("Completed waits: worker %llu / normal consumer %llu",
+                    static_cast<unsigned long long>(m_openxr->native_wait_only_handoff.worker_waits()),
+                    static_cast<unsigned long long>(m_openxr->native_wait_only_handoff.cooperative_waits()));
+            }
+            ImGui::TextWrapped(
+                "Default off for each game. D3D12 + OpenXR + Native Stereo + Very Late synchronization only. "
+                "Keep Texture-Array Submit and Wait/Pre-Acquire OFF. Moves only xrWaitFrame to the owned worker; "
+                "does not change Same Pass, shadows, eye copies, or swapchains. May not improve GPU-bound games. "
+                "If poses are already queued or the result is needed immediately, normal pacing is retained. "
+                "Turning it off cancels future work, not an in-progress runtime wait.");
             ImGui::TreePop();
         }
 

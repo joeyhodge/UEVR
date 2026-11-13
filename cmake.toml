@@ -400,7 +400,7 @@ include-directories = ["src/"]
 compile-features = ["cxx_std_23"]
 link-libraries = ["d3d12", "dxgi"]
 cmake-after = """
-add_test(NAME native-openxr-array-tests COMMAND native-openxr-array-tests)
+add_test(NAME native-openxr-array-tests COMMAND native-openxr-array-tests "${CMAKE_CURRENT_SOURCE_DIR}")
 set_tests_properties(native-openxr-array-tests PROPERTIES TIMEOUT 30)
 """
 

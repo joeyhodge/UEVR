@@ -1170,6 +1170,7 @@ bool OpenXR::discard_synced_frame_without_layers(const char* reason) {
 
 void OpenXR::prepare_resolution_scale_reconfigure(const char* reason) {
     std::scoped_lock frame_lock{sync_mtx};
+    native_wait_only_handoff.reset();
     const auto safe_reason = reason != nullptr ? reason : "resolution_scale_reconfigure";
     const auto had_synced = this->frame_synced;
     const auto had_began = this->frame_began;
@@ -1240,6 +1241,53 @@ bool OpenXR::native_async_pre_acquire_allowed(uevr::native_array::FrameKey frame
         last_wait_trace_sequence, frame_state.predictedDisplayTime};
     return !wants_reinitialize && uevr::native_array::can_pre_acquire(frame, current, can_run_frame_loop(),
         frame_synced, frame_began, frame_state.shouldRender == XR_TRUE);
+}
+
+std::optional<uevr::openxr_wait::Reservation> OpenXR::native_wait_only_request() {
+    std::unique_lock lock{sync_mtx, std::try_to_lock};
+    if (!lock.owns_lock()) { return std::nullopt; }
+    std::unique_lock assignment{sync_assignment_mtx, std::try_to_lock};
+    if (!assignment.owns_lock()) { return std::nullopt; }
+    if (wants_reinitialize || !ever_submitted || !got_first_valid_poses || !last_submit_state.frame_count) {
+        native_wait_only_handoff.waiting_frame();
+        return std::nullopt;
+    }
+    const uevr::native_array::FrameKey key{reinterpret_cast<uintptr_t>(session), native_async_session_generation,
+        last_wait_trace_sequence, frame_state.predictedDisplayTime};
+    if (!uevr::native_array::can_async_wait(key, key, can_run_frame_loop(), frame_synced, frame_began)) {
+        native_wait_only_handoff.normal_pacing();
+        return std::nullopt;
+    }
+    const auto next = last_submit_state.frame_count + 1;
+    const auto& pose = pipeline_states[next % QUEUE_SIZE];
+    // Do not advance the clock beneath an already-published engine pose.
+    return native_wait_only_handoff.reserve(key, next, pose.frame_count == next && !pose.stage_views.empty());
+}
+
+bool OpenXR::synchronize_native_wait_only(uevr::openxr_wait::Reservation request) {
+    std::scoped_lock lock{sync_mtx};
+    if (!native_wait_only_handoff.owns(request)) { return false; }
+    {
+        std::scoped_lock assignment{sync_assignment_mtx};
+        const uevr::native_array::FrameKey current{reinterpret_cast<uintptr_t>(session), native_async_session_generation,
+            last_wait_trace_sequence, frame_state.predictedDisplayTime};
+        if (wants_reinitialize || !uevr::native_array::can_async_wait(request.before, current, can_run_frame_loop(), frame_synced, frame_began)) {
+            native_wait_only_handoff.fail(request);
+            return false;
+        }
+    }
+    if (!native_wait_only_handoff.begin_worker(request)) { return false; }
+    const auto result = synchronize_frame(std::nullopt, SyncFrameCallsite::VRVeryLatePostPresent);
+    if (result != Error::SUCCESS || native_wait_only_handoff.pending()) {
+        native_wait_only_handoff.fail(request);
+        return false;
+    }
+    return true;
+}
+
+void OpenXR::fail_native_wait_only(uevr::openxr_wait::Reservation request) {
+    std::scoped_lock lock{sync_mtx};
+    native_wait_only_handoff.fail(request);
 }
 
 VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, SyncFrameCallsite callsite) {
@@ -1371,6 +1419,7 @@ VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, 
     this->end_profile("xrWaitFrame");
 
     if (result != XR_SUCCESS && result != XR_SESSION_LOSS_PENDING) {
+        if (native_wait_only_handoff.pending()) { native_wait_only_handoff.fail(native_wait_only_handoff.reservation()); }
         spdlog::error("[VR] xrWaitFrame failed: {}", this->get_result_string(result));
         return (VRRuntime::Error)result;
     } else {
@@ -1416,12 +1465,36 @@ VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, 
         this->frame_synced = true;
         this->should_update_eye_matrices = true;
         this->trace_wait_frame_success(frame_count, callsite);
+        native_wait_only_handoff.observe({reinterpret_cast<uintptr_t>(session), native_async_session_generation,
+            last_wait_trace_sequence, frame_state.predictedDisplayTime});
     }
     return VRRuntime::Error::SUCCESS;
 }
 
 VRRuntime::Error OpenXR::update_poses(bool from_view_extensions, uint32_t frame_count) {
-    //std::scoped_lock ___{sync_mtx};
+    // A delayed/cancelled queued worker must not let the next pose use the old
+    // clock. A normal consumer may complete its reserved wait under the SAME
+    // runtime lock; the late worker then sees a changed frame key and does no wait.
+    std::unique_lock<std::recursive_mutex> wait_only_clock{sync_mtx, std::defer_lock};
+    if (native_wait_only_handoff.pending()) {
+        wait_only_clock.lock();
+        if (native_wait_only_handoff.applies_to(frame_count)) {
+            const auto reserved = native_wait_only_handoff.reservation();
+            native_wait_only_handoff.observe({reinterpret_cast<uintptr_t>(session), native_async_session_generation,
+                last_wait_trace_sequence, frame_state.predictedDisplayTime});
+            if (native_wait_only_handoff.pending()) {
+                if (wants_reinitialize || !can_run_frame_loop()) {
+                    native_wait_only_handoff.fail(reserved);
+                    return VRRuntime::Error::UNSPECIFIED;
+                }
+                const auto result = synchronize_frame(std::nullopt, SyncFrameCallsite::RuntimeFixFrame);
+                if (result != VRRuntime::Error::SUCCESS || native_wait_only_handoff.pending()) {
+                    native_wait_only_handoff.fail(reserved);
+                    return result == VRRuntime::Error::SUCCESS ? VRRuntime::Error::UNSPECIFIED : result;
+                }
+            }
+        }
+    }
     std::unique_lock<std::mutex> everspace2_pose_lock{this->everspace2_pose_capture_mtx, std::defer_lock};
     if (this->is_everspace2_coherent_submit_active()) {
         everspace2_pose_lock.lock();
@@ -1825,6 +1898,7 @@ VRRuntime::Error OpenXR::consume_events(std::function<void(void*)> callback) {
             std::scoped_lock frame_lock{sync_mtx};
             const auto ev = (XrEventDataSessionStateChanged*)&edb;
             ++native_async_session_generation;
+            native_wait_only_handoff.reset();
             this->session_state = ev->state;
 
             spdlog::info("VR: XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED {} ({})", (uint32_t)ev->state, this->get_session_state_string(ev->state));
@@ -2291,6 +2365,7 @@ void OpenXR::destroy() {
 
     std::scoped_lock _{sync_mtx};
     ++native_async_session_generation;
+    native_wait_only_handoff.reset();
     if (VR::get()->mono_generation() != 0) { reset_mono_projection_history(); }
     if (m_stalker2_pair_pending.load(std::memory_order_acquire)) { set_stalker2_pair_submit(std::nullopt); }
 
