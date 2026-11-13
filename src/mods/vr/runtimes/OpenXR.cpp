@@ -1431,8 +1431,10 @@ VRRuntime::Error OpenXR::update_poses(bool from_view_extensions, uint32_t frame_
     // clock. A normal consumer may complete its reserved wait under the SAME
     // runtime lock; the late worker then sees a changed frame key and does no wait.
     std::unique_lock<std::recursive_mutex> wait_only_clock{sync_mtx, std::defer_lock};
-    if (native_wait_only_handoff.pending()) {
-        wait_only_clock.lock();
+    std::unique_lock<std::mutex> everspace2_pose_lock{this->everspace2_pose_capture_mtx, std::defer_lock};
+    std::unique_lock<std::recursive_mutex> assignment{sync_assignment_mtx, std::defer_lock};
+    VRRuntime::Error clock_result{VRRuntime::Error::SUCCESS};
+    const auto service_wait = [&] {
         if (native_wait_only_handoff.applies_to(frame_count)) {
             const auto reserved = native_wait_only_handoff.reservation();
             native_wait_only_handoff.observe({reinterpret_cast<uintptr_t>(session), native_async_session_generation,
@@ -1440,22 +1442,21 @@ VRRuntime::Error OpenXR::update_poses(bool from_view_extensions, uint32_t frame_
             if (native_wait_only_handoff.pending()) {
                 if (wants_reinitialize || !can_run_frame_loop()) {
                     native_wait_only_handoff.fail(reserved);
-                    return VRRuntime::Error::UNSPECIFIED;
+                    clock_result = VRRuntime::Error::UNSPECIFIED;
+                    return false;
                 }
                 const auto result = synchronize_frame(std::nullopt, SyncFrameCallsite::RuntimeFixFrame);
                 if (result != VRRuntime::Error::SUCCESS || native_wait_only_handoff.pending()) {
                     native_wait_only_handoff.fail(reserved);
-                    return result == VRRuntime::Error::SUCCESS ? VRRuntime::Error::UNSPECIFIED : result;
+                    clock_result = result == VRRuntime::Error::SUCCESS ? VRRuntime::Error::UNSPECIFIED : result;
+                    return false;
                 }
             }
         }
-    }
-    std::unique_lock<std::mutex> everspace2_pose_lock{this->everspace2_pose_capture_mtx, std::defer_lock};
-    if (this->is_everspace2_coherent_submit_active()) {
-        everspace2_pose_lock.lock();
-    }
-
-    std::scoped_lock _{ this->sync_assignment_mtx };
+        return true;
+    };
+    if (!uevr::openxr_wait::lock_pose_clock(native_wait_only_handoff, wait_only_clock, assignment,
+        everspace2_pose_lock, this->is_everspace2_coherent_submit_active(), service_wait)) { return clock_result; }
 
     if (!this->session_ready) {
         return VRRuntime::Error::SUCCESS;

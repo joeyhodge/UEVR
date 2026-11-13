@@ -102,6 +102,65 @@ inline void handoff() {
     gate.reset();
 }
 
+inline void pose_admission() {
+    for (bool coherent_extra : {false,true}) {
+        w::Handoff gate;
+        std::recursive_mutex clock_mutex;
+        std::mutex extra_mutex;
+        std::unique_lock clock{clock_mutex,std::defer_lock};
+        std::recursive_mutex assignment_mutex;
+        std::unique_lock assignment{assignment_mutex,std::defer_lock};
+        std::unique_lock extra{extra_mutex,std::defer_lock};
+        unsigned services{};
+        require(w::lock_pose_clock(gate,clock,assignment,extra,coherent_extra,[&] { ++services; return true; }) &&
+            !clock.owns_lock() && assignment.owns_lock() && extra.owns_lock() == coherent_extra && services == 0,
+            "feature-OFF pose path acquired clock or changed extra/assignment ownership");
+    }
+    for (bool coherent_extra : {false,true}) {
+        w::Handoff gate;
+        std::recursive_mutex clock_mutex;
+        std::mutex extra_mutex;
+        std::promise<void> checked_off, continue_pose;
+        const auto checked_future = checked_off.get_future();
+        struct PausedAssignment {
+            std::recursive_mutex mutex;
+            std::promise<void>* checked;
+            std::shared_future<void> resume;
+            void lock() {
+                if (checked) {
+                    checked->set_value(); checked = nullptr;
+                    require(resume.wait_for(2s) == std::future_status::ready, "pose admission barrier timed out");
+                }
+                mutex.lock();
+            }
+            void unlock() { mutex.unlock(); }
+        } assignment_mutex{{},&checked_off,continue_pose.get_future().share()};
+        const a::FrameKey before{1,2,3,40}, after{1,2,4,50};
+        auto pose = std::async(std::launch::async,[&] {
+            std::unique_lock clock{clock_mutex,std::defer_lock};
+            std::unique_lock assignment{assignment_mutex,std::defer_lock};
+            std::unique_lock extra{extra_mutex,std::defer_lock};
+            unsigned services{};
+            require(w::lock_pose_clock(gate,clock,assignment,extra,coherent_extra,[&] {
+                require(clock.owns_lock() && !assignment.owns_lock() && !extra.owns_lock(),
+                    "pose retry inverted clock/extra/assignment lock order");
+                ++services; return gate.observe(after);
+            }), "pose retry did not service the newly reserved wait");
+            require(clock.owns_lock() && assignment.owns_lock() && extra.owns_lock() == coherent_extra && services == 1,
+                "pose slipped past reservation after its first pending check");
+        });
+        require(checked_future.wait_for(1s) == std::future_status::ready, "pose did not reach the admission race");
+        {
+            std::scoped_lock clock{clock_mutex};
+            std::scoped_lock assignment{assignment_mutex.mutex};
+            require(gate.reserve(before,10,false).has_value(), "reservation did not fit between pose's two checks");
+        }
+        continue_pose.set_value();
+        require(pose.wait_for(1s) == std::future_status::ready, "pose lock order deadlocked the handoff"); pose.get();
+        require(!gate.pending() && gate.cooperative_waits() == 1, "pose did not consume its newly reserved clock");
+    }
+}
+
 // A bounded XR stand-in exercises the production worker, dispatch, frame key and
 // handoff together. It does not replace a real runtime/HMD transition test.
 struct Runtime {
@@ -220,10 +279,8 @@ inline void wiring(const std::filesystem::path& root) {
         cpp.find("request.runtime->synchronize_native_wait_only(request.wait_only)") != std::string::npos,
         "production callback is not using tested per-request dispatch/captured owner");
     const auto pose = xr.find("VRRuntime::Error OpenXR::update_poses(");
-    const auto pending = xr.find("if (native_wait_only_handoff.pending())",pose);
-    require(pending < xr.find("std::scoped_lock _{ this->sync_assignment_mtx };",pose) &&
-        xr.find("wait_only_clock.lock();",pending) < xr.find("synchronize_frame(std::nullopt, SyncFrameCallsite::RuntimeFixFrame)",pending),
-        "pose consumer can use stale clock or invert runtime/assignment locks");
+    require(xr.find("uevr::openxr_wait::lock_pose_clock(native_wait_only_handoff, wait_only_clock, assignment,",pose) <
+        xr.find("if (!this->session_ready)",pose), "pose consumer bypassed the tested two-phase clock/assignment gate");
     const auto reset = xr.find("void OpenXR::prepare_resolution_scale_reconfigure(");
     require(xr.find("native_wait_only_handoff.reset();",reset) < xr.find("const auto safe_reason",reset),
         "resolution reconfigure leaves stale wait tickets authorized");
@@ -233,5 +290,5 @@ inline void wiring(const std::filesystem::path& root) {
         "missing profile key can inherit a previously enabled wait-only setting");
 }
 
-inline void run() { policy(); dispatch(); handoff(); races(); }
+inline void run() { policy(); dispatch(); handoff(); pose_admission(); races(); }
 }
