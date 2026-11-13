@@ -1249,8 +1249,7 @@ void OpenXR::fail_native_wait_only(uevr::openxr_wait::Reservation request) {
 VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, SyncFrameCallsite callsite) {
     std::scoped_lock _{sync_mtx};
     if (native_wait_only_handoff.faulted()) { return VRRuntime::Error::UNSPECIFIED; }
-    std::optional<uevr::openxr_wait::WaitFailureGuard> wait_only_failure;
-    if (native_wait_only_handoff.pending()) { wait_only_failure.emplace(native_wait_only_handoff); }
+    return uevr::openxr_wait::guarded_wait(native_wait_only_handoff, [&]() -> VRRuntime::Error {
 
     if (this->recover_focused_stale_frame_loop(sync_frame_callsite_name(callsite))) {
         return VRRuntime::Error::UNSPECIFIED;
@@ -1423,6 +1422,7 @@ VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, 
             last_wait_trace_sequence, frame_state.predictedDisplayTime});
     }
     return VRRuntime::Error::SUCCESS;
+    });
 }
 
 VRRuntime::Error OpenXR::update_poses(bool from_view_extensions, uint32_t frame_count) {
