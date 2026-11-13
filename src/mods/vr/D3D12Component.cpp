@@ -6,6 +6,7 @@
 #include <utility/String.hpp>
 #include <utility/ScopeGuard.hpp>
 #include <utility/Logging.hpp>
+#include <utility/PacingRecorder.hpp>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -2543,6 +2544,9 @@ void D3D12Component::sync_depth_target_stability_guard_state(VR* vr) {
 }
 
 vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
+    utility::pacing::ScopedEvent pacing_frame{utility::pacing::Stage::d3d12_frame,
+        vr->get_frame_count() >= 0 ? utility::pacing::Domain::uevr_render : utility::pacing::Domain::unknown,
+        static_cast<uint32_t>(vr->get_frame_count())};
     const auto ui_alpha_allowed = [vr] {
         return uevr::ui_alpha::eligible(vr->get_runtime()->is_openxr(), vr->is_using_mono(),
             vr->is_dibr_rendering_method_selected(), vr->is_mono_transition_pending(), vr->is_using_2d_screen());
@@ -4790,6 +4794,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     };
 
     if (runtime->is_openvr() && m_openvr.ui_tex.texture.Get() != nullptr) {
+        utility::pacing::ScopedEvent pacing_ui_copy{utility::pacing::Stage::ui_copy};
         const auto ui_copy_start = collect_frame_timing
             ? std::chrono::steady_clock::now()
             : std::chrono::steady_clock::time_point{};
@@ -4833,6 +4838,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         clear_rt(m_openvr.ui_tex.commands);
         m_openvr.ui_tex.commands.execute();
     } else if (runtime->is_openxr() && vr->m_openxr->can_run_frame_loop() && ensure_openxr_frame_began("d3d12_first_copy")) {
+        utility::pacing::ScopedEvent pacing_ui_copy{utility::pacing::Stage::ui_copy};
         const auto ui_copy_start = collect_frame_timing
             ? std::chrono::steady_clock::now()
             : std::chrono::steady_clock::time_point{};
@@ -5168,6 +5174,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
         // OpenXR texture
         if (runtime->is_openxr() && vr->m_openxr->can_run_frame_loop() && allow_openxr_scene_copy("dune_d3d12_left_scene_copy")) {
+            utility::pacing::ScopedEvent pacing_scene_copy{utility::pacing::Stage::scene_copy};
             const auto swapchain_copy_start = collect_frame_timing
                 ? std::chrono::steady_clock::now()
                 : std::chrono::steady_clock::time_point{};
@@ -5244,6 +5251,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
         // OpenXR texture
         if (runtime->is_openxr() && vr->m_openxr->can_run_frame_loop() && allow_openxr_scene_copy("dune_d3d12_right_scene_copy")) {
+            utility::pacing::ScopedEvent pacing_scene_copy{utility::pacing::Stage::scene_copy};
             const auto swapchain_copy_start = collect_frame_timing
                 ? std::chrono::steady_clock::now()
                 : std::chrono::steady_clock::time_point{};
@@ -6090,6 +6098,7 @@ void D3D12Component::draw_spectator_view(
     }
 
     const bool collect_frame_timing = vr->is_hitch_diagnostics_enabled();
+    utility::pacing::ScopedEvent pacing_spectator{utility::pacing::Stage::spectator};
     const auto spectator_mirror_start = collect_frame_timing
         ? std::chrono::steady_clock::now()
         : std::chrono::steady_clock::time_point{};

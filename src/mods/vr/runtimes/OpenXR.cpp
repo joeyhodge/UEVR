@@ -23,6 +23,7 @@
 #include "../../GameSpecific.hpp"
 #include "../../VR.hpp"
 #include "../../../utility/Logging.hpp"
+#include "../../../utility/PacingRecorder.hpp"
 #include "OpenXR.hpp"
 #include "../NativeOpenXRArrayPolicy.hpp"
 #include "../UIComposition.hpp"
@@ -1225,6 +1226,7 @@ std::optional<uevr::native_array::FrameKey> OpenXR::native_async_wait_request() 
 }
 
 std::optional<uevr::native_array::FrameKey> OpenXR::synchronize_native_async_frame(uevr::native_array::FrameKey request) {
+    utility::pacing::ScopedOwner trace_owner{utility::pacing::Owner::array_worker};
     std::scoped_lock lock{sync_mtx};
     const uevr::native_array::FrameKey current{reinterpret_cast<uintptr_t>(session), native_async_session_generation,
         last_wait_trace_sequence, frame_state.predictedDisplayTime};
@@ -1247,30 +1249,44 @@ bool OpenXR::native_async_pre_acquire_allowed(uevr::native_array::FrameKey frame
 }
 
 std::optional<uevr::openxr_wait::Reservation> OpenXR::native_wait_only_request() {
+    namespace pacing = utility::pacing;
     std::unique_lock lock{sync_mtx, std::try_to_lock};
-    if (!lock.owns_lock()) { return std::nullopt; }
+    if (!lock.owns_lock()) { pacing::decision(pacing::Reason::frame_lock_busy, {.runtime_id = diagnostic_id}); return std::nullopt; }
     std::unique_lock assignment{sync_assignment_mtx, std::try_to_lock};
-    if (!assignment.owns_lock()) { return std::nullopt; }
+    if (!assignment.owns_lock()) { pacing::decision(pacing::Reason::assignment_busy, {.runtime_id = diagnostic_id}); return std::nullopt; }
     if (wants_reinitialize || !ever_submitted || !got_first_valid_poses || !last_submit_state.frame_count) {
         native_wait_only_handoff.waiting_frame();
+        pacing::decision(wants_reinitialize ? pacing::Reason::reinitializing : !ever_submitted ? pacing::Reason::first_frame :
+            !got_first_valid_poses ? pacing::Reason::valid_poses_required : pacing::Reason::submit_frame_required,
+            {.runtime_id = diagnostic_id});
         return std::nullopt;
     }
     const uevr::native_array::FrameKey key{reinterpret_cast<uintptr_t>(session), native_async_session_generation,
         last_wait_trace_sequence, frame_state.predictedDisplayTime};
     if (!uevr::native_array::can_async_wait(key, key, can_run_frame_loop(), frame_synced, frame_began)) {
         native_wait_only_handoff.normal_pacing();
+        pacing::decision(frame_began ? pacing::Reason::frame_already_began : frame_synced ? pacing::Reason::frame_already_synced :
+            pacing::Reason::normal_pacing, {.runtime_id = diagnostic_id, .session_generation = native_async_session_generation,
+                .wait_sequence = last_wait_trace_sequence, .display_time = frame_state.predictedDisplayTime});
         return std::nullopt;
     }
     const auto next = last_submit_state.frame_count + 1;
     const auto& pose = pipeline_states[next % QUEUE_SIZE];
     // The game thread may already be further ahead than this ring slot. Do not
     // advance the clock under ANY next/future pose, including a skipped frame.
-    return native_wait_only_handoff.reserve(key, next,
+    const bool posed =
         uevr::openxr_wait::frame_at_or_after(last_pose_update_frame_count, next) ||
-        (pose.frame_count == next && !pose.stage_views.empty()));
+        (pose.frame_count == next && !pose.stage_views.empty());
+    const auto request = native_wait_only_handoff.reserve(key, next, posed);
+    pacing::decision(request ? pacing::Reason::reserved : native_wait_only_handoff.progress() == uevr::openxr_wait::Progress::pose_ahead
+        ? pacing::Reason::pose_ahead : pacing::Reason::reservation_busy,
+        {.runtime_id = diagnostic_id, .session_generation = native_async_session_generation,
+            .wait_sequence = last_wait_trace_sequence, .display_time = frame_state.predictedDisplayTime, .next_frame = next});
+    return request;
 }
 
 bool OpenXR::synchronize_native_wait_only(uevr::openxr_wait::Reservation request) {
+    utility::pacing::ScopedOwner trace_owner{utility::pacing::Owner::wait_only_worker};
     std::scoped_lock lock{sync_mtx};
     if (!native_wait_only_handoff.owns(request)) { return false; }
     {
@@ -1375,10 +1391,23 @@ VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, 
 
     XrFrameWaitInfo frame_wait_info{XR_TYPE_FRAME_WAIT_INFO};
     XrFrameState local_frame_state{XR_TYPE_FRAME_STATE};
+    utility::pacing::ScopedEvent pacing_wait{utility::pacing::Stage::wait_frame,
+        frame_count ? utility::pacing::Domain::engine : utility::pacing::Domain::xr_internal,
+        frame_count.value_or(this->internal_frame_count)};
+    pacing_wait.data().owner = utility::pacing::wait_owner() == utility::pacing::Owner::normal && native_wait_only_handoff.pending()
+        ? utility::pacing::Owner::normal_consumer : utility::pacing::wait_owner();
+    pacing_wait.data().session_generation = native_async_session_generation;
+    pacing_wait.data().runtime_id = diagnostic_id;
+    pacing_wait.data().callsite = static_cast<uint32_t>(callsite);
     const auto wait_frame_start = std::chrono::steady_clock::now();
     auto result = xrWaitFrame(this->session, &frame_wait_info, &local_frame_state);
     const auto wait_frame_end = std::chrono::steady_clock::now();
     const auto wait_frame_duration = wait_frame_end - wait_frame_start;
+    pacing_wait.data().start_ns = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        wait_frame_start.time_since_epoch()).count());
+    pacing_wait.data().display_time = local_frame_state.predictedDisplayTime;
+    const auto pacing_wait_end = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        wait_frame_end.time_since_epoch()).count());
     if (collect_openxr_frame_timing()) {
         this->wait_frame_timing.add(wait_frame_duration);
 
@@ -1427,6 +1456,8 @@ VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, 
     this->end_profile("xrWaitFrame");
 
     if (result != XR_SUCCESS && result != XR_SESSION_LOSS_PENDING) {
+        pacing_wait.data().wait_sequence = last_wait_trace_sequence;
+        pacing_wait.finish_at(pacing_wait_end, static_cast<int32_t>(result));
         if (native_wait_only_handoff.pending()) { native_wait_only_handoff.fail(native_wait_only_handoff.reservation()); }
         spdlog::error("[VR] xrWaitFrame failed: {}", this->get_result_string(result));
         return (VRRuntime::Error)result;
@@ -1473,6 +1504,8 @@ VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, 
         this->frame_synced = true;
         this->should_update_eye_matrices = true;
         this->trace_wait_frame_success(frame_count, callsite);
+        pacing_wait.data().wait_sequence = last_wait_trace_sequence;
+        pacing_wait.finish_at(pacing_wait_end, static_cast<int32_t>(result));
         native_wait_only_handoff.observe({reinterpret_cast<uintptr_t>(session), native_async_session_generation,
             last_wait_trace_sequence, frame_state.predictedDisplayTime});
     }
@@ -3917,7 +3950,13 @@ XrResult OpenXR::begin_frame(const char* caller) {
     const auto begin_frame_start = collect_frame_timing
         ? std::chrono::steady_clock::now()
         : std::chrono::steady_clock::time_point{};
+    utility::pacing::ScopedEvent pacing_begin{utility::pacing::Stage::begin_frame};
+    pacing_begin.data().session_generation = native_async_session_generation;
+    pacing_begin.data().runtime_id = diagnostic_id;
+    pacing_begin.data().wait_sequence = last_wait_trace_sequence;
+    pacing_begin.data().display_time = frame_state.predictedDisplayTime;
     auto result = xrBeginFrame(this->session, &frame_begin_info);
+    pacing_begin.finish(static_cast<int32_t>(result));
     if (collect_frame_timing) {
         this->begin_frame_timing.add(std::chrono::steady_clock::now() - begin_frame_start);
     }
@@ -4331,7 +4370,13 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
     const auto end_frame_start = collect_frame_timing
         ? std::chrono::steady_clock::now()
         : std::chrono::steady_clock::time_point{};
+    utility::pacing::ScopedEvent pacing_end{utility::pacing::Stage::end_frame};
+    pacing_end.data().session_generation = native_async_session_generation;
+    pacing_end.data().runtime_id = diagnostic_id;
+    pacing_end.data().wait_sequence = last_wait_trace_sequence;
+    pacing_end.data().display_time = frame_end_info.displayTime;
     auto result = xrEndFrame(this->session, &frame_end_info);
+    pacing_end.finish(static_cast<int32_t>(result));
     uevr::dispatch_movie::note_submission(movie_override,result == XR_SUCCESS && !debug_submit_empty && !layers.empty());
     if (packed_stereo) {
         packed_stereo->submitted = result == XR_SUCCESS && !projection_layer_cache.empty() &&
