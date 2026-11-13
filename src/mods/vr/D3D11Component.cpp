@@ -18,6 +18,7 @@ namespace pixel_shader1 {
 
 #include <utility/ScopeGuard.hpp>
 #include <utility/Logging.hpp>
+#include <utility/PacingRecorder.hpp>
 #include <utility/Module.hpp>
 #include <sdk/UE59Compatibility.hpp>
 
@@ -552,6 +553,9 @@ std::shared_ptr<const uevr::ue59_native::dx11::Binding> D3D11Component::prepare_
 }
 
 vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
+    utility::pacing::ScopedEvent pacing_frame{utility::pacing::Stage::d3d11_frame,
+        vr->get_frame_count() >= 0 ? utility::pacing::Domain::uevr_render : utility::pacing::Domain::unknown,
+        static_cast<uint32_t>(vr->get_frame_count())};
     const bool ue59_dx11_runtime = sdk::ue59::reviewed_runtime();
     const bool ue59_dx11_mode = ue59_dx11_runtime && ue59_native_fix_mode_supported(vr);
     if (ue59_dx11_runtime && !ue59_dx11_mode && get_ue59_native_fix_binding()) {
