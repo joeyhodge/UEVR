@@ -36,6 +36,7 @@
 #include "vr/SteamFrameInput.hpp"
 #include "vr/GamepadRecovery.hpp"
 #include "vr/NativeOpenXRAsyncWorker.hpp"
+#include "vr/NativeOpenXRWaitOnly.hpp"
 
 #undef max
 #include <tracy/Tracy.hpp>
@@ -952,6 +953,8 @@ public:
     void note_stalker2_transition_stress(const char* reason);
     bool should_defer_stalker2_openxr_frame_for_transition(const char* reason);
     bool is_native_openxr_async_wait_active() const;
+    uevr::openxr_wait::Scope native_openxr_wait_only_scope() const;
+    const char* native_openxr_wait_only_status() const;
     bool request_native_openxr_async_wait();
     void stop_native_openxr_async_wait_worker();
     void shutdown_native_openxr_async_wait_worker();
@@ -1796,6 +1799,7 @@ private:
     const ModToggle::Ptr m_native_stereo_fix_preserve_secondary_pass{ ModToggle::create(generate_name("NativeStereoFixPreserveSecondaryPass"), true) };
     const ModToggle::Ptr m_native_stereo_fix_texture_array_submit{ ModToggle::create(generate_name("NativeStereoFixTextureArraySubmit"), false) };
     const ModToggle::Ptr m_native_stereo_fix_async_openxr_wait{ ModToggle::create(generate_name("NativeStereoFixAsyncOpenXRWait"), false) };
+    const ModToggle::Ptr m_native_openxr_wait_only{ ModToggle::create(generate_name("NativeOpenXRAsyncWaitOnly"), uevr::openxr_wait::default_enabled) };
     const ModToggle::Ptr m_stalker2_native_pair_experiment{ ModToggle::create(generate_name("Stalker2NativePairExperiment"), false) };
     const ModToggle::Ptr m_stalker2_sharpen_priority{ ModToggle::create(generate_name("Stalker2SharpenExistingPriority"), false) };
 
@@ -2137,6 +2141,7 @@ public:
             *m_native_stereo_fix_preserve_secondary_pass,
             *m_native_stereo_fix_texture_array_submit,
             *m_native_stereo_fix_async_openxr_wait,
+            *m_native_openxr_wait_only,
             *m_stalker2_native_pair_experiment,
             *m_stalker2_sharpen_priority,
             *m_splitscreen_compatibility_mode,
@@ -2275,8 +2280,12 @@ private:
         std::shared_ptr<runtimes::OpenXR> runtime;
         uevr::native_array::FrameKey frame;
         uint64_t array_generation{};
+        uevr::openxr_wait::Operation operation{uevr::openxr_wait::Operation::array_pre_acquire};
+        uevr::openxr_wait::Reservation wait_only{};
     };
     uevr::native_array::AsyncWorker<NativeOpenXRAsyncRequest> m_native_openxr_async_worker;
+    std::atomic<uevr::openxr_wait::Operation> m_native_openxr_async_operation{uevr::openxr_wait::Operation::array_pre_acquire};
+    bool m_native_openxr_wait_only_was_requested{};
     uint32_t m_subnautica2_save_thumbnail_guard_full_sweeps{0};
     uint32_t m_subnautica2_save_thumbnail_guard_patched_objects{0};
     int32_t m_subnautica2_save_thumbnail_guard_cursor{0};

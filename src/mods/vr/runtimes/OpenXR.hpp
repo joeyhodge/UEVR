@@ -28,6 +28,7 @@
 #include "../MonoRenderingPolicy.hpp"
 #include "../ControllerTouchBindings.hpp"
 #include "../NativeOpenXRArrayPolicy.hpp"
+#include "../NativeOpenXRWaitOnly.hpp"
 
 #include "VRRuntime.hpp"
 
@@ -106,6 +107,9 @@ struct OpenXR final : public VRRuntime {
         SyncFrameCallsite callsite = SyncFrameCallsite::Unknown) override;
     std::optional<uevr::native_array::FrameKey> native_async_wait_request();
     std::optional<uevr::native_array::FrameKey> synchronize_native_async_frame(uevr::native_array::FrameKey request);
+    std::optional<uevr::openxr_wait::Reservation> native_wait_only_request();
+    bool synchronize_native_wait_only(uevr::openxr_wait::Reservation request);
+    void fail_native_wait_only(uevr::openxr_wait::Reservation request);
     bool native_async_pre_acquire_allowed(uevr::native_array::FrameKey frame);
     VRRuntime::Error fix_frame() override {
         // sync if necessary.
@@ -240,6 +244,7 @@ public:
 
     std::recursive_mutex sync_mtx{};
     uint64_t native_async_session_generation{1}; // sync_mtx owned, including session-state events.
+    uevr::openxr_wait::Handoff native_wait_only_handoff;
     std::recursive_mutex sync_assignment_mtx{};
     std::recursive_mutex event_mtx{};
     std::recursive_mutex swapchain_mtx{};
