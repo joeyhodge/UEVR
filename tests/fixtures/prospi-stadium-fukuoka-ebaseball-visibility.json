@@ -1,0 +1,3271 @@
+{
+  "scope": "Read-only same-process Fukuoka Day controlled TV-pitching / behind-plate comparison, ebaseball, 2026-11-03. HiddenInGame offset 0x14d mask 4 independently checked in each edition native SetHiddenInGame code; flag read from the final same-process snapshot. Actor HiddenInGame state was not separately recorded.",
+  "captured_components": 408,
+  "changed_components": 146,
+  "rows": [
+    {
+      "component": "p01_ground__11_adv_mound.fbx(dfukuoka)",
+      "mesh": "SM_p01_ground__11_adv_mound",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p01_ground__11_adv_mound",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p01_ground_spike_cleaner.fbx(dfukuoka)",
+      "mesh": "SM_p01_ground_spike_cleaner",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p01_ground_spike_cleaner",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_1st_1.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_1st_1",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_1st_1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_1st_2.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_1st_2",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_1st_2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_1st_3.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_1st_3",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_1st_3",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_3rd_1.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_3rd_1",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_3rd_1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_3rd_2.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_3rd_2",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_3rd_2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_3rd_3.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_3rd_3",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_3rd_3",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_bench_1st_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_bench_1st_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_bench_1st_unreal",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_bench_3rd_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_bench_3rd_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_bench_3rd_unreal",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_bench_rubber_1st_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_bench_rubber_1st_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_bench_rubber_1st_unreal",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_bench_rubber_3rd_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_bench_rubber_3rd_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_bench_rubber_3rd_unreal",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_blower_1st.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_blower_1st",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_blower_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_blower_3rd.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_blower_3rd",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_blower_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_ceiling_1st.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_ceiling_1st",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_ceiling_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_ceiling_3rd.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_ceiling_3rd",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_ceiling_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_ceiling_home.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_ceiling_home",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_ceiling_home",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_ceiling_square_backnet.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_ceiling_square_backnet",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_ceiling_square_backnet",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_cocacolamark_1st.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_cocacolamark_1st",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_cocacolamark_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_cocacolamark_3rd.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_cocacolamark_3rd",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_cocacolamark_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_exit_00_1st_00.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_exit_00_1st_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_exit_00_1st_00",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_exit_00_3rd_00.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_exit_00_3rd_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_exit_00_3rd_00",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_fieldseat_1st.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_fieldseat_1st",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_fieldseat_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_fieldseat_3rd.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_fieldseat_3rd",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_fieldseat_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_gate_1st.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_gate_1st",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_gate_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_gate_3rd.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_gate_3rd",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_gate_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_gate_fence_3rd.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_gate_fence_3rd",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_gate_fence_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_gate_home.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_gate_home",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_gate_home",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_home_00.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_home_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_home_00",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_led.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_led",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_led",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_led1_dmy.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_led1_dmy",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_led1_dmy",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_led2_dmy.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_led2_dmy",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_led2_dmy",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_led3_dmy.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_led3_dmy",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_led3_dmy",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_post_left.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_post_left",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_post_left",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_post_right.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_post_right",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_post_right",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_rubber_home.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_rubber_home",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_rubber_home",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_stairs_1st.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_stairs_1st",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_stairs_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_adv_stairs_3rd.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_adv_stairs_3rd",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_adv_stairs_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_aisle_1st.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_aisle_1st",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_aisle_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_aisle_1st_00.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_aisle_1st_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_aisle_1st_00",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_aisle_1st_01.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_aisle_1st_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_aisle_1st_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_aisle_3rd.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_aisle_3rd",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_aisle_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_aisle_3rd_00.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_aisle_3rd_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_aisle_3rd_00",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_aisle_3st_01.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_aisle_3st_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_aisle_3st_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_aisle_home_00.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_aisle_home_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_aisle_home_00",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_backfence_frame_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_backfence_frame_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_backfence_frame_unreal",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_backfence_rubber_top_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_backfence_rubber_top_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_backfence_rubber_top_unreal",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_backfence_rubber_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_backfence_rubber_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_backfence_rubber_unreal",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_backnet_swithboard.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_backnet_swithboard",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_backnet_swithboard",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_balcony_1st_00.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_balcony_1st_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_balcony_1st_00",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_balcony_1st_01.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_balcony_1st_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_balcony_1st_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_balcony_1st_03.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_balcony_1st_03",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_balcony_1st_03",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_balcony_1st_04.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_balcony_1st_04",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_balcony_1st_04",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_balcony_1st_05.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_balcony_1st_05",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_balcony_1st_05",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_balcony_1st_06.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_balcony_1st_06",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_balcony_1st_06",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_balcony_3rd_00.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_balcony_3rd_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_balcony_3rd_00",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_balcony_3rd_01.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_balcony_3rd_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_balcony_3rd_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_balcony_3rd_04.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_balcony_3rd_04",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_balcony_3rd_04",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_balcony_3rd_06.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_balcony_3rd_06",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_balcony_3rd_06",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_balcony_home_00.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_balcony_home_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_balcony_home_00",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_balcony_home_01.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_balcony_home_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_balcony_home_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_balcony_home_03.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_balcony_home_03",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_balcony_home_03",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_balcony_home_04.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_balcony_home_04",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_balcony_home_04",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_bcas_studio.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_bcas_studio",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_bcas_studio",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_bcas_studio_window.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_bcas_studio_window",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_bcas_studio_window",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_bench_1st_00_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_bench_1st_00_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_bench_1st_00_unreal",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_bench_1st_01_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_bench_1st_01_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_bench_1st_01_unreal",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_bench_1st_02_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_bench_1st_02_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_bench_1st_02_unreal",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_bench_1st_04_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_bench_1st_04_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_bench_1st_04_unreal",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_bench_1st_camerabox.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_bench_1st_camerabox",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_bench_1st_camerabox",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_bench_1st_core_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_bench_1st_core_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_bench_1st_core_unreal",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_bench_1st_monitor_screen_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_bench_1st_monitor_screen_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_bench_1st_monitor_screen_unreal",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_bench_1st_poster_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_bench_1st_poster_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_bench_1st_poster_unreal",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_bench_1st_rubber_00.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_bench_1st_rubber_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_bench_1st_rubber_00",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_bench_1st_rubber_01.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_bench_1st_rubber_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_bench_1st_rubber_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_bench_1st_shelf_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_bench_1st_shelf_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_bench_1st_shelf_unreal",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_bench_1st_sideRubber.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_bench_1st_sideRubber",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_bench_1st_sideRubber",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_bench_1st_sideRubber1.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_bench_1st_sideRubber1",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_bench_1st_sideRubber1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_bench_3rd_01_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_bench_3rd_01_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_bench_3rd_01_unreal",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_bench_3rd_02_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_bench_3rd_02_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_bench_3rd_02_unreal",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_bench_3rd_03_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_bench_3rd_03_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_bench_3rd_03_unreal",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_bench_3rd_04_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_bench_3rd_04_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_bench_3rd_04_unreal",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_bench_3rd_camerabox.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_bench_3rd_camerabox",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_bench_3rd_camerabox",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_bench_3rd_core_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_bench_3rd_core_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_bench_3rd_core_unreal",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_bench_3rd_monitor_screen_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_bench_3rd_monitor_screen_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_bench_3rd_monitor_screen_unreal",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_bench_3rd_rubber_00.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_bench_3rd_rubber_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_bench_3rd_rubber_00",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_bench_3rd_rubber_01.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_bench_3rd_rubber_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_bench_3rd_rubber_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_bench_3rd_sideRubber.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_bench_3rd_sideRubber",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_bench_3rd_sideRubber",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_bench_3rd_sideRubber1.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_bench_3rd_sideRubber1",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_bench_3rd_sideRubber1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_bench_rubber_1st_01.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_bench_rubber_1st_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_bench_rubber_1st_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_bench_rubber_3rd_01.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_bench_rubber_3rd_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_bench_rubber_3rd_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_benz_seat_1st_table.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_benz_seat_1st_table",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_benz_seat_1st_table",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_benz_seat_3rd_table.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_benz_seat_3rd_table",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_benz_seat_3rd_table",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_cameramanFence_1st.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_cameramanFence_1st",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_cameramanFence_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_cameramanFence_3rd.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_cameramanFence_3rd",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_cameramanFence_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_ceiling_1st_00_1_0.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_ceiling_1st_00_1_0",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_ceiling_1st_00_1_0",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_ceiling_1st_01.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_ceiling_1st_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_ceiling_1st_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_ceiling_3rd_00_1_0.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_ceiling_3rd_00_1_0",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_ceiling_3rd_00_1_0",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_ceiling_3rd_01.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_ceiling_3rd_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_ceiling_3rd_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_ceiling_home_00.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_ceiling_home_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_ceiling_home_00",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_ceiling_home_00_1.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_ceiling_home_00_1",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_ceiling_home_00_1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_ceiling_home_01.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_ceiling_home_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_ceiling_home_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_centerspeaker.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_centerspeaker",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_centerspeaker",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_cheering_seat_infield.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_cheering_seat_infield",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_cheering_seat_infield",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_cocacolaseat_stage_3rd.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_cocacolaseat_stage_3rd",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_cocacolaseat_stage_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_colorLights_infield.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_colorLights_infield",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_colorLights_infield",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_dorna_led.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_dorna_led",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_dorna_led",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_entity_stairs_1st.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_entity_stairs_1st",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_entity_stairs_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_entity_stairs_3rd.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_entity_stairs_3rd",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_entity_stairs_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_field_seat_1st.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_field_seat_1st",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_field_seat_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_field_seat_3rd.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_field_seat_3rd",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_field_seat_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_fieldseat_rubber_1st_01.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_fieldseat_rubber_1st_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_fieldseat_rubber_1st_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_fieldseat_rubber_1st_02.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_fieldseat_rubber_1st_02",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_fieldseat_rubber_1st_02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_fieldseat_rubber_1st_03.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_fieldseat_rubber_1st_03",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_fieldseat_rubber_1st_03",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_fieldseat_rubber_3rd_01.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_fieldseat_rubber_3rd_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_fieldseat_rubber_3rd_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_fieldseat_rubber_3rd_02.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_fieldseat_rubber_3rd_02",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_fieldseat_rubber_3rd_02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_fieldseat_rubber_3rd_03.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_fieldseat_rubber_3rd_03",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_fieldseat_rubber_3rd_03",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_fieldseatNetPole_1st.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_fieldseatNetPole_1st",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_fieldseatNetPole_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_fieldseatNetPole_3rd.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_fieldseatNetPole_3rd",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_fieldseatNetPole_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_fku_blackhawks_00.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_fku_blackhawks_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_fku_blackhawks_00",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_fku_cocacolaseat_stage_1st.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_fku_cocacolaseat_stage_1st",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_fku_cocacolaseat_stage_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_gate_1st.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_gate_1st",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_gate_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_gate_3rd.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_gate_3rd",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_gate_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_gate_emergency_lamp_00.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_gate_emergency_lamp_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_gate_emergency_lamp_00",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_gate_emergency_lamp_00_core.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_gate_emergency_lamp_00_core",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_gate_emergency_lamp_00_core",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_gate_fence_1st_top.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_gate_fence_1st_top",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_gate_fence_1st_top",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_gate_fence_3rd_top.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_gate_fence_3rd_top",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_gate_fence_3rd_top",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_jalseat_lamp_core_infield.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_jalseat_lamp_core_infield",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_jalseat_lamp_core_infield",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_jalseat_lamp_infield.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_jalseat_lamp_infield",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_jalseat_lamp_infield",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_L_stairs_seat01_1st.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_L_stairs_seat01_1st",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_L_stairs_seat01_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_L_stairs_seat01_3rd.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_L_stairs_seat01_3rd",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_L_stairs_seat01_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_L_stairs_seat02_1st.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_L_stairs_seat02_1st",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_L_stairs_seat02_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_L_stairs_seat02_3st.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_L_stairs_seat02_3st",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_L_stairs_seat02_3st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_L_stairs_seat_h.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_L_stairs_seat_h",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_L_stairs_seat_h",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_loppiseat.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_loppiseat",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_loppiseat",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_luxury_counter.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_luxury_counter",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_luxury_counter",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_miziho_seat.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_miziho_seat",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_miziho_seat",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_pressbox_1st.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_pressbox_1st",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_pressbox_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_pressbox_3rd.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_pressbox_3rd",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_pressbox_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_S_stairs_seat01_1st.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_S_stairs_seat01_1st",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_S_stairs_seat01_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_S_stairs_seat01_3rd.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_S_stairs_seat01_3rd",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_S_stairs_seat01_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_S_stairs_seat02_1st.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_S_stairs_seat02_1st",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_S_stairs_seat02_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_S_stairs_seat02_3rd.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_S_stairs_seat02_3rd",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_S_stairs_seat02_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_S_stairs_seat_h_0.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_S_stairs_seat_h_0",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_S_stairs_seat_h_0",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_S_stairs_seat_h_1.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_S_stairs_seat_h_1",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_S_stairs_seat_h_1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_S_stairs_seat_h_3.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_S_stairs_seat_h_3",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_S_stairs_seat_h_3",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_subscoreboard_frame.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_subscoreboard_frame",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_subscoreboard_frame",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_subscoreboard_screen.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_subscoreboard_screen",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_subscoreboard_screen",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_tachimi_base_l.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_tachimi_base_l",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_tachimi_base_l",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_tachimi_base_r.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_tachimi_base_r",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_tachimi_base_r",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_takagirl_seat.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_takagirl_seat",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_takagirl_seat",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_under_seat00.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_under_seat00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_under_seat00",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_under_seat01.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_under_seat01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_under_seat01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_under_seat02.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_under_seat02",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_under_seat02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_under_seat03.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_under_seat03",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_under_seat03",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_under_seat04.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_under_seat04",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_under_seat04",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_under_seat05.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_under_seat05",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_under_seat05",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_window_1st.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_window_1st",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_window_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_window_3rd.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_window_3rd",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_window_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_yatai_Takamasa.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_yatai_Takamasa",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_yatai_Takamasa",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p02_infield_zennoseat_panel.fbx(dfukuoka)",
+      "mesh": "SM_p02_infield_zennoseat_panel",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p02_infield_zennoseat_panel",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_accessory_00.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_accessory_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_accessory_00",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_adv_blower_l.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_adv_blower_l",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_adv_blower_l",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_adv_blower_r.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_adv_blower_r",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_adv_blower_r",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_adv_center.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_adv_center",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_adv_center",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_adv_exit_00_c.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_adv_exit_00_c",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_adv_exit_00_c",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_adv_exit_00_l.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_adv_exit_00_l",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_adv_exit_00_l",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_adv_exit_00_r.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_adv_exit_00_r",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_adv_exit_00_r",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_adv_ft_toyota.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_adv_ft_toyota",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_adv_ft_toyota",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_adv_gate_center.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_adv_gate_center",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_adv_gate_center",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_adv_l.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_adv_l",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_adv_l",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_adv_left_castshadow.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_adv_left_castshadow",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_adv_left_castshadow",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_adv_left_noshadow.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_adv_left_noshadow",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_adv_left_noshadow",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_adv_mizho_LED.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_adv_mizho_LED",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_adv_mizho_LED",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_adv_neon_l.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_adv_neon_l",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_adv_neon_l",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_adv_neon_r.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_adv_neon_r",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_adv_neon_r",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_adv_right_castshadow.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_adv_right_castshadow",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_adv_right_castshadow",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_adv_right_noshadow.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_adv_right_noshadow",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_adv_right_noshadow",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_adv_vision.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_adv_vision",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_adv_vision",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_adv_vision_center.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_adv_vision_center",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_adv_vision_center",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_aisle_c.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_aisle_c",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_aisle_c",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_aisle_l.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_aisle_l",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_aisle_l",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_aisle_r.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_aisle_r",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_aisle_r",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_aroundwall.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_aroundwall",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_aroundwall",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_balcony_1st_outfield.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_balcony_1st_outfield",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_balcony_1st_outfield",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_balcony_3rd_outfield.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_balcony_3rd_outfield",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_balcony_3rd_outfield",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_balcony_c_00.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_balcony_c_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_balcony_c_00",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_balcony_c_01.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_balcony_c_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_balcony_c_01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_balcony_c_mentai.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_balcony_c_mentai",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_balcony_c_mentai",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_balcony_l_01.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_balcony_l_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_balcony_l_01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_balcony_r_01.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_balcony_r_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_balcony_r_01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_ceiling_left.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_ceiling_left",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_ceiling_left",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_ceiling_pillar.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_ceiling_pillar",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_ceiling_pillar",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_ceiling_right.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_ceiling_right",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_ceiling_right",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_ceiling_rim_center.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_ceiling_rim_center",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_ceiling_rim_center",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_ceiling_rim_left.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_ceiling_rim_left",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_ceiling_rim_left",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_ceiling_rim_right.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_ceiling_rim_right",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_ceiling_rim_right",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_cheering.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_cheering",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_cheering",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_cheering_platform_00.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_cheering_platform_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_cheering_platform_00",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_cheering_platform_01.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_cheering_platform_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_cheering_platform_01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_cheering_seat_outfield.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_cheering_seat_outfield",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_cheering_seat_outfield",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_colorLights_outfield.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_colorLights_outfield",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_colorLights_outfield",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_entity_stairs_center.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_entity_stairs_center",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_entity_stairs_center",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_fans_table_00.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_fans_table_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_fans_table_00",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_fence_center.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_fence_center",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_fence_center",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_fuk_leftop.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_fuk_leftop",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_fuk_leftop",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_gate_c.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_gate_c",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_gate_c",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_gate_emerfency_lamp_01_core.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_gate_emerfency_lamp_01_core",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_gate_emerfency_lamp_01_core",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_gate_emergency_lamp_01.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_gate_emergency_lamp_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_gate_emergency_lamp_01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_hawksvision_frame.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_hawksvision_frame",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_hawksvision_frame",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_hub_table_00.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_hub_table_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_hub_table_00",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_jalseat_lamp_core_outfield.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_jalseat_lamp_core_outfield",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_jalseat_lamp_core_outfield",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_jalseat_lamp_outfield.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_jalseat_lamp_outfield",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_jalseat_lamp_outfield",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_kidsSpace.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_kidsSpace",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_kidsSpace",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_L_stairs_seat_c.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_L_stairs_seat_c",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_L_stairs_seat_c",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_L_stairs_seat_l.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_L_stairs_seat_l",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_L_stairs_seat_l",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_L_stairs_seet_r.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_L_stairs_seet_r",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_L_stairs_seet_r",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_neonframe_l.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_neonframe_l",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_neonframe_l",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_neonframe_r.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_neonframe_r",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_neonframe_r",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_outcount.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_outcount",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_outcount",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_outdoorlight_bo.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_outdoorlight_bo",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_outdoorlight_bo",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_pillar_l_00.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_pillar_l_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_pillar_l_00",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_pillar_r_00.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_pillar_r_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_pillar_r_00",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_rubber_outfield1_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_rubber_outfield1_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_rubber_outfield1_unreal",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_rubber_outfield2_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_rubber_outfield2_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_rubber_outfield2_unreal",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_rubberF_l_rubber.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_rubberF_l_rubber",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_rubberF_l_rubber",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_rubberF_r_rubber1.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_rubberF_r_rubber1",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_rubberF_r_rubber1",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_rubberF_r_rubber_0.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_rubberF_r_rubber_0",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_rubberF_r_rubber_0",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_rubberparts_c.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_rubberparts_c",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_rubberparts_c",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_rubberparts_r.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_rubberparts_r",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_rubberparts_r",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_S_stairs_seat_c.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_S_stairs_seat_c",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_S_stairs_seat_c",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_S_stairs_seat_l.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_S_stairs_seat_l",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_S_stairs_seat_l",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_S_stairs_seet_r.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_S_stairs_seet_r",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_S_stairs_seet_r",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_scoreboard_base.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_scoreboard_base",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_scoreboard_base",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_scoreboard_off.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_scoreboard_off",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_scoreboard_off",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p03_outfield_seatcover.fbx(dfukuoka)",
+      "mesh": "SM_p03_outfield_seatcover",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p03_outfield_seatcover",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__00_adv_neon.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__00_adv_neon",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__00_adv_neon",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__00_aislelight_l02_core.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__00_aislelight_l02_core",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__00_aislelight_l02_core",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__00_aislelight_r02_core.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__00_aislelight_r02_core",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__00_aislelight_r02_core",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__00_ceiling_home_02.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__00_ceiling_home_02",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__00_ceiling_home_02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__00_fence_1st_00.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__00_fence_1st_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__00_fence_1st_00",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__00_fence_3rd_00.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__00_fence_3rd_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__00_fence_3rd_00",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__00_gate_emergency_lamp.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__00_gate_emergency_lamp",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__00_gate_emergency_lamp",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__00_roomlight_l01_core.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__00_roomlight_l01_core",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__00_roomlight_l01_core",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__00_roomlight_l02_core.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__00_roomlight_l02_core",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__00_roomlight_l02_core",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__00_roomlight_r01_core.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__00_roomlight_r01_core",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__00_roomlight_r01_core",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__00_roomlight_r02_core.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__00_roomlight_r02_core",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__00_roomlight_r02_core",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__00_roomlights_1st1_core.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__00_roomlights_1st1_core",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__00_roomlights_1st1_core",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__00_roomlights_1st_core.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__00_roomlights_1st_core",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__00_roomlights_1st_core",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__00_roomlights_3rd1_core.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__00_roomlights_3rd1_core",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__00_roomlights_3rd1_core",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__00_roomlights_3rd_core.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__00_roomlights_3rd_core",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__00_roomlights_3rd_core",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__00_roomlights_superbox_01_core.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__00_roomlights_superbox_01_core",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__00_roomlights_superbox_01_core",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__00_roomlights_superbox_02_core.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__00_roomlights_superbox_02_core",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__00_roomlights_superbox_02_core",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__00_roomlights_superbox_03_core.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__00_roomlights_superbox_03_core",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__00_roomlights_superbox_03_core",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__00_shlogo_1st.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__00_shlogo_1st",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__00_shlogo_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__00_shlogo_3rd.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__00_shlogo_3rd",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__00_shlogo_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__01_adv_3rd_lawsonseat.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__01_adv_3rd_lawsonseat",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__01_adv_3rd_lawsonseat",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__01_ceilingobj_1st_02.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__01_ceilingobj_1st_02",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__01_ceilingobj_1st_02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__01_ceilingobj_3rd_02.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__01_ceilingobj_3rd_02",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__01_ceilingobj_3rd_02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__01_ceilingparts_home_01.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__01_ceilingparts_home_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__01_ceilingparts_home_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__01_window_1st1.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__01_window_1st1",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__01_window_1st1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__01_window_3rd1.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__01_window_3rd1",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__01_window_3rd1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__02_ceilingparts_1st_02.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__02_ceilingparts_1st_02",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__02_ceilingparts_1st_02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__02_ceilingparts_1st_03.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__02_ceilingparts_1st_03",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__02_ceilingparts_1st_03",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__02_ceilingparts_1st_1.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__02_ceilingparts_1st_1",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__02_ceilingparts_1st_1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__02_ceilingparts_1st_2.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__02_ceilingparts_1st_2",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__02_ceilingparts_1st_2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__02_ceilingparts_3rd_01.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__02_ceilingparts_3rd_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__02_ceilingparts_3rd_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__02_ceilingparts_3rd_02.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__02_ceilingparts_3rd_02",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__02_ceilingparts_3rd_02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__02_ceilingparts_3rd_03.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__02_ceilingparts_3rd_03",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__02_ceilingparts_3rd_03",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__02_loppiseat.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__02_loppiseat",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__02_loppiseat",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__02_pressroom.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__02_pressroom",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__02_pressroom",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__03_illumination_1st.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__03_illumination_1st",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__03_illumination_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__03_illumination_3rd.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__03_illumination_3rd",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__03_illumination_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__03_window_room_1st_00.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__03_window_room_1st_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__03_window_room_1st_00",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__03_window_room_1st_01.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__03_window_room_1st_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__03_window_room_1st_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__03_window_room_1st_02.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__03_window_room_1st_02",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__03_window_room_1st_02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__03_window_room_3rd_00.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__03_window_room_3rd_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__03_window_room_3rd_00",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__03_window_room_3rd_01.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__03_window_room_3rd_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__03_window_room_3rd_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__03_window_room_3rd_02.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__03_window_room_3rd_02",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__03_window_room_3rd_02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__04_adv_subscoreboard.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__04_adv_subscoreboard",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__04_adv_subscoreboard",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__04_score_subsb.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__04_score_subsb",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__04_score_subsb",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__05_adv_blackhawks.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__05_adv_blackhawks",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__05_adv_blackhawks",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__05_adv_mizuhoseat.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__05_adv_mizuhoseat",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__05_adv_mizuhoseat",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__05_gate_fence_1st_0.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__05_gate_fence_1st_0",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__05_gate_fence_1st_0",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__05_gate_fence_1st_1.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__05_gate_fence_1st_1",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__05_gate_fence_1st_1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__05_gate_fence_3rd_0.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__05_gate_fence_3rd_0",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__05_gate_fence_3rd_0",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__05_gate_fence_3rd_1.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__05_gate_fence_3rd_1",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__05_gate_fence_3rd_1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__05_gate_num_1st.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__05_gate_num_1st",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__05_gate_num_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__05_gate_num_3rd.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__05_gate_num_3rd",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__05_gate_num_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__05_speed.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__05_speed",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__05_speed",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__06_backnet.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__06_backnet",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__06_backnet",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__06_backnet_demo_spi.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__06_backnet_demo_spi",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__06_backnet_demo_spi",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__06_f_net_1st_00.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__06_f_net_1st_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__06_f_net_1st_00",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__06_f_net_1st_01.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__06_f_net_1st_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__06_f_net_1st_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__06_f_net_1st_02.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__06_f_net_1st_02",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__06_f_net_1st_02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__06_f_net_3rd_00.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__06_f_net_3rd_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__06_f_net_3rd_00",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__06_f_net_3rd_01.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__06_f_net_3rd_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__06_f_net_3rd_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__06_f_net_3rd_02.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__06_f_net_3rd_02",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__06_f_net_3rd_02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__06_fieldseatNet_1st_01.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__06_fieldseatNet_1st_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__06_fieldseatNet_1st_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__06_fieldseatNet_3rd_01.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__06_fieldseatNet_3rd_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__06_fieldseatNet_3rd_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__06_sseat_fence_1st.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__06_sseat_fence_1st",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__06_sseat_fence_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__06_sseat_fence_3rd.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__06_sseat_fence_3rd",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__06_sseat_fence_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__09_adv_rubber_1st_00.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__09_adv_rubber_1st_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__09_adv_rubber_1st_00",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__09_adv_rubber_1st_01.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__09_adv_rubber_1st_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__09_adv_rubber_1st_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__09_adv_rubber_1st_02.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__09_adv_rubber_1st_02",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__09_adv_rubber_1st_02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__09_adv_rubber_1st_04.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__09_adv_rubber_1st_04",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__09_adv_rubber_1st_04",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__09_adv_rubber_3rd_01.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__09_adv_rubber_3rd_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__09_adv_rubber_3rd_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__09_adv_rubber_3rd_02.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__09_adv_rubber_3rd_02",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__09_adv_rubber_3rd_02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__09_adv_rubber_home.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__09_adv_rubber_home",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__09_adv_rubber_home",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__10_bench_1st_03.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__10_bench_1st_03",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__10_bench_1st_03",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__14_tachimi_fence_l.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__14_tachimi_fence_l",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__14_tachimi_fence_l",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield__14_tachimi_fence_r.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield__14_tachimi_fence_r",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield__14_tachimi_fence_r",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield_backnet_fence_net_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield_backnet_fence_net_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield_backnet_fence_net_unreal",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield_balcony_1st_window_frame_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield_balcony_1st_window_frame_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield_balcony_1st_window_frame_unreal",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield_balcony_1st_window_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield_balcony_1st_window_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield_balcony_1st_window_unreal",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield_balcony_3rd_window_frame_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield_balcony_3rd_window_frame_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield_balcony_3rd_window_frame_unreal",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield_balcony_3rd_window_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield_balcony_3rd_window_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield_balcony_3rd_window_unreal",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield_balcony_home_window_center_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield_balcony_home_window_center_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield_balcony_home_window_center_unreal",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield_balcony_home_window_frame_center_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield_balcony_home_window_frame_center_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield_balcony_home_window_frame_center_unreal",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield_balcony_home_window_frame_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield_balcony_home_window_frame_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield_balcony_home_window_frame_unreal",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p06_alpha_infield_balcony_home_window_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p06_alpha_infield_balcony_home_window_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p06_alpha_infield_balcony_home_window_unreal",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__00_aislelight_l01_core.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__00_aislelight_l01_core",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__00_aislelight_l01_core",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__00_aislelight_r01_core.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__00_aislelight_r01_core",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__00_aislelight_r01_core",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__00_gate_emergency_lamp_1.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__00_gate_emergency_lamp_1",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__00_gate_emergency_lamp_1",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__00_roomlight_l03_core.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__00_roomlight_l03_core",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__00_roomlight_l03_core",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__00_roomlight_l04_core.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__00_roomlight_l04_core",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__00_roomlight_l04_core",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__00_roomlight_r03_core.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__00_roomlight_r03_core",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__00_roomlight_r03_core",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__00_roomlight_r04_core.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__00_roomlight_r04_core",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__00_roomlight_r04_core",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__00_tachimifence_l.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__00_tachimifence_l",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__00_tachimifence_l",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__00_tachimifence_r.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__00_tachimifence_r",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__00_tachimifence_r",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__01_balcony_l.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__01_balcony_l",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__01_balcony_l",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__01_balcony_r.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__01_balcony_r",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__01_balcony_r",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__01_score1.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__01_score1",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__01_score1",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__01_score2.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__01_score2",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__01_score2",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__01_tachimi_l.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__01_tachimi_l",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__01_tachimi_l",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__01_tachimi_r.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__01_tachimi_r",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__01_tachimi_r",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__01_tachimi_victorywing.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__01_tachimi_victorywing",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__01_tachimi_victorywing",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__02_ceilingparts_l_01.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__02_ceilingparts_l_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__02_ceilingparts_l_01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__02_ceilingparts_l_02.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__02_ceilingparts_l_02",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__02_ceilingparts_l_02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__02_ceilingparts_r_01.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__02_ceilingparts_r_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__02_ceilingparts_r_01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__02_ceilingparts_r_02.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__02_ceilingparts_r_02",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__02_ceilingparts_r_02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__02_sb_photo_v_dmy.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__02_sb_photo_v_dmy",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__02_sb_photo_v_dmy",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__02_speed.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__02_speed",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__02_speed",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__03_ceilingparts_l.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__03_ceilingparts_l",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__03_ceilingparts_l",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__03_ceilingparts_r.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__03_ceilingparts_r",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__03_ceilingparts_r",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__03_fans_chair_00.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__03_fans_chair_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__03_fans_chair_00",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__03_fans_chair_01.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__03_fans_chair_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__03_fans_chair_01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__03_fans_chair_02.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__03_fans_chair_02",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__03_fans_chair_02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__03_hub_chair_00.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__03_hub_chair_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__03_hub_chair_00",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__03_sb_photo_h_dmy.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__03_sb_photo_h_dmy",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__03_sb_photo_h_dmy",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__03_score_window_bottom.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__03_score_window_bottom",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__03_score_window_bottom",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__03_score_window_top.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__03_score_window_top",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__03_score_window_top",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__04_balcony_c_02.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__04_balcony_c_02",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__04_balcony_c_02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__04_fence_c_00.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__04_fence_c_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__04_fence_c_00",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__04_fence_l.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__04_fence_l",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__04_fence_l",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__04_fence_r.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__04_fence_r",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__04_fence_r",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__04_illumination_l.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__04_illumination_l",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__04_illumination_l",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__04_illumination_r.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__04_illumination_r",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__04_illumination_r",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__04_score_highlight_bottom.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__04_score_highlight_bottom",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__04_score_highlight_bottom",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__04_score_highlight_top.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__04_score_highlight_top",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__04_score_highlight_top",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__05_balcony_tesuri_c_01.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__05_balcony_tesuri_c_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__05_balcony_tesuri_c_01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__05_balcony_tesuri_l_01.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__05_balcony_tesuri_l_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__05_balcony_tesuri_l_01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__05_balcony_tesuri_r_01.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__05_balcony_tesuri_r_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__05_balcony_tesuri_r_01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__05_fku_gradation_bottom.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__05_fku_gradation_bottom",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__05_fku_gradation_bottom",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__05_fku_gradation_top.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__05_fku_gradation_top",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__05_fku_gradation_top",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__05_outdoorlight1.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__05_outdoorlight1",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__05_outdoorlight1",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__05_outdoorlight2.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__05_outdoorlight2",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__05_outdoorlight2",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__05_outdoorlight3.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__05_outdoorlight3",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__05_outdoorlight3",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__05_outdoorlight4.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__05_outdoorlight4",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__05_outdoorlight4",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_fence_l_00.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__06_fence_l_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__06_fence_l_00",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_fence_l_01.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__06_fence_l_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__06_fence_l_01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_fence_l_02.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__06_fence_l_02",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__06_fence_l_02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_fence_l_1.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__06_fence_l_1",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__06_fence_l_1",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_fence_r_00.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__06_fence_r_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__06_fence_r_00",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_fence_r_01.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__06_fence_r_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__06_fence_r_01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_fence_r_02.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__06_fence_r_02",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__06_fence_r_02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_gate_fence_c.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__06_gate_fence_c",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__06_gate_fence_c",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_gate_fence_l.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__06_gate_fence_l",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__06_gate_fence_l",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_gate_fence_r.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__06_gate_fence_r",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__06_gate_fence_r",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_leftop_flame.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__06_leftop_flame",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__06_leftop_flame",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_score.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__06_score",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__06_score",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_score_bottom.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__06_score_bottom",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__06_score_bottom",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_score_top.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__06_score_top",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__06_score_top",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__07_mizuhoLEDnet.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__07_mizuhoLEDnet",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__07_mizuhoLEDnet",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__07_pillar_l.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__07_pillar_l",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__07_pillar_l",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__07_pillar_r.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__07_pillar_r",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__07_pillar_r",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__07_scoreboard_wide.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__07_scoreboard_wide",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__07_scoreboard_wide",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__08_adv_rubber_c.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__08_adv_rubber_c",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__08_adv_rubber_c",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__09_rubberparts_l_door_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__09_rubberparts_l_door_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__09_rubberparts_l_door_unreal",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__09_rubberparts_l_other_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__09_rubberparts_l_other_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__09_rubberparts_l_other_unreal",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__09_rubberparts_r_door_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__09_rubberparts_r_door_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__09_rubberparts_r_door_unreal",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__09_rubberparts_r_other_unreal.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__09_rubberparts_r_other_unreal",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__09_rubberparts_r_other_unreal",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__10_rubberparts_l_net.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__10_rubberparts_l_net",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__10_rubberparts_l_net",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__10_rubberparts_r_net.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__10_rubberparts_r_net",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__10_rubberparts_r_net",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__11_rubberparts_l_fence.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__11_rubberparts_l_fence",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__11_rubberparts_l_fence",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__11_rubberparts_r_fence.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__11_rubberparts_r_fence",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__11_rubberparts_r_fence",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__12_adv_rubber_l.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__12_adv_rubber_l",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__12_adv_rubber_l",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__12_adv_rubber_r.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__12_adv_rubber_r",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__12_adv_rubber_r",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__14_kidsSpace_fence.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__14_kidsSpace_fence",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__14_kidsSpace_fence",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__15_balcony_banfence_l.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__15_balcony_banfence_l",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__15_balcony_banfence_l",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__15_balcony_banfence_r.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__15_balcony_banfence_r",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__15_balcony_banfence_r",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__15_balcony_fence_l.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__15_balcony_fence_l",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__15_balcony_fence_l",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__15_balcony_fence_r.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__15_balcony_fence_r",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__15_balcony_fence_r",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__15_frame_00.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__15_frame_00",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__15_frame_00",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__15_frame_01.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__15_frame_01",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__15_frame_01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__15_frame_r.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__15_frame_r",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__15_frame_r",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__16_rtopstand_logo.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__16_rtopstand_logo",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__16_rtopstand_logo",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    },
+    {
+      "component": "p07_alpha_outfield__17_rtopstand_sign.fbx(dfukuoka)",
+      "mesh": "SM_p07_alpha_outfield__17_rtopstand_sign",
+      "package": "/Game/Stadiums/Fukuoka/Meshes/Day/SM_p07_alpha_outfield__17_rtopstand_sign",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false
+    }
+  ]
+}

@@ -227,9 +227,11 @@ private:
         std::optional<std::reference_wrapper<XrCompositionLayerBaseHeader>> generate_daysgone_ahud_slate_layer();
         void reset_daysgone_ahud_pose();
         std::optional<std::reference_wrapper<XrCompositionLayerQuad>> generate_framework_ui_quad();
+        std::optional<std::reference_wrapper<XrCompositionLayerQuad>> generate_dispatch_movie_layer();
         
     private:
         XrCompositionLayerQuad m_slate_layer{};
+        XrCompositionLayerQuad m_dispatch_movie_layer{};
         XrCompositionLayerQuad m_slate_layer_right{};
         XrCompositionLayerCylinderKHR m_slate_layer_cylinder{};
         XrCompositionLayerCylinderKHR m_slate_layer_cylinder_right{};

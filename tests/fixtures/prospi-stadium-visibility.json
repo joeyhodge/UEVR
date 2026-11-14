@@ -1,0 +1,3301 @@
+{
+  "scope": "read-only same-process Tokyo Dome behind-pitcher / behind-plate comparison; unmodified game visibility",
+  "captured_components": 366,
+  "changed_components": 98,
+  "rows": [
+    {
+      "component": "p01_ground__03_nextbc.fbx(dtokyo)",
+      "mesh": "SM_p01_ground__03_nextbc",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p01_ground__03_nextbc",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_E_stand_1F1_1st.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_E_stand_1F1_1st",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_E_stand_1F1_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_E_stand_1F1_1st2.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_E_stand_1F1_1st2",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_E_stand_1F1_1st2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_E_stand_1F1_1st_shop.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_E_stand_1F1_1st_shop",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_E_stand_1F1_1st_shop",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_E_stand_1F1_3rd.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_E_stand_1F1_3rd",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_E_stand_1F1_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_E_stand_1F1_3rd1.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_E_stand_1F1_3rd1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_E_stand_1F1_3rd1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_E_stand_1F1_3rd_shop.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_E_stand_1F1_3rd_shop",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_E_stand_1F1_3rd_shop",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_E_stand_1F1_bn.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_E_stand_1F1_bn",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_E_stand_1F1_bn",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_E_stand_1F3_1st.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_E_stand_1F3_1st",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_E_stand_1F3_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_E_stand_1F3_3rd.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_E_stand_1F3_3rd",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_E_stand_1F3_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_E_stand_1F3_3rd2.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_E_stand_1F3_3rd2",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_E_stand_1F3_3rd2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_E_stand_1F_bluekisya.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_E_stand_1F_bluekisya",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_E_stand_1F_bluekisya",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_E_stand_1F_bn1.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_E_stand_1F_bn1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_E_stand_1F_bn1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_E_stand_1F_bn_step.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_E_stand_1F_bn_step",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_E_stand_1F_bn_step",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_E_stand_1F_masu.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_E_stand_1F_masu",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_E_stand_1F_masu",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_E_stand_3F_1st1.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_E_stand_3F_1st1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_E_stand_3F_1st1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_E_stand_3F_1st2.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_E_stand_3F_1st2",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_E_stand_3F_1st2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_E_stand_3F_1st3.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_E_stand_3F_1st3",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_E_stand_3F_1st3",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_E_stand_3F_3rd1.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_E_stand_3F_3rd1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_E_stand_3F_3rd1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_E_stand_3F_3rd2.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_E_stand_3F_3rd2",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_E_stand_3F_3rd2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_E_stand_3F_3rd3.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_E_stand_3F_3rd3",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_E_stand_3F_3rd3",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_E_stand_3F_bn.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_E_stand_3F_bn",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_E_stand_3F_bn",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_L_stairs_stand_1F1_1st1.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_L_stairs_stand_1F1_1st1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_L_stairs_stand_1F1_1st1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_L_stairs_stand_1F1_3rd1.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_L_stairs_stand_1F1_3rd1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_L_stairs_stand_1F1_3rd1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_L_stairs_stand_1F3_1st1.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_L_stairs_stand_1F3_1st1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_L_stairs_stand_1F3_1st1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_L_stairs_stand_1F3_3rd1.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_L_stairs_stand_1F3_3rd1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_L_stairs_stand_1F3_3rd1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_L_stairs_stand_1F_bn3.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_L_stairs_stand_1F_bn3",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_L_stairs_stand_1F_bn3",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_L_stairs_stand_1F_bn_step1.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_L_stairs_stand_1F_bn_step1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_L_stairs_stand_1F_bn_step1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_L_stairs_stand_3F_1st2.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_L_stairs_stand_3F_1st2",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_L_stairs_stand_3F_1st2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_L_stairs_stand_3F_1st3.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_L_stairs_stand_3F_1st3",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_L_stairs_stand_3F_1st3",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_L_stairs_stand_3F_3rd3.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_L_stairs_stand_3F_3rd3",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_L_stairs_stand_3F_3rd3",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_L_stairs_stand_3F_3rd4.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_L_stairs_stand_3F_3rd4",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_L_stairs_stand_3F_3rd4",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_L_stairs_stand_3F_bn1.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_L_stairs_stand_3F_bn1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_L_stairs_stand_3F_bn1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_S_stairs_stand_1F1_1st.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_S_stairs_stand_1F1_1st",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_S_stairs_stand_1F1_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_S_stairs_stand_1F1_3rd.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_S_stairs_stand_1F1_3rd",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_S_stairs_stand_1F1_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_S_stairs_stand_1F3_1st.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_S_stairs_stand_1F3_1st",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_S_stairs_stand_1F3_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_S_stairs_stand_1F3_3rd.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_S_stairs_stand_1F3_3rd",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_S_stairs_stand_1F3_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_S_stairs_stand_1F_bn2.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_S_stairs_stand_1F_bn2",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_S_stairs_stand_1F_bn2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_S_stairs_stand_1F_bn_step.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_S_stairs_stand_1F_bn_step",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_S_stairs_stand_1F_bn_step",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_S_stairs_stand_3F_1st1.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_S_stairs_stand_3F_1st1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_S_stairs_stand_3F_1st1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_S_stairs_stand_3F_1st2.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_S_stairs_stand_3F_1st2",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_S_stairs_stand_3F_1st2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_S_stairs_stand_3F_3rd1.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_S_stairs_stand_3F_3rd1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_S_stairs_stand_3F_3rd1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_S_stairs_stand_3F_3rd2.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_S_stairs_stand_3F_3rd2",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_S_stairs_stand_3F_3rd2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_S_stairs_stand_3F_bn.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_S_stairs_stand_3F_bn",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_S_stairs_stand_3F_bn",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_adv_center.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_adv_center",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_adv_center",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_adv_dorna1.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_adv_dorna1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_adv_dorna1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_adv_stand_in_L.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_adv_stand_in_L",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_adv_stand_in_L",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_adv_stand_in_R.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_adv_stand_in_R",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_adv_stand_in_R",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_balcony_gate.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_balcony_gate",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_balcony_gate",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_balcony_props_1st.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_balcony_props_1st",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_balcony_props_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_balcony_props_3rd.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_balcony_props_3rd",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_balcony_props_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bench_1st_cameraman01.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bench_1st_cameraman01",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bench_1st_cameraman01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bench_1st_cameraman02.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bench_1st_cameraman02",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bench_1st_cameraman02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bench_3rd_cameraman01.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bench_3rd_cameraman01",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bench_3rd_cameraman01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bench_3rd_cameraman02.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bench_3rd_cameraman02",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bench_3rd_cameraman02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bench_adv_benchWall_1st_ps5.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bench_adv_benchWall_1st_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bench_adv_benchWall_1st_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bench_adv_benchWall_3rd_ps5.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bench_adv_benchWall_3rd_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bench_adv_benchWall_3rd_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bench_adv_fence_1st_ps5.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bench_adv_fence_1st_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bench_adv_fence_1st_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bench_adv_fence_3rd_ps5.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bench_adv_fence_3rd_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bench_adv_fence_3rd_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bench_ballboySeat_1st_ps5.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bench_ballboySeat_1st_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bench_ballboySeat_1st_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bench_ballboySeat_3rd_ps5.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bench_ballboySeat_3rd_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bench_ballboySeat_3rd_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bench_coachseat_1st_ps5.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bench_coachseat_1st_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bench_coachseat_1st_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bench_coachseat_3rd_ps5.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bench_coachseat_3rd_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bench_coachseat_3rd_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bench_coolorBox_1st_ps5.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bench_coolorBox_1st_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bench_coolorBox_1st_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bench_coolorBox_3rd_ps5.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bench_coolorBox_3rd_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bench_coolorBox_3rd_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bench_fence_1st_ps5.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bench_fence_1st_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bench_fence_1st_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bench_fence_3rd_ps5.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bench_fence_3rd_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bench_fence_3rd_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bench_floor_1st_ps5.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bench_floor_1st_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bench_floor_1st_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bench_floor_3rd_ps5.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bench_floor_3rd_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bench_floor_3rd_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bench_phone_1st_ps5.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bench_phone_1st_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bench_phone_1st_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bench_phone_3rd_ps5.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bench_phone_3rd_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bench_phone_3rd_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bench_props01_1st_ps5.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bench_props01_1st_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bench_props01_1st_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bench_props01_3rd_ps5.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bench_props01_3rd_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bench_props01_3rd_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bench_props02_1st_ps5.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bench_props02_1st_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bench_props02_1st_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bench_props02_3rd_ps5.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bench_props02_3rd_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bench_props02_3rd_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bench_props03_1st_ps5.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bench_props03_1st_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bench_props03_1st_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bench_props03_3rd_ps5.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bench_props03_3rd_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bench_props03_3rd_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bench_props_1stMonitorScreen_ps5.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bench_props_1stMonitorScreen_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bench_props_1stMonitorScreen_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bench_props_3rdMonitorScreen_ps5.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bench_props_3rdMonitorScreen_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bench_props_3rdMonitorScreen_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bench_seat_1st_ps5.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bench_seat_1st_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bench_seat_1st_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bench_seat_3rd_ps5.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bench_seat_3rd_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bench_seat_3rd_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bench_wall_1st_ps5.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bench_wall_1st_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bench_wall_1st_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bench_wall_3rd_ps5.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bench_wall_3rd_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bench_wall_3rd_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bnnet_rubber01.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bnnet_rubber01",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bnnet_rubber01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_bnnet_rubber02.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_bnnet_rubber02",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_bnnet_rubber02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_evacuation_decolight_in.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_evacuation_decolight_in",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_evacuation_decolight_in",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_infield_TV_emissive_1st_ps5.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_infield_TV_emissive_1st_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_infield_TV_emissive_1st_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_infield_TV_emissive_3rd_ps5.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_infield_TV_emissive_3rd_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_infield_TV_emissive_3rd_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_light_balcony_1st.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_light_balcony_1st",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_light_balcony_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_light_balcony_3rd.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_light_balcony_3rd",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_light_balcony_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_nozzle_1st.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_nozzle_1st",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_nozzle_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_nozzle_3rd.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_nozzle_3rd",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_nozzle_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_nozzle_L.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_nozzle_L",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_nozzle_L",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_nozzle_R.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_nozzle_R",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_nozzle_R",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_rubber_1a01.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_rubber_1a01",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_rubber_1a01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_rubber_1a02.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_rubber_1a02",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_rubber_1a02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_rubber_1b.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_rubber_1b",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_rubber_1b",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_rubber_1c.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_rubber_1c",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_rubber_1c",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_rubber_3a01.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_rubber_3a01",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_rubber_3a01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_rubber_3a02.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_rubber_3a02",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_rubber_3a02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_rubber_3b.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_rubber_3b",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_rubber_3b",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_rubber_3c.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_rubber_3c",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_rubber_3c",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_1F_bn.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_1F_bn",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_1F_bn",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_1F_bn_kisya.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_1F_bn_kisya",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_1F_bn_kisya",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_1F_bn_shop.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_1F_bn_shop",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_1F_bn_shop",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_1decolight.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_1decolight",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_1decolight",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_1decolight_off.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_1decolight_off",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_1decolight_off",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_2F1.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_2F1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_2F1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_2F10.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_2F10",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_2F10",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_2F14.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_2F14",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_2F14",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_2F3.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_2F3",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_2F3",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_2F4.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_2F4",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_2F4",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_2F5.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_2F5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_2F5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_2F6.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_2F6",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_2F6",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_3rdPlatinumBox.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_3rdPlatinumBox",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_3rdPlatinumBox",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_craftCounter_1st.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_craftCounter_1st",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_craftCounter_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_craftCounter_3rd.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_craftCounter_3rd",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_craftCounter_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_masu1_komono.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_masu1_komono",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_masu1_komono",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_masu1st.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_masu1st",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_masu1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_masu3_komono.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_masu3_komono",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_masu3_komono",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_masu3rd.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_masu3rd",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_masu3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_masucabana_1st.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_masucabana_1st",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_masucabana_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_masucabana_1st1.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_masucabana_1st1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_masucabana_1st1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_masucabana_1st2.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_masucabana_1st2",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_masucabana_1st2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_masucabana_3rd.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_masucabana_3rd",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_masucabana_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_skyTerrace_1st.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_skyTerrace_1st",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_skyTerrace_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_skyTerrace_3rd.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_skyTerrace_3rd",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_skyTerrace_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_viproom_C.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_viproom_C",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_viproom_C",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_viproom_L.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_viproom_L",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_viproom_L",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_viproom_R.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_viproom_R",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_viproom_R",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_viproom_floor_C.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_viproom_floor_C",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_viproom_floor_C",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_viproom_floor_L.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_viproom_floor_L",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_viproom_floor_L",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_viproom_floor_R.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_viproom_floor_R",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_viproom_floor_R",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_viproom_props_C.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_viproom_props_C",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_viproom_props_C",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_viproom_props_L.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_viproom_props_L",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_viproom_props_L",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_viproom_props_R.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_viproom_props_R",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_viproom_props_R",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_wheelchairCounter_1st.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_wheelchairCounter_1st",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_wheelchairCounter_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_stand_wheelchairCounter_3rd.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_stand_wheelchairCounter_3rd",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_stand_wheelchairCounter_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_sub_displayTemplete_score.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_sub_displayTemplete_score",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_sub_displayTemplete_score",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p02_infield_sub_displayTemplete_score_extra.fbx(dtokyo)",
+      "mesh": "SM_p02_infield_sub_displayTemplete_score_extra",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p02_infield_sub_displayTemplete_score_extra",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_BSL_komono.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_BSL_komono",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_BSL_komono",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_BSLounge.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_BSLounge",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_BSLounge",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_DAZN_Lounge.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_DAZN_Lounge",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_DAZN_Lounge",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_DAZN_Lounge1.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_DAZN_Lounge1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_DAZN_Lounge1",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_DAZN_komono.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_DAZN_komono",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_DAZN_komono",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_E_of_1F1.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_E_of_1F1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_E_of_1F1",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_E_of_1F3.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_E_of_1F3",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_E_of_1F3",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_L_stairs_of_1Fl.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_L_stairs_of_1Fl",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_L_stairs_of_1Fl",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p03_outfield_L_stairs_of_1Fr.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_L_stairs_of_1Fr",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_L_stairs_of_1Fr",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p03_outfield_S_stairs_bs_stand.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_S_stairs_bs_stand",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_S_stairs_bs_stand",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p03_outfield_S_stairs_of_1F1.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_S_stairs_of_1F1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_S_stairs_of_1F1",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p03_outfield_S_stairs_of_1F3.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_S_stairs_of_1F3",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_S_stairs_of_1F3",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p03_outfield__00_adv_R1.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield__00_adv_R1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield__00_adv_R1",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield__00_adv_R5.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield__00_adv_R5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield__00_adv_R5",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield__00_roof_1.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield__00_roof_1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield__00_roof_1",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p03_outfield__00_roof_3.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield__00_roof_3",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield__00_roof_3",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p03_outfield__00_roof_bn.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield__00_roof_bn",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield__00_roof_bn",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p03_outfield__00_roof_c.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield__00_roof_c",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield__00_roof_c",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p03_outfield_adv_dorna2.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_adv_dorna2",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_adv_dorna2",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_adv_dorna3_L.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_adv_dorna3_L",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_adv_dorna3_L",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_adv_dorna3_R.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_adv_dorna3_R",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_adv_dorna3_R",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_adv_dorna5.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_adv_dorna5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_adv_dorna5",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_adv_led_L.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_adv_led_L",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_adv_led_L",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_adv_led_R.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_adv_led_R",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_adv_led_R",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_adv_stand_out_L.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_adv_stand_out_L",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_adv_stand_out_L",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p03_outfield_adv_stand_out_R.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_adv_stand_out_R",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_adv_stand_out_R",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p03_outfield_board.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_board",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_board",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_booth_L.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_booth_L",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_booth_L",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_bs_camera.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_bs_camera",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_bs_camera",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_bs_fence_ps5.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_bs_fence_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_bs_fence_ps5",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p03_outfield_bs_konomo.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_bs_konomo",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_bs_konomo",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_bs_konomo2.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_bs_konomo2",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_bs_konomo2",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_bs_pressArea_ps5.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_bs_pressArea_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_bs_pressArea_ps5",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_bs_spspeaker.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_bs_spspeaker",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_bs_spspeaker",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_bs_stand.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_bs_stand",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_bs_stand",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p03_outfield_cheering.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_cheering",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_cheering",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_displayTemplete00.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_displayTemplete00",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_displayTemplete00",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_displayTemplete01_score.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_displayTemplete01_score",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_displayTemplete01_score",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_displayTemplete01_score_extra.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_displayTemplete01_score_extra",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_displayTemplete01_score_extra",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_displayTemplete02_score.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_displayTemplete02_score",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_displayTemplete02_score",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_displayTemplete02_score_extra.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_displayTemplete02_score_extra",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_displayTemplete02_score_extra",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_docomo_komono.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_docomo_komono",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_docomo_komono",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_docomo_lounge.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_docomo_lounge",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_docomo_lounge",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_docomo_lounge1.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_docomo_lounge1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_docomo_lounge1",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_evacuation_decolight_out.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_evacuation_decolight_out",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_evacuation_decolight_out",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_evacuation_decolight_room.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_evacuation_decolight_room",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_evacuation_decolight_room",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p03_outfield_nzk_komono.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_nzk_komono",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_nzk_komono",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_nzk_room.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_nzk_room",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_nzk_room",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p03_outfield_outfield_TV_emissive_ps5.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_outfield_TV_emissive_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_outfield_TV_emissive_ps5",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_pillar_left.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_pillar_left",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_pillar_left",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p03_outfield_pillar_right.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_pillar_right",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_pillar_right",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p03_outfield_rubber_out01.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_rubber_out01",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_rubber_out01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_rubber_out02.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_rubber_out02",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_rubber_out02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_signLighting.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_signLighting",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_signLighting",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_suiteroom_komono.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_suiteroom_komono",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_suiteroom_komono",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_theFlight.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_theFlight",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_theFlight",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_theFlight_komono.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_theFlight_komono",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_theFlight_komono",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_wall_C.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_wall_C",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_wall_C",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p03_outfield_wall_L1.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_wall_L1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_wall_L1",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p03_outfield_wall_L2.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_wall_L2",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_wall_L2",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p03_outfield_wall_R1.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_wall_R1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_wall_R1",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p03_outfield_wall_R2.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_wall_R2",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_wall_R2",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p03_outfield_wall_R3.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_wall_R3",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_wall_R3",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p03_outfield_wall_R4.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_wall_R4",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_wall_R4",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p03_outfield_wbcdisplayTemplete01_score.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_wbcdisplayTemplete01_score",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_wbcdisplayTemplete01_score",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p03_outfield_wbcdisplayTemplete01_score_extra.fbx(dtokyo)",
+      "mesh": "SM_p03_outfield_wbcdisplayTemplete01_score_extra",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p03_outfield_wbcdisplayTemplete01_score_extra",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__00_light_hari_l.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__00_light_hari_l",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__00_light_hari_l",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__00_light_hari_r.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__00_light_hari_r",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__00_light_hari_r",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__00_maru_spotlight_balcony01.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__00_maru_spotlight_balcony01",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__00_maru_spotlight_balcony01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__00_roof_hole2.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__00_roof_hole2",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__00_roof_hole2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p06_alpha_infield__01_adv_cenpac.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__01_adv_cenpac",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__01_adv_cenpac",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__01_adv_leagueChampion.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__01_adv_leagueChampion",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__01_adv_leagueChampion",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__01_balcony_window1.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__01_balcony_window1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__01_balcony_window1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__01_balcony_window2.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__01_balcony_window2",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__01_balcony_window2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__01_handrail_bn2.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__01_handrail_bn2",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__01_handrail_bn2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__01_handrail_l2.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__01_handrail_l2",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__01_handrail_l2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__01_handrail_l3.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__01_handrail_l3",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__01_handrail_l3",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__01_handrail_r2.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__01_handrail_r2",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__01_handrail_r2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__01_handrail_r3.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__01_handrail_r3",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__01_handrail_r3",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__01_hannyu.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__01_hannyu",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__01_hannyu",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__01_light_lump_l.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__01_light_lump_l",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__01_light_lump_l",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__01_light_lump_r.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__01_light_lump_r",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__01_light_lump_r",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__01_maru_spotlight.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__01_maru_spotlight",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__01_maru_spotlight",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__01_masu_mado.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__01_masu_mado",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__01_masu_mado",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__01_masu_mado1.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__01_masu_mado1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__01_masu_mado1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__01_masu_mado12.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__01_masu_mado12",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__01_masu_mado12",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__01_masu_mado13.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__01_masu_mado13",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__01_masu_mado13",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__01_masu_mado2.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__01_masu_mado2",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__01_masu_mado2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__01_masu_mado6.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__01_masu_mado6",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__01_masu_mado6",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__01_pitches.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__01_pitches",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__01_pitches",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__01_score_sub.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__01_score_sub",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__01_score_sub",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__01_score_sub_extra.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__01_score_sub_extra",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__01_score_sub_extra",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__01_sub_BSO.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__01_sub_BSO",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__01_sub_BSO",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__02_adv_blue_L1.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__02_adv_blue_L1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__02_adv_blue_L1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__02_adv_blue_L2.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__02_adv_blue_L2",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__02_adv_blue_L2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__02_adv_blue_R1.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__02_adv_blue_R1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__02_adv_blue_R1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__02_adv_blue_R2.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__02_adv_blue_R2",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__02_adv_blue_R2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__02_handrail_bn1.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__02_handrail_bn1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__02_handrail_bn1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__02_handrail_bn2.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__02_handrail_bn2",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__02_handrail_bn2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__02_handrail_l1.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__02_handrail_l1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__02_handrail_l1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__02_handrail_l2.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__02_handrail_l2",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__02_handrail_l2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__02_handrail_l3.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__02_handrail_l3",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__02_handrail_l3",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__02_handrail_r1.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__02_handrail_r1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__02_handrail_r1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__02_handrail_r2.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__02_handrail_r2",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__02_handrail_r2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__02_handrail_r3.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__02_handrail_r3",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__02_handrail_r3",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__02_lampsub_bottom.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__02_lampsub_bottom",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__02_lampsub_bottom",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__02_lampsub_extra_bottom.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__02_lampsub_extra_bottom",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__02_lampsub_extra_bottom",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__02_lampsub_extra_top.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__02_lampsub_extra_top",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__02_lampsub_extra_top",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__02_lampsub_top.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__02_lampsub_top",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__02_lampsub_top",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__02_light_white_l.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__02_light_white_l",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__02_light_white_l",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__02_light_white_r.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__02_light_white_r",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__02_light_white_r",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__03_mold_L.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__03_mold_L",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__03_mold_L",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__03_mold_R.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__03_mold_R",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__03_mold_R",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__03_nozzle_L.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__03_nozzle_L",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__03_nozzle_L",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__03_nozzle_R.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__03_nozzle_R",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__03_nozzle_R",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__04_adv_rubber_L1.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__04_adv_rubber_L1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__04_adv_rubber_L1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__04_adv_rubber_R1.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__04_adv_rubber_R1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__04_adv_rubber_R1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__04_kisya_window.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__04_kisya_window",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__04_kisya_window",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__06_adv_bench1_upper.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__06_adv_bench1_upper",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__06_adv_bench1_upper",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__06_adv_bench3_upper.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__06_adv_bench3_upper",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__06_adv_bench3_upper",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__08_adv_rubber_bn.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__08_adv_rubber_bn",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__08_adv_rubber_bn",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__08_adv_rubber_jera.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__08_adv_rubber_jera",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__08_adv_rubber_jera",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__08_kisya_kanaami.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__08_kisya_kanaami",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__08_kisya_kanaami",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__09_adv_kisya_upper.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__09_adv_kisya_upper",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__09_adv_kisya_upper",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__09_adv_rubber_L2.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__09_adv_rubber_L2",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__09_adv_rubber_L2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__09_adv_rubber_R2.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__09_adv_rubber_R2",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__09_adv_rubber_R2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__11_hanged_light.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__11_hanged_light",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__11_hanged_light",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__12_hanged_tesuri.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__12_hanged_tesuri",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__12_hanged_tesuri",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__12_light_white_hanged.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__12_light_white_hanged",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__12_light_white_hanged",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__13_hanged_wire.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__13_hanged_wire",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__13_hanged_wire",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__15_backnet_demo_spi.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__15_backnet_demo_spi",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__15_backnet_demo_spi",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__15_net_L1.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__15_net_L1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__15_net_L1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__15_net_L2.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__15_net_L2",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__15_net_L2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__15_net_R1.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__15_net_R1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__15_net_R1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__15_net_R2.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__15_net_R2",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__15_net_R2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__16_net_excite_L.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__16_net_excite_L",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__16_net_excite_L",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__16_net_excite_R.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__16_net_excite_R",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__16_net_excite_R",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__16_net_exez_L1.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__16_net_exez_L1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__16_net_exez_L1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__16_net_exez_R1.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__16_net_exez_R1",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__16_net_exez_R1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__17_net_exez_L2.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__17_net_exez_L2",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__17_net_exez_L2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__17_net_exez_R2.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__17_net_exez_R2",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__17_net_exez_R2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__18_net_exez_L3.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__18_net_exez_L3",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__18_net_exez_L3",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__18_net_exez_R3.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__18_net_exez_R3",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__18_net_exez_R3",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__39_bn_strings.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__39_bn_strings",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__39_bn_strings",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield__40_backnet.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield__40_backnet",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield__40_backnet",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield_bench_batStand_1st_ps5.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield_bench_batStand_1st_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield_bench_batStand_1st_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield_bench_batStand_3rd_ps5.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield_bench_batStand_3rd_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield_bench_batStand_3rd_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield_bench_fence_wireMesh_1st_ps5.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield_bench_fence_wireMesh_1st_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield_bench_fence_wireMesh_1st_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield_bench_fence_wireMesh_3rd_ps5.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield_bench_fence_wireMesh_3rd_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield_bench_fence_wireMesh_3rd_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield_bench_prtition_wireMesh_1st_ps5.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield_bench_prtition_wireMesh_1st_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield_bench_prtition_wireMesh_1st_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield_bench_prtition_wireMesh_3rd_ps5.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield_bench_prtition_wireMesh_3rd_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield_bench_prtition_wireMesh_3rd_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield_bench_whiteBoardParts_1st_ps5.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield_bench_whiteBoardParts_1st_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield_bench_whiteBoardParts_1st_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p06_alpha_infield_bench_whiteBoardParts_3rd_ps5.fbx(dtokyo)",
+      "mesh": "SM_p06_alpha_infield_bench_whiteBoardParts_3rd_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p06_alpha_infield_bench_whiteBoardParts_3rd_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__00_adv_C.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__00_adv_C",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__00_adv_C",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__00_adv_L.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__00_adv_L",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__00_adv_L",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__00_adv_R.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__00_adv_R",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__00_adv_R",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__00_flag_poul.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__00_flag_poul",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__00_flag_poul",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__00_handrail_l.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__00_handrail_l",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__00_handrail_l",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p07_alpha_outfield__00_handrail_r.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__00_handrail_r",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__00_handrail_r",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p07_alpha_outfield__00_light_hari_c.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__00_light_hari_c",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__00_light_hari_c",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__00_maru_spotlight.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__00_maru_spotlight",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__00_maru_spotlight",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__00_maru_spotlight_balcony02.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__00_maru_spotlight_balcony02",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__00_maru_spotlight_balcony02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__00_roof_hole.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__00_roof_hole",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__00_roof_hole",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p07_alpha_outfield__00_tokyoura.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__00_tokyoura",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__00_tokyoura",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__01_displayTemplete1st_score.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__01_displayTemplete1st_score",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__01_displayTemplete1st_score",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__01_displayTemplete1st_score_extra.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__01_displayTemplete1st_score_extra",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__01_displayTemplete1st_score_extra",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__01_displayTemplete_score_bottom.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__01_displayTemplete_score_bottom",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__01_displayTemplete_score_bottom",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__01_displayTemplete_score_extra_bottom.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__01_displayTemplete_score_extra_bottom",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__01_displayTemplete_score_extra_bottom",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__01_displayTemplete_score_extra_top.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__01_displayTemplete_score_extra_top",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__01_displayTemplete_score_extra_top",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__01_displayTemplete_score_top.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__01_displayTemplete_score_top",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__01_displayTemplete_score_top",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__01_light_lump_c.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__01_light_lump_c",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__01_light_lump_c",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__01_meikyu.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__01_meikyu",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__01_meikyu",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__02_adv_sb.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__02_adv_sb",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__02_adv_sb",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__02_adv_sb_extra.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__02_adv_sb_extra",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__02_adv_sb_extra",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__02_bso.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__02_bso",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__02_bso",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__02_lamp_score_bottom.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__02_lamp_score_bottom",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__02_lamp_score_bottom",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__02_lamp_score_extra_bottom.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__02_lamp_score_extra_bottom",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__02_lamp_score_extra_bottom",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__02_lamp_score_extra_top.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__02_lamp_score_extra_top",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__02_lamp_score_extra_top",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__02_lamp_score_top.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__02_lamp_score_top",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__02_lamp_score_top",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__02_light_white_c.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__02_light_white_c",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__02_light_white_c",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__02_saku_l.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__02_saku_l",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__02_saku_l",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p07_alpha_outfield__02_saku_r.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__02_saku_r",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__02_saku_r",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p07_alpha_outfield__02_sb_photo_h.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__02_sb_photo_h",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__02_sb_photo_h",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__02_sb_photo_v.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__02_sb_photo_v",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__02_sb_photo_v",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__03_innscoreps5_bottom.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__03_innscoreps5_bottom",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__03_innscoreps5_bottom",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__03_innscoreps5_extra_bottom.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__03_innscoreps5_extra_bottom",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__03_innscoreps5_extra_bottom",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__03_innscoreps5_extra_top.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__03_innscoreps5_extra_top",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__03_innscoreps5_extra_top",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__03_innscoreps5_top.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__03_innscoreps5_top",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__03_innscoreps5_top",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__03_items.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__03_items",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__03_items",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__03_lamp_score_bottom.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__03_lamp_score_bottom",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__03_lamp_score_bottom",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__03_lamp_score_extra_bottom.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__03_lamp_score_extra_bottom",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__03_lamp_score_extra_bottom",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__03_lamp_score_extra_top.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__03_lamp_score_extra_top",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__03_lamp_score_extra_top",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__03_lamp_score_top.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__03_lamp_score_top",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__03_lamp_score_top",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__03_pitchs.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__03_pitchs",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__03_pitchs",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__03_saku_l.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__03_saku_l",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__03_saku_l",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p07_alpha_outfield__03_saku_r.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__03_saku_r",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__03_saku_r",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p07_alpha_outfield__04_adv_CUpper.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__04_adv_CUpper",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__04_adv_CUpper",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__04_hilight_score_bottom.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__04_hilight_score_bottom",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__04_hilight_score_bottom",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__04_hilight_score_extra_bottom.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__04_hilight_score_extra_bottom",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__04_hilight_score_extra_bottom",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__04_hilight_score_extra_top.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__04_hilight_score_extra_top",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__04_hilight_score_extra_top",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__04_hilight_score_top.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__04_hilight_score_top",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__04_hilight_score_top",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__04_pillar_a_L.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__04_pillar_a_L",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__04_pillar_a_L",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p07_alpha_outfield__04_pillar_a_R.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__04_pillar_a_R",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__04_pillar_a_R",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p07_alpha_outfield__05_meikyu2.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__05_meikyu2",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__05_meikyu2",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__05_mold_C.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__05_mold_C",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__05_mold_C",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__05_mold_L.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__05_mold_L",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__05_mold_L",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__05_mold_R.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__05_mold_R",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__05_mold_R",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__05_score.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__05_score",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__05_score",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__05_score_extra.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__05_score_extra",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__05_score_extra",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__05_wbcscore.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__05_wbcscore",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__05_wbcscore",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__05_wbcscore_extra.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__05_wbcscore_extra",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__05_wbcscore_extra",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_adv_dorna4.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__06_adv_dorna4",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__06_adv_dorna4",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_adv_rubber_C.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__06_adv_rubber_C",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__06_adv_rubber_C",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_adv_rubber_L.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__06_adv_rubber_L",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__06_adv_rubber_L",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_adv_rubber_R.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__06_adv_rubber_R",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__06_adv_rubber_R",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_bs_wireMesh_ps5.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__06_bs_wireMesh_ps5",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__06_bs_wireMesh_ps5",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p07_alpha_outfield__07_aurora.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__07_aurora",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__07_aurora",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__07_net424.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__07_net424",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__07_net424",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__10_hanged_speaker.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__10_hanged_speaker",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__10_hanged_speaker",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__10_tokyodome.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__10_tokyodome",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__10_tokyodome",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__13_docomo_logo.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__13_docomo_logo",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__13_docomo_logo",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__14_flag_poul.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__14_flag_poul",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__14_flag_poul",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__14_nzk_wiremesh.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__14_nzk_wiremesh",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__14_nzk_wiremesh",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": true
+    },
+    {
+      "component": "p07_alpha_outfield__14_sb_window.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__14_sb_window",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__14_sb_window",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__15_DAZN_chachCopy.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__15_DAZN_chachCopy",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__15_DAZN_chachCopy",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    },
+    {
+      "component": "p07_alpha_outfield__15_DAZN_stools.fbx(dtokyo)",
+      "mesh": "SM_p07_alpha_outfield__15_DAZN_stools",
+      "package": "/Game/Stadiums/Tokyo/Meshes/Day/SM_p07_alpha_outfield__15_DAZN_stools",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "expected": false
+    }
+  ]
+}

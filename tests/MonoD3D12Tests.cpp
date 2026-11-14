@@ -1,4 +1,6 @@
 #include "mods/vr/MonoD3D12.hpp"
+#include "mods/vr/DuneMonoMenuD3D12.hpp"
+#include "DispatchMovieD3D12Tests.hpp"
 
 #include <d3d12sdklayers.h>
 #include <dxgi1_4.h>
@@ -60,6 +62,7 @@ int main() try {
             DXGI_FORMAT_B8G8R8A8_UNORM, {1, 0}, D3D12_TEXTURE_LAYOUT_UNKNOWN, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET};
         auto source = resource(desc, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COPY_DEST);
         auto destination = resource(desc, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        auto menu_destination = resource(desc, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_RENDER_TARGET);
         D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
         UINT64 size = 0;
         device->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, nullptr, nullptr, &size);
@@ -67,6 +70,7 @@ int main() try {
             DXGI_FORMAT_UNKNOWN, {1, 0}, D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12_RESOURCE_FLAG_NONE};
         auto upload = resource(buffer, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
         auto readback = resource(buffer, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST);
+        auto menu_readback = resource(buffer, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST);
         void* mapped = nullptr;
         const D3D12_RANGE no_read{0, 0};
         require(upload->Map(0, &no_read, &mapped), "upload map");
@@ -95,6 +99,15 @@ int main() try {
         }
         expect(!mono::copy_scene(commands.Get(), device.Get(), source.Get(), source.Get(),
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET), "self-copy rejected");
+        int menu_prepares{};
+        const auto menu_prepare = [&] { ++menu_prepares; };
+        expect(uevr::dune_menu::dx12::copy_ui(commands.Get(), device.Get(), source.Get(), menu_destination.Get(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET, menu_prepare),
+            "world-disabled menu copies the entire current UI, not a left-half scene");
+        expect(menu_prepares == 1, "UI alpha/mirror callback runs only after copy validation");
+        expect(!uevr::dune_menu::dx12::copy_ui(commands.Get(), device.Get(), source.Get(), source.Get(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET, menu_prepare),
+            "UI source cannot be its own runtime destination");
         std::vector<ComPtr<ID3D12Resource>> rejected;
         for (int mismatch = 0; mismatch != 4; ++mismatch) {
             auto invalid = desc;
@@ -106,7 +119,17 @@ int main() try {
             expect(!mono::copy_scene(commands.Get(), device.Get(), source.Get(), rejected.back().Get(),
                 D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET),
                 "resize, format, array and mip mismatch rejected before recording");
+            expect(!uevr::dune_menu::dx12::copy_ui(commands.Get(), device.Get(), source.Get(), rejected.back().Get(),
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET, menu_prepare),
+                "UI resize, format, array and mip mismatch rejected before alpha/mirror or GPU recording");
         }
+        expect(menu_prepares == 1, "invalid UI candidates never modify source alpha, spectator, or engine state");
+        barrier.Transition = {menu_destination.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+            D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE};
+        commands->ResourceBarrier(1, &barrier);
+        from = {}; from.pResource = menu_destination.Get(); from.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        to = {}; to.pResource = menu_readback.Get(); to.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT; to.PlacedFootprint = footprint;
+        commands->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
         barrier.Transition = {destination.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
             D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE};
         commands->ResourceBarrier(1, &barrier);
@@ -130,10 +153,21 @@ int main() try {
         }
         expect(equal, "both eyes receive identical current pixels across resizes");
         readback->Unmap(0, &no_read);
+        require(menu_readback->Map(0, nullptr, &mapped), "menu readback map");
+        bool menu_equal = true;
+        for (UINT y = 0; y != height; ++y) {
+            const auto row = reinterpret_cast<const uint32_t*>(static_cast<const uint8_t*>(mapped) + footprint.Offset + y * footprint.Footprint.RowPitch);
+            for (UINT x = 0; x != width; ++x) {
+                menu_equal &= row[x] == (x < width / 2 ? (0xff000000 | (y << 8) | x) : 0xff00ff00);
+            }
+        }
+        expect(menu_equal, "UI pixels, alpha and both image halves survive the actual GPU copy across resizes");
+        menu_readback->Unmap(0, &no_read);
         require(allocator->Reset(), "retired allocator reset");
         require(commands->Reset(allocator.Get(), nullptr), "retired list reset");
     }
     require(commands->Close(), "final empty list close");
+    dispatch_movie_tests::dx12(expect,device.Get(),queue.Get());
     if (messages) {
         for (UINT64 i = 0; i != messages->GetNumStoredMessagesAllowedByRetrievalFilter(); ++i) {
             SIZE_T size = 0;

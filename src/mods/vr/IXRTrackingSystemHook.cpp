@@ -24,6 +24,8 @@
 #include <sdk/UClass.hpp>
 #include <sdk/UObjectBase.hpp>
 #include <sdk/FProperty.hpp>
+#include <sdk/FBoolProperty.hpp>
+#include <sdk/FObjectProperty.hpp>
 #include <sdk/ScriptRotator.hpp>
 #include <sdk/ScriptVector.hpp>
 #include <sdk/UGameplayStatics.hpp>
@@ -39,10 +41,25 @@
 #include <sdk/structures/FXRHMDData.hpp>
 #include <sdk/UHeadMountedDisplayFunctionLibrary.hpp>
 #include <sdk/UFunction.hpp>
+#include <sdk/UGameViewportClient.hpp>
+#include <sdk/GearsEDayDiscovery.hpp>
+#include <sdk/DiscoveryMemory.hpp>
+#include <sdk/FinchGameRuntime.hpp>
+#include <sdk/threading/GameThreadWorker.hpp>
 
 #include "IXRTrackingSystemHook.hpp"
+#include "GearsEDayAim.hpp"
+#include "FinchAimPose.hpp"
 
 namespace {
+bool is_finch_executable() {
+    static const bool result = [] {
+        const auto path = utility::get_module_pathw(utility::get_executable());
+        return path && sdk::finch::matches_executable(*path);
+    }();
+    return result;
+}
+
 bool is_deadzone_ue56_executable() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -188,7 +205,7 @@ bool is_legacy_aim_reflection_ready() try {
 bool is_payday3_aim_guard_enabled();
 
 bool is_direct_aim_compatibility_requested() {
-    if (is_daysgone_executable()) {
+    if (is_daysgone_executable() || is_finch_executable()) {
         return false;
     }
 
@@ -208,7 +225,7 @@ bool is_direct_aim_compatibility_requested() {
 }
 
 bool is_direct_aim_compatibility_active() {
-    if (is_daysgone_executable()) {
+    if (is_daysgone_executable() || is_finch_executable()) {
         return false;
     }
 
@@ -354,6 +371,9 @@ detail::IXRTrackingSystemVT& get_tracking_system_vtable(std::optional<std::strin
         return uevr::compat::get().xr_layout == uevr::compat::XRLayout::UE60
             ? static_cast<detail::IXRTrackingSystemVT&>(ue5_8::IXRTrackingSystemVT::get()) : detail::IXRTrackingSystemVT::get();
     }
+    if (sdk::ue59::is_runtime()) {
+        return sdk::ue59::reviewed_runtime() ? static_cast<detail::IXRTrackingSystemVT&>(ue5_9::IXRTrackingSystemVT::get()) : detail::IXRTrackingSystemVT::get();
+    }
     const auto str_version = version_override.has_value() ? version_override.value() : utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
     auto version = sdk::get_file_version_info();
 
@@ -465,6 +485,9 @@ detail::IXRCameraVT& get_camera_vtable(std::optional<std::string> version_overri
         return uevr::compat::get().xr_layout == uevr::compat::XRLayout::UE60
             ? static_cast<detail::IXRCameraVT&>(ue5_8::IXRCameraVT::get()) : detail::IXRCameraVT::get();
     }
+    if (sdk::ue59::is_runtime()) {
+        return sdk::ue59::reviewed_runtime() ? static_cast<detail::IXRCameraVT&>(ue5_9::IXRCameraVT::get()) : detail::IXRCameraVT::get();
+    }
     const auto str_version = version_override.has_value() ? version_override.value() : utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
     auto version = sdk::get_file_version_info();
 
@@ -570,6 +593,9 @@ detail::IHeadMountedDisplayVT& get_hmd_vtable(std::optional<std::string> version
     if (!version_override && uevr::compat::get().version.major == 6) {
         return uevr::compat::get().xr_layout == uevr::compat::XRLayout::UE60
             ? static_cast<detail::IHeadMountedDisplayVT&>(ue5_8::IHeadMountedDisplayVT::get()) : detail::IHeadMountedDisplayVT::get();
+    }
+    if (sdk::ue59::is_runtime()) {
+        return sdk::ue59::reviewed_runtime() ? static_cast<detail::IHeadMountedDisplayVT&>(ue5_9::IHeadMountedDisplayVT::get()) : detail::IHeadMountedDisplayVT::get();
     }
     const auto str_version = version_override.has_value() ? version_override.value() : utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
     auto version = sdk::get_file_version_info();
@@ -1367,6 +1393,28 @@ void IXRTrackingSystemHook::pre_initialize() {
         return &fake_name;
     };
 
+    if (sdk::ue59::reviewed_runtime()) {
+        const auto name = (uintptr_t)+[](void*, sdk::FName* out) -> sdk::FName* {
+            static const sdk::OwnedFName none{};
+            return none.write_to(out, sdk::FName::runtime_size()) ? out : nullptr;
+        };
+        // The engine owns neither synthetic object. Its inherited deleting
+        // destructor must not execute an identity/pose callback or free it.
+        const auto destroy = (uintptr_t)+[](void* object, uint32_t) -> void* { return object; };
+        m_xrtracking_vtable[sdk::ue59::xr_destructor_slot] = destroy;
+        m_camera_vtable[sdk::ue59::xr_destructor_slot] = destroy;
+        m_xrtracking_vtable[sdk::ue59::xr_system_name_slot] = name;
+        m_camera_vtable[sdk::ue59::xr_system_name_slot] = name;
+        m_camera_vtable[sdk::ue59::xr_device_id_slot] = (uintptr_t)+[](const void*) -> int32_t { return 0; };
+        SPDLOG_INFO("[UE5.9][XR] Selected inherited-destructor tracking/camera ABI; HMD/stereo ABI retained; runtime validation pending");
+    }
+
+    if (is_finch_executable()) {
+        // Its native version and aim ABI are validated at mode entry. Never
+        // infer a modern XR interface from the missing Windows version resource.
+        return;
+    }
+
     const auto version = sdk::get_file_version_info();
     const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
 
@@ -1403,6 +1451,305 @@ void IXRTrackingSystemHook::pre_initialize() {
 }
 
 void IXRTrackingSystemHook::on_draw_ui() {
+}
+
+namespace {
+bool is_live_finch_aim_object(sdk::UObjectBase* object) try {
+    if (!sdk::UObjectBase::has_validated_header_layout() || !sdk::finch::pointer(reinterpret_cast<uintptr_t>(object)) ||
+        !detail::is_readable_process_range(reinterpret_cast<uintptr_t>(object), sdk::UObjectBase::get_class_size())) {
+        return false;
+    }
+    const auto objects = sdk::FUObjectArray::get();
+    const auto index = object->get_internal_index();
+    if (!objects) { return false; }
+    const auto count = objects->get_object_count();
+    if (count <= 0 || index >= static_cast<uint32_t>(count)) { return false; }
+    const auto item = objects->get_object(static_cast<int32_t>(index));
+    return item && item->get_object() == object && !object->is_pending_kill_or_unreachable();
+} catch (...) { return false; }
+}
+
+bool IXRTrackingSystemHook::try_install_finch_aim() {
+    if (m_finch_aim_hook_owned.load(std::memory_order_acquire)) { return true; }
+    if (!is_finch_executable() || m_process_view_rotation_hook || m_finch_camera_handoff_hook) { return false; }
+    const auto now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+    if (!m_finch_aim_setup.take(now)) { return false; }
+
+    const auto known = sdk::finch::aim::contract(sdk::discovery::process_memory(), sdk::finch::current_base());
+    if (!known) {
+        SPDLOG_WARN("[Finch][Aim] Native 4.10.1 rotation contract unavailable ({}/3); leaving the game HMD/POV unchanged", m_finch_aim_setup.attempts);
+        return false;
+    }
+
+    const auto camera_class = sdk::APlayerCameraManager::static_class();
+    const auto controller_class = sdk::APlayerController::static_class();
+    const auto local_class = sdk::find_uobject<sdk::UClass>(L"Class /Script/Engine.LocalPlayer");
+    const auto character_class = sdk::find_uobject<sdk::UClass>(L"Class /Script/FinchGame.FinchGameCharacter");
+    const auto movement_class = sdk::find_uobject<sdk::UClass>(L"Class /Script/FinchGame.FinchCharMovementComponent");
+    const auto component_class = sdk::find_uobject<sdk::UClass>(L"Class /Script/Engine.CameraComponent");
+    const std::array<sdk::UClass*, 6> classes{camera_class, controller_class, local_class, character_class, movement_class, component_class};
+    for (const auto klass : classes) {
+        if (!is_live_finch_aim_object(klass)) { return false; }
+    }
+    const auto owner = camera_class->find_property(L"PCOwner");
+    const auto camera = controller_class->find_property(L"PlayerCameraManager");
+    const auto player = controller_class->find_property(L"Player");
+    const auto controller = local_class->find_property(L"PlayerController");
+    if (!owner || !camera || !player || !controller ||
+        owner->get_offset() != sdk::finch::aim::owner_offset || camera->get_offset() != sdk::finch::aim::camera_offset) {
+        SPDLOG_WARN("[Finch][Aim] Reflected camera ownership does not match the native callsites; preserving game aim");
+        return false;
+    }
+    const sdk::finch::aim::Layout layout{static_cast<uint32_t>(player->get_offset()),
+        static_cast<uint32_t>(controller->get_offset())};
+    const auto controller_size = controller_class->get_properties_size();
+    const auto player_size = local_class->get_properties_size();
+    if (!sdk::finch::aim::valid_layout(layout) ||
+        controller_size < 0x28 || controller_size > 0x10000 || player_size < 0x28 || player_size > 0x10000 ||
+        layout.player + sizeof(void*) > static_cast<uint32_t>(controller_size) ||
+        layout.local_controller + sizeof(void*) > static_cast<uint32_t>(player_size)) { return false; }
+
+    const auto field_matches = [](sdk::UClass* klass, const wchar_t* name, uint32_t offset) {
+        const auto field = klass->find_property(name);
+        return field && field->get_offset() == offset && klass->get_properties_size() >= offset + sizeof(void*);
+    };
+    const auto active = static_cast<sdk::FBoolProperty*>(component_class->find_property(L"bIsActive"));
+    if (!field_matches(controller_class, L"Pawn", 0x350) ||
+        !field_matches(character_class, L"CharacterMovement", 0x3b8) ||
+        !field_matches(character_class, L"CameraComponentRef", 0x598) ||
+        !field_matches(movement_class, L"FinchGameCharacterOwner", 0x618) ||
+        !field_matches(movement_class, L"UpdatedCameraComponent", 0x4c8) ||
+        !field_matches(camera_class, L"ViewTarget", 0xb78) ||
+        !field_matches(camera_class, L"PendingViewTarget", 0xf60) ||
+        !active || active->get_offset() != 0xa2 || active->get_field_size() != 1 ||
+        active->get_byte_offset() != 0 || active->get_byte_mask() != 4) {
+        SPDLOG_WARN("[Finch][Aim] Active camera-consumer fields did not validate; preserving game aim");
+        return false;
+    }
+
+    m_finch_aim_contract = *known;
+    m_finch_aim_layout = layout;
+    m_finch_aim_classes = classes;
+    m_finch_camera_handoff_hook = safetyhook::create_inline(known->sync_rotation, &finch_camera_handoff,
+        safetyhook::InlineHook::StartDisabled);
+    if (!m_finch_camera_handoff_hook) {
+        SPDLOG_ERROR("[Finch][Aim] Could not install the validated native rotation hook; preserving game aim");
+        return false;
+    }
+    m_overridden_version = "4.10";
+    m_is_leq_4_17 = true;
+    m_is_leq_4_25 = true;
+    m_finch_aim_hook_owned.store(true, std::memory_order_release);
+    if (const auto enabled = m_finch_camera_handoff_hook.enable(); !enabled) {
+        m_finch_aim_hook_owned.store(false, std::memory_order_release);
+        m_finch_camera_handoff_hook.reset();
+        SPDLOG_ERROR("[Finch][Aim] Could not enable the prepared native rotation hook; preserving game aim");
+        return false;
+    }
+    SPDLOG_INFO("[Finch][Aim] Validated authoritative camera handoff at {:x}; early ProcessViewRotation mutation and fake HMD are bypassed", known->sync_rotation);
+    return true;
+}
+
+bool IXRTrackingSystemHook::is_current_finch_controller(sdk::APlayerController* controller) const try {
+    if (!m_finch_aim_hook_owned.load(std::memory_order_acquire)) { return false; }
+    const auto current = sdk::finch::aim::camera_consumer(sdk::discovery::process_memory(),
+        m_finch_aim_contract, m_finch_aim_layout, reinterpret_cast<uintptr_t>(controller),
+        [&](uintptr_t address, sdk::finch::aim::Role role) {
+            const auto object = reinterpret_cast<sdk::UObjectBase*>(address);
+            const auto expected = m_finch_aim_classes[static_cast<size_t>(role)];
+            if (!is_live_finch_aim_object(object) || !is_live_finch_aim_object(expected)) { return false; }
+            const auto klass = object->get_class();
+            return is_live_finch_aim_object(klass) && klass->is_a(expected);
+        });
+    return current.has_value();
+} catch (...) { return false; }
+
+bool IXRTrackingSystemHook::try_prepare_finch_menu_view() try {
+    if (!is_finch_executable() || !GameThreadWorker::get().is_same_thread()) { return false; }
+    if (m_finch_menu_binding.validated) {
+        uintptr_t current_camera{};
+        if (std::all_of(m_finch_menu_objects.begin(),m_finch_menu_objects.end(),[](const auto& id) {
+            return sdk::is_current_object(id);
+        }) && sdk::discovery::process_memory().load(m_finch_menu_binding.menu+m_finch_menu_binding.camera_field,current_camera) &&
+            current_camera==m_finch_menu_binding.camera) { return true; }
+        m_finch_menu_binding={};m_finch_menu_objects={};m_finch_menu_setup.reset();
+    }
+    const auto now=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (!m_finch_menu_setup.take(now)) { return false; }
+    const auto known=m_finch_aim_hook_owned.load(std::memory_order_acquire) ?
+        std::optional{m_finch_aim_contract} : sdk::finch::aim::contract(sdk::discovery::process_memory(),sdk::finch::current_base());
+    if (!known || !sdk::UObjectBase::has_validated_header_layout() ||
+        sdk::UObjectBase::get_outer_private_offset()!=uevr::finch_menu::outer_offset) { return false; }
+    const auto manager_class=sdk::APlayerCameraManager::static_class();
+    const auto controller_class=sdk::APlayerController::static_class();
+    const auto player_class=sdk::find_uobject<sdk::UClass>(L"Class /Script/Engine.LocalPlayer");
+    const auto menu_class=sdk::find_uobject<sdk::UClass>(L"Class /Script/FinchGame.MeshTextMenu");
+    const auto camera_class=sdk::find_uobject<sdk::UClass>(L"Class /Script/Engine.CameraActor");
+    const std::array<sdk::UClass*,5> classes{manager_class,controller_class,player_class,menu_class,camera_class};
+    if (!std::all_of(classes.begin(),classes.end(),is_live_finch_aim_object)) { return false; }
+    const auto owner=manager_class->find_property(L"PCOwner");
+    const auto manager=controller_class->find_property(L"PlayerCameraManager");
+    const auto player=controller_class->find_property(L"Player");
+    const auto controller=player_class->find_property(L"PlayerController");
+    const auto camera=menu_class->find_property(L"MenuCamera");
+    const auto target=manager_class->find_property(L"ViewTarget");
+    const auto pending=manager_class->find_property(L"PendingViewTarget");
+    const auto pawn=controller_class->find_property(L"Pawn");
+    const auto property_type=camera?reinterpret_cast<sdk::UObjectBase*>(camera->get_class()):nullptr;
+    const auto menu_size=menu_class->get_properties_size();
+    if (!owner || !manager || !player || !controller || !camera || !target || !pending || !pawn ||
+        owner->get_offset()!=sdk::finch::aim::owner_offset || manager->get_offset()!=sdk::finch::aim::camera_offset ||
+        target->get_offset()!=0xb78 || pending->get_offset()!=0xf60 || pawn->get_offset()!=0x350 ||
+        camera->get_offset()!=uevr::finch_menu::menu_camera_offset ||
+        menu_size<=0 || menu_size>0x10000 || static_cast<size_t>(menu_size)<uevr::finch_menu::menu_camera_offset+sizeof(void*) ||
+        !is_live_finch_aim_object(property_type) || property_type->get_fname().to_string()!=L"ObjectProperty" ||
+        static_cast<sdk::FObjectProperty*>(camera)->get_property_class()!=camera_class) { return false; }
+    const sdk::finch::aim::Layout layout{static_cast<uint32_t>(player->get_offset()),static_cast<uint32_t>(controller->get_offset())};
+    if (!sdk::finch::aim::valid_layout(layout) || controller_class->get_properties_size()<=0 ||
+        player_class->get_properties_size()<=0 || manager_class->get_properties_size()<0xf68 ||
+        controller_class->get_properties_size()>0x10000 || player_class->get_properties_size()>0x10000 ||
+        layout.player+sizeof(void*)>static_cast<size_t>(controller_class->get_properties_size()) ||
+        layout.local_controller+sizeof(void*)>static_cast<size_t>(player_class->get_properties_size())) { return false; }
+    // This fixed, immutable game build owns its journal in the streamed Menu
+    // level. Resolve it only during bounded preparation, not in an eye callback.
+    const auto menu=sdk::find_uobject<sdk::UObjectBase>(L"MeshTextMenu_BP_C /Game/Maps/Menu.menu.PersistentLevel.MeshTextMenu_BP_C_0",false);
+    if (!is_live_finch_aim_object(menu) || !is_live_finch_aim_object(menu->get_class()) || !menu->get_class()->is_a(menu_class)) { return false; }
+    uintptr_t camera_address{};
+    if (!sdk::discovery::process_memory().load(reinterpret_cast<uintptr_t>(menu)+uevr::finch_menu::menu_camera_offset,camera_address)) { return false; }
+    const auto menu_camera=reinterpret_cast<sdk::UObjectBase*>(camera_address);
+    if (!is_live_finch_aim_object(menu_camera) || !is_live_finch_aim_object(menu_camera->get_class()) ||
+        !menu_camera->get_class()->is_a(camera_class)) { return false; }
+    const auto level=reinterpret_cast<sdk::UObjectBase*>(menu->get_outer());
+    if (!is_live_finch_aim_object(level) || menu_camera->get_outer()!=reinterpret_cast<sdk::UObject*>(level)) { return false; }
+    std::array<sdk::object_liveness::Identity,8> identities{};
+    const std::array<sdk::UObjectBase*,8> objects{manager_class,controller_class,player_class,menu_class,camera_class,menu,menu_camera,level};
+    for(size_t i=0;i<objects.size();++i) {
+        const auto observed=sdk::observe_uobject(objects[i]);
+        if (!observed) { return false; }identities[i]=observed->identity;
+    }
+    m_finch_menu_contract=*known;m_finch_menu_layout=layout;m_finch_menu_objects=identities;
+    m_finch_menu_binding={reinterpret_cast<uintptr_t>(menu),camera_address,reinterpret_cast<uintptr_t>(level),
+        uevr::finch_menu::menu_camera_offset,sdk::UObjectBase::get_outer_private_offset(),true};
+    SPDLOG_INFO("[Finch][Menu] Validated journal camera ownership; authored menu pitch is preserved without changing aim or settings");
+    return true;
+} catch (...) { return false; }
+
+bool IXRTrackingSystemHook::preserve_finch_journal_pitch() const try {
+    if (!is_finch_executable() || !m_finch_menu_binding.validated || !GameThreadWorker::get().is_same_thread()) { return false; }
+    const auto engine=sdk::UEngine::get();
+    const auto player=engine?engine->get_localplayer(0):nullptr;
+    if (!player) { return false; }
+    const auto& memory=sdk::discovery::process_memory();
+    uintptr_t controller{},manager{},pawn{},target{};
+    if (!memory.load(reinterpret_cast<uintptr_t>(player)+m_finch_menu_layout.local_controller,controller) ||
+        !sdk::finch::pointer(controller) || !memory.load(controller+sdk::finch::aim::camera_offset,manager) ||
+        !sdk::finch::pointer(manager) || !memory.load(manager+0xb78,target) ||
+        !memory.load(controller+0x350,pawn)) { return false; }
+    uintptr_t pending{};
+    if (!memory.load(manager+0xf60,pending) || !uevr::finch_menu::journal_target(target,pending,pawn,m_finch_menu_binding.camera)) { return false; }
+    const auto current=sdk::finch::aim::controller_context(memory,m_finch_menu_contract,m_finch_menu_layout,controller,
+        [&](uintptr_t address,sdk::finch::aim::Role role) {
+            const auto index=static_cast<size_t>(role);
+            if(index>=3 || !sdk::is_current_object(m_finch_menu_objects[index])) { return false; }
+            const auto object=reinterpret_cast<sdk::UObjectBase*>(address);
+            const auto klass=reinterpret_cast<sdk::UClass*>(m_finch_menu_objects[index].object);
+            return is_live_finch_aim_object(object) && is_live_finch_aim_object(object->get_class()) && object->get_class()->is_a(klass);
+        });
+    if (!current || current->player!=reinterpret_cast<uintptr_t>(player) || current->camera!=manager) { return false; }
+    return uevr::finch_menu::journal_view(memory,m_finch_menu_binding,manager,pawn,true,[&] {
+        if (!std::all_of(m_finch_menu_objects.begin(),m_finch_menu_objects.end(),[](const auto& id) {
+            return sdk::is_current_object(id);
+        })) { return false; }
+        // UE4 may not have allocated a weak serial for these objects. Cached
+        // discovery is never authority: recheck their current classes as well
+        // as the native menu reference/level/selected-camera relationship.
+        for(const auto [object_index,class_index]:std::array<std::pair<size_t,size_t>,2>{{{5,3},{6,4}}}) {
+            const auto object=reinterpret_cast<sdk::UObjectBase*>(m_finch_menu_objects[object_index].object);
+            const auto klass=reinterpret_cast<sdk::UClass*>(m_finch_menu_objects[class_index].object);
+            if (!is_live_finch_aim_object(object) || !is_live_finch_aim_object(object->get_class()) ||
+                !object->get_class()->is_a(klass)) { return false; }
+        }
+        return true;
+    });
+} catch (...) { return false; }
+
+Rotator<float>* IXRTrackingSystemHook::finch_camera_handoff(sdk::APlayerController* controller,
+    Rotator<float>* output, float delta_time, const Rotator<float>* requested, bool face_pawn) {
+    const auto call_original = [&](const Rotator<float>* rotation) {
+        return g_hook->m_finch_camera_handoff_hook.call<Rotator<float>*>(controller, output, delta_time, rotation, face_pawn);
+    };
+    auto& vr = VR::get();
+    if (!g_hook->m_finch_aim_hook_owned.load(std::memory_order_acquire) ||
+        !sdk::finch::aim::is_camera_handoff(g_hook->m_finch_aim_contract, reinterpret_cast<uintptr_t>(_ReturnAddress())) ||
+        !sdk::finch::aim::should_adjust(vr->is_any_aim_method_active(), vr->is_hmd_active(),
+            vr->is_controller_aim_enabled(), vr->is_using_controllers(), vr->is_controller_camera_conflict_guard_active(), true) ||
+        (!vr->is_headlocked_aim_enabled() && !vr->is_controller_aim_enabled()) ||
+        !std::isfinite(delta_time) || delta_time < 0 || !face_pawn || g_hook->m_stereo_hook->has_double_precision() ||
+        !detail::is_writable_process_range(reinterpret_cast<uintptr_t>(output), sizeof(*output)) ||
+        !g_hook->is_current_finch_controller(controller)) { return call_original(requested); }
+
+    Rotator<float> authored{};
+    if (!sdk::discovery::process_memory().load(reinterpret_cast<uintptr_t>(requested), authored)) { return call_original(requested); }
+    auto aim = glm::quat{vr->get_rotation(0)};
+    if (!uevr::finch_aim::valid(aim)) { return call_original(requested); }
+    const auto now = std::chrono::high_resolution_clock::now();
+    auto& data = g_hook->m_process_view_rotation_data;
+    if (vr->is_controller_aim_enabled()) {
+        if (vr->get_runtime()->is_openvr() && vr->get_controllers().size() < 2) { return call_original(requested); }
+        const auto valid_pose = [&](uint32_t index) {
+            return index && index != UINT32_MAX && uevr::finch_aim::valid(glm::quat{vr->get_aim_rotation(index)}) &&
+                uevr::finch_aim::finite(glm::vec3{vr->get_aim_position(index)});
+        };
+        const auto method = vr->get_aim_method();
+        const auto left = vr->get_left_controller_index(), right = vr->get_right_controller_index();
+        const bool left_primary = method == VR::AimMethod::LEFT_CONTROLLER || method == VR::AimMethod::TWO_HANDED_LEFT;
+        const auto primary = left_primary ? left : right;
+        const bool two_handed = method == VR::AimMethod::TWO_HANDED_LEFT || method == VR::AimMethod::TWO_HANDED_RIGHT;
+        if (!valid_pose(primary) || (two_handed && (left == right || !valid_pose(left) || !valid_pose(right)))) { return call_original(requested); }
+        const auto position = glm::vec3{vr->get_aim_position(primary)};
+        glm::vec3 forward{};
+        if (two_handed) {
+            forward = glm::vec3{vr->get_aim_position(left_primary ? right : left)} - position;
+            if (!uevr::finch_aim::finite(forward) || glm::dot(forward, forward) < 0.000001f) { return call_original(requested); }
+            forward = utility::math::to_quat(glm::normalize(forward)) * glm::vec3{0, 0, -1};
+        } else {
+            forward = glm::quat{vr->get_aim_rotation(primary)} * glm::vec3{0, 0, 1};
+        }
+        if (!uevr::finch_aim::finite(forward) || glm::dot(forward, forward) < 0.000001f) { return call_original(requested); }
+        forward = position + glm::normalize(forward) * 1000.0f - glm::vec3{vr->get_standing_origin()};
+        if (!uevr::finch_aim::finite(forward) || glm::dot(forward, forward) < 0.000001f) { return call_original(requested); }
+        aim = utility::math::to_quat(glm::normalize(forward));
+        if (!uevr::finch_aim::valid(aim)) { return call_original(requested); }
+        if (vr->is_aim_interpolation_enabled() && uevr::finch_aim::valid(data.last_aim_rot)) {
+            const auto dt = std::clamp(std::chrono::duration<float>(now - data.last_update).count(), 0.0f, 0.1f);
+            const auto speed = vr->get_aim_speed();
+            if (!std::isfinite(speed) || speed < 0) { return call_original(requested); }
+            const auto weight = std::clamp(dt * speed * std::abs(glm::dot(aim, data.last_aim_rot)), 0.0f, 1.0f);
+            aim = glm::normalize(glm::slerp(data.last_aim_rot, aim, weight));
+        }
+    }
+    const auto plan = uevr::finch_aim::plan({authored.pitch, authored.yaw, authored.roll}, aim, vr->get_rotation_offset());
+    if (!plan) { return call_original(requested); }
+    const Rotator<float> selected{plan->world_degrees.x, plan->world_degrees.y, plan->world_degrees.z};
+    const auto result = call_original(&selected);
+    Rotator<float> returned{};
+    if (result != output || !sdk::discovery::process_memory().load(reinterpret_cast<uintptr_t>(output), returned) ||
+        !uevr::finch_aim::accepted(*plan, {returned.pitch, returned.yaw, returned.roll})) {
+        SPDLOG_WARN_ONCE("[Finch][Aim] Camera handoff did not return the selected orientation; preserving recenter state");
+        return result;
+    }
+    if (!vr->is_decoupled_pitch_enabled()) {
+        data.auto_enabled_decoupled_pitch = true;
+        vr->set_decoupled_pitch(true);
+    }
+    vr->set_rotation_offset(plan->next_offset);
+    data.last_update = now;
+    data.was_called = true;
+    if (vr->is_controller_aim_enabled()) { data.last_aim_rot = aim; }
+    g_hook->m_last_view_rotation = returned;
+    SPDLOG_INFO_ONCE("[Finch][Aim] Authoritative controller/camera handoff active; pitch and yaw compensation committed after native acceptance");
+    return result;
 }
 
 bool IXRTrackingSystemHook::try_install_daysgone_weapon_aim_bridge(void* weapon) {
@@ -1940,6 +2287,12 @@ void IXRTrackingSystemHook::daysgone_weapon_aim_trace(safetyhook::Context& ctx) 
 
 void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     auto& vr = VR::get();
+    if (is_finch_executable()) {
+        if (vr->is_any_aim_method_active()) { try_install_finch_aim(); }
+        else { m_finch_aim_setup.reset(); }
+        if (vr->is_any_aim_method_active() || vr->is_decoupled_pitch_enabled()) { try_prepare_finch_menu_view(); }
+        else { m_finch_menu_setup.reset(); }
+    }
     const auto direct_aim_compat_requested = is_direct_aim_compatibility_requested();
     const auto direct_aim_compat_active = is_direct_aim_compatibility_active();
     const auto deadzone_direct_aim = is_deadzone_ue56_executable();
@@ -2003,7 +2356,7 @@ void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float d
         }
     }
 
-    if (!m_initialized &&
+    if (!is_finch_executable() && !m_initialized &&
         ((vr->is_any_aim_method_active() && !direct_aim_compat_active && !suppress_legacy_fake_hmd_for_aim) ||
          vr->wants_blueprint_load())) {
         if (!m_initialized) {
@@ -2032,6 +2385,10 @@ void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float d
             data.was_called = false;
             vr->recenter_view();
             vr->set_pre_flattened_rotation(glm::identity<glm::quat>());
+            if (is_finch_executable() && data.auto_enabled_decoupled_pitch) {
+                data.auto_enabled_decoupled_pitch = false;
+                vr->set_decoupled_pitch(false);
+            }
 
             SPDLOG_INFO("IXRTrackingSystemHook: Recentering view because of timeout");
         }
@@ -2044,6 +2401,7 @@ void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float d
 }
 
 void IXRTrackingSystemHook::on_post_engine_tick(sdk::UGameEngine* engine, float delta) {
+    if (is_finch_executable()) { return; }
     if (is_daysgone_executable()) {
         if (is_daysgone_native_aim_requested() &&
             !VR::get()->is_controller_camera_conflict_guard_active()) {
@@ -2066,6 +2424,7 @@ void IXRTrackingSystemHook::on_post_engine_tick(sdk::UGameEngine* engine, float 
 }
 
 void IXRTrackingSystemHook::initialize() {
+    if (is_finch_executable()) { return; }
     m_initialized = true;
 
     SPDLOG_INFO("IXRTrackingSystemHook::initialize");
@@ -2083,6 +2442,27 @@ void IXRTrackingSystemHook::initialize() {
     const auto& camera_vt = get_camera_vtable(m_overridden_version);
     const auto& trackvt = get_tracking_system_vtable(m_overridden_version);
     const auto& hmdvt = get_hmd_vtable(m_overridden_version);
+
+    std::optional<uevr::gears_aim::DebugCanvasQuery> gears_debug_canvas;
+    if (sdk::gears_eday::current_game()) {
+        const auto draw = sdk::UGameViewportClient::get_draw_function();
+        DWORD64 image_base{};
+        const auto function = draw ? RtlLookupFunctionEntry(*draw, &image_base, nullptr) : nullptr;
+        if (draw && function && image_base + function->BeginAddress == *draw &&
+            function->EndAddress > function->BeginAddress && trackvt.GetHMDDevice_index()) {
+            gears_debug_canvas = uevr::gears_aim::debug_canvas_query(sdk::discovery::process_memory(),
+                *draw, function->EndAddress - function->BeginAddress,
+                reinterpret_cast<uintptr_t>(sdk::UGameEngine::get()), m_offset_in_engine,
+                *trackvt.GetHMDDevice_index());
+        }
+        if (!gears_debug_canvas || !hmdvt.implemented()) {
+            SPDLOG_ERROR("[GoWEDay][Aim] Debug-canvas HMD return ABI did not validate; leaving the game's XRSystem unchanged");
+            return;
+        }
+        SPDLOG_INFO("[GoWEDay][Aim] Validated debug-canvas FIntPoint sret at {:x}, HMD slot {} (stock {})",
+            gears_debug_canvas->return_address, gears_debug_canvas->slot,
+            hmdvt.GetIdealDebugCanvasRenderTargetSize_index().value_or(0));
+    }
 
     if (trackvt.implemented()) {
         if (trackvt.GetXRCamera_index().has_value()) {
@@ -2223,6 +2603,13 @@ void IXRTrackingSystemHook::initialize() {
                 }
             } else {
                 SPDLOG_ERROR("IXRTrackingSystemHook::IXRTrackingSystemHook: get_ideal_debug_canvas_render_target_size_index not implemented");
+            }
+
+            if (gears_debug_canvas) {
+                // E-Day's Draw uses a different debug-canvas slot. Do not
+                // shift stock UE5.6 tables or rely on null-dereference patching.
+                m_gears_debug_canvas_return_address = gears_debug_canvas->return_address;
+                m_hmd_vtable[gears_debug_canvas->slot] = (uintptr_t)&get_gears_debug_canvas_render_target_size;
             }
 
             if (hmdvt.ResetOrientation_index().has_value()) {
@@ -2449,6 +2836,7 @@ IXRTrackingSystemHook::SharedPtr* IXRTrackingSystemHook::get_stereo_rendering_de
 }
 
 void IXRTrackingSystemHook::manual_update_control_rotation(sdk::UGameEngine* engine_override) {
+    if (is_finch_executable()) { return; }
     if (is_daysgone_executable()) {
         return;
     }
@@ -3357,6 +3745,13 @@ bool IXRTrackingSystemHook::is_hmd_connected(sdk::IHeadMountedDisplay*) {
     return VR::get()->is_hmd_active();
 }
 
+int32_t* IXRTrackingSystemHook::get_gears_debug_canvas_render_target_size(sdk::IHeadMountedDisplay* device, int32_t* out) {
+    if (!g_hook || !uevr::gears_aim::accepts_debug_canvas_call(g_hook->m_gears_debug_canvas_return_address,
+        reinterpret_cast<uintptr_t>(_ReturnAddress()), &g_hook->m_hmd_device, device) ||
+        !detail::is_writable_process_range(reinterpret_cast<uintptr_t>(out), 2 * sizeof(*out))) { return nullptr; }
+    return uevr::gears_aim::write_debug_canvas_size(out);
+}
+
 int32_t* IXRTrackingSystemHook::get_ideal_debug_canvas_render_target_size(sdk::IHeadMountedDisplay*, int32_t* out) {
     const auto return_address = (uintptr_t)_ReturnAddress();
     SPDLOG_INFO_ONCE("get_ideal_debug_canvas_render_target_size {:x}", return_address);
@@ -3658,6 +4053,11 @@ void IXRTrackingSystemHook::process_view_rotation(
 
     auto& vr = VR::get();
 
+    if (is_finch_executable()) {
+        call_orig();
+        return;
+    }
+
     if (is_daysgone_executable() && vr->is_any_aim_method_active()) {
         call_orig();
         return;
@@ -3711,7 +4111,7 @@ void IXRTrackingSystemHook::update_view_rotation(sdk::UObject* reference_obj, Ro
     // Double check that the player controller passed through here is the local player controller
     static bool had_detection_error = false;
     if (!is_payday3_aim_guard_enabled() && !is_deadzone_ue56_executable() && !is_ue4_14_through_4_17() &&
-        !is_daysgone_executable() &&
+        !is_daysgone_executable() && !is_finch_executable() &&
         !had_detection_error && vr->is_aim_multiplayer_support_enabled()) try {
         if (reference_obj != nullptr && sdk::FUObjectArray::get() != nullptr) {
             const auto reference_obj_c = reference_obj->get_class();

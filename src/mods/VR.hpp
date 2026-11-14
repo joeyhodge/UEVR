@@ -34,6 +34,19 @@
 
 #include "Mod.hpp"
 #include "vr/RenderingMethodSetting.hpp"
+#include "vr/SteamFrameInput.hpp"
+#include "vr/GamepadRecovery.hpp"
+#include "vr/NativeOpenXRAsyncWorker.hpp"
+#include "vr/NativeOpenXRWaitOnly.hpp"
+#include "vr/ProSpiCameraProbe.hpp"
+#include "vr/ProSpiCameraFraming.hpp"
+#include "vr/ProSpiCelebrationFraming.hpp"
+#include "vr/ProSpiCameraCutGuard.hpp"
+#include "vr/ProSpiCameraMatching.hpp"
+#include "vr/ProSpiCameraReturnSmoothing.hpp"
+#include "vr/ProSpiRoofVisibility.hpp"
+#include "vr/ProSpiPlayerVisibility.hpp"
+#include "vr/ProSpiPlayerVisibilityCode.hpp"
 
 #undef max
 #include <tracy/Tracy.hpp>
@@ -41,6 +54,8 @@
 class VR : public Mod {
 public:
     nlohmann::json get_support_diagnostics();
+    nlohmann::json get_health_snapshot();
+    void draw_health_diagnostics();
     ~VR() override;
 
     enum RenderingMethod {
@@ -117,6 +132,18 @@ public:
     static const inline std::string s_action_dpad_down = "/actions/default/in/DPad_Down";
     static const inline std::string s_action_dpad_left = "/actions/default/in/DPad_Left";
     static const inline std::string s_action_system_button = "/actions/default/in/SystemButton";
+    static const inline std::string s_action_bumper = "/actions/default/in/Bumper";
+    static const inline std::string s_action_start_button = "/actions/default/in/StartButton";
+    static const inline std::string s_action_back_button = "/actions/default/in/BackButton";
+    static const inline std::string s_action_trigger_axis = "/actions/default/in/TriggerAxis";
+    static const inline std::string s_action_squeeze = "/actions/default/in/Squeeze";
+    static const inline std::array<std::string, 10> s_touch_actions{
+        "/actions/default/in/TriggerTouch", "/actions/default/in/GripTouch",
+        "/actions/default/in/BumperTouch", "/actions/default/in/JoystickTouch",
+        "/actions/default/in/DPad_UpTouch", "/actions/default/in/DPad_RightTouch",
+        "/actions/default/in/DPad_DownTouch", "/actions/default/in/DPad_LeftTouch",
+        "/actions/default/in/StartButtonTouch", "/actions/default/in/BackButtonTouch"
+    };
     static const inline std::string s_action_thumbrest_touch_left = "/actions/default/in/ThumbrestTouchLeft";
     static const inline std::string s_action_thumbrest_touch_right = "/actions/default/in/ThumbrestTouchRight";
 
@@ -139,6 +166,7 @@ public:
             {"Keybinds", false},
             {"Console/CVars", true},
             {"Compatibility", true},
+            {"Health / Diagnostics", false},
             {"Debug", true},
         };
     }
@@ -184,10 +212,12 @@ public:
     void on_post_engine_tick(sdk::UGameEngine* engine, float delta) override;
     void on_pre_calculate_stereo_view_offset(void* stereo_device, const int32_t view_index, Rotator<float>* view_rotation, 
                                              const float world_to_meters, Vector3f* view_location, bool is_double) override;
+    void on_post_calculate_stereo_view_offset(void* stereo_device, int32_t view_index, Rotator<float>* view_rotation,
+                                             float world_to_meters, Vector3f* view_location, bool is_double) override;
     void on_pre_viewport_client_draw(void* viewport_client, void* viewport, void* canvas) override;
 
     void update_hmd_state(bool from_view_extensions = false, uint32_t frame_count = 0);
-    void update_action_states();
+    void update_action_states(bool from_stalled_xinput = false);
     void update_dpad_gestures();
 
     void reinitialize_renderer() {
@@ -241,6 +271,8 @@ public:
     Matrix4x4f get_projection_matrix(VRRuntime::Eye eye, bool flip = false);
     Matrix4x4f get_current_projection_matrix(bool flip = false);
 
+    uevr::prospi::trace::Recorder& prospi_camera_trace() noexcept { return m_prospi_camera_trace; }
+
     bool is_action_active(vr::VRActionHandle_t action, vr::VRInputValueHandle_t source = vr::k_ulInvalidInputValueHandle) const;
 
     bool is_action_active_any_joystick(vr::VRActionHandle_t action) const {
@@ -255,6 +287,10 @@ public:
         return false;
     }
     Vector2f get_joystick_axis(vr::VRInputValueHandle_t handle) const;
+    std::string get_controller_profile(vr::VRInputValueHandle_t source) const;
+    const char* get_controller_type(vr::VRInputValueHandle_t source) const;
+    uevr::steam_frame::DigitalInput get_action_state(vr::VRActionHandle_t action, vr::VRInputValueHandle_t source) const;
+    uevr::steam_frame::AnalogInput get_action_axis(vr::VRActionHandle_t action, vr::VRInputValueHandle_t source) const;
 
     vr::VRActionHandle_t get_action_handle(std::string_view action_path) {
         if (auto it = m_action_handles.find(action_path.data()); it != m_action_handles.end()) {
@@ -421,6 +457,15 @@ public:
     auto get_camera_up_offset() const {
         return m_camera_up_offset->value() + m_prospi_camera_safety_up_offset.load(std::memory_order_relaxed);
     }
+
+    struct CameraViewOffsets {
+        float forward{}, right{}, up{};
+        uevr::prospi::cut_guard::Status status{};
+        uevr::prospi::trace::NativeSource current_source{};
+        uevr::prospi::repair::Reason repair_reason{};
+    };
+    bool uses_prospi_camera_cut_guard() const;
+    CameraViewOffsets get_camera_view_offsets(const uevr::prospi::trace::Pose& input, uint64_t frame) const;
 
     auto get_world_scale() const {
         return m_world_scale->value();
@@ -680,18 +725,8 @@ public:
         return m_native_stereo_fix_preserve_secondary_pass->value();
     }
 
-    bool is_native_stereo_fix_texture_array_submit_enabled() const {
-        if (uevr::nascar::is_target()) { return false; }
-        const auto runtime = get_runtime();
-        return m_native_stereo_fix_texture_array_submit->value() &&
-            is_native_stereo_fix_enabled() &&
-            !is_native_stereo_fix_same_pass_enabled() &&
-            m_is_d3d12 &&
-            runtime != nullptr &&
-            runtime->is_openxr() &&
-            !is_using_afr() &&
-            m_rendering_method->value() == RenderingMethod::NATIVE_STEREO;
-    }
+    bool is_native_stereo_fix_texture_array_submit_enabled() const;
+    bool is_native_stereo_array_ready() const;
 
     bool is_stalker2_native_fix_experiment_enabled() const;
     bool is_stalker2_sharpen_priority_enabled() const {
@@ -875,6 +910,14 @@ public:
         return m_compatibility_ui_layer_pose_stabilizer->value();
     }
 
+    bool is_pre57_slate_ui_observation_enabled() const {
+        return m_compatibility_pre57_slate_ui_observation->value();
+    }
+
+    bool is_swgr_bink_seek_budget_enabled() const {
+        return m_compatibility_swgr_bink_seek_budget->value();
+    }
+
     bool is_dune_true_stereo_enabled() const {
         const auto runtime = get_runtime();
         return m_compatibility_dune_true_stereo->value() &&
@@ -906,18 +949,20 @@ public:
     }
 
     bool is_xinput_gamepad_active_within(std::chrono::seconds seconds) const {
-        return m_last_xinput_update.time_since_epoch().count() != 0 &&
-            (std::chrono::steady_clock::now() - m_last_xinput_update) <= seconds;
+        const auto last_update = m_last_xinput_update.load(std::memory_order_relaxed);
+        return last_update.time_since_epoch().count() != 0 &&
+            (std::chrono::steady_clock::now() - last_update) <= seconds;
     }
 
     bool is_controller_camera_conflict_guard_active() const;
     void note_stalker2_transition_stress(const char* reason);
     bool should_defer_stalker2_openxr_frame_for_transition(const char* reason);
     bool is_native_openxr_async_wait_active() const;
+    uevr::openxr_wait::Scope native_openxr_wait_only_scope() const;
+    const char* native_openxr_wait_only_status() const;
     bool request_native_openxr_async_wait();
-    void ensure_native_openxr_async_wait_worker();
     void stop_native_openxr_async_wait_worker();
-    void native_openxr_async_wait_worker_loop(std::stop_token stop_token);
+    void shutdown_native_openxr_async_wait_worker();
 
     bool is_ghosting_fix_enabled() const {
         if (is_using_mono() || is_mono_transition_quiescing()) { return false; }
@@ -1080,8 +1125,9 @@ private:
 
     bool detect_controllers();
     bool is_any_action_down();
+    bool can_recover_gamepad_input() const;
     void update_shf_auto_2d_mode(sdk::UGameEngine* engine);
-    void update_dispatch_auto_2d_mode(sdk::UGameEngine* engine);
+    void update_dispatch_movie_state(sdk::UGameEngine* engine);
     void update_mixtape_auto_2d_mode(sdk::UGameEngine* engine);
     void update_the_sinking_city_2_bink_ui_state(sdk::UGameEngine* engine);
     void update_halo_electra_cinematic_state(sdk::UGameEngine* engine);
@@ -1128,6 +1174,13 @@ private:
 
     std::optional<std::string> reinitialize_openxr() {
         spdlog::info("Reinitializing OpenXR");
+        m_native_openxr_async_worker.cancel_pending();
+        if (m_native_openxr_async_worker.busy()) {
+            // Reinitialization is retried by post-present; never join an XR wait
+            // while holding a lock its callback might need.
+            return "Waiting for the previous OpenXR worker before reinitializing";
+        }
+        stop_native_openxr_async_wait_worker();
         std::scoped_lock _{m_openvr_mtx};
 
         if (m_is_d3d12) {
@@ -1178,6 +1231,14 @@ private:
     mutable TracyLockable(std::recursive_mutex, m_actions_mtx);
     mutable std::shared_mutex m_rotation_mtx{};
 
+    uevr::steam_frame::DigitalInput read_digital_input(vr::VRActionHandle_t action, vr::VRInputValueHandle_t source) const;
+    uevr::steam_frame::AnalogInput read_trigger_axis(vr::VRInputValueHandle_t source) const;
+    bool is_native_frame_source(vr::VRInputValueHandle_t source) const;
+    bool is_gamepad_shoulder_pressed(vr::VRInputValueHandle_t source) const;
+    uint8_t gamepad_trigger_value(vr::VRInputValueHandle_t source, uint8_t existing) const;
+    void apply_frame_gamepad_input(XINPUT_GAMEPAD& gamepad) const;
+    bool is_gamepad_face_action_active(vr::VRActionHandle_t normal, vr::VRActionHandle_t swapped) const;
+
     std::vector<int32_t> m_controllers{};
     std::unordered_set<int32_t> m_controllers_set{};
 
@@ -1224,6 +1285,12 @@ private:
     vr::VRActionHandle_t m_action_dpad_left{};
 
     vr::VRActionHandle_t m_action_system_button{};
+    vr::VRActionHandle_t m_action_bumper{};
+    vr::VRActionHandle_t m_action_start_button{};
+    vr::VRActionHandle_t m_action_back_button{};
+    vr::VRActionHandle_t m_action_trigger_axis{};
+    vr::VRActionHandle_t m_action_squeeze{};
+    std::array<vr::VRActionHandle_t, 10> m_touch_actions{};
     vr::VRActionHandle_t m_action_haptic{};
     vr::VRActionHandle_t m_action_thumbrest_touch_left{};
     vr::VRActionHandle_t m_action_thumbrest_touch_right{};
@@ -1252,6 +1319,21 @@ private:
         { s_action_dpad_left, m_action_dpad_left },
 
         { s_action_system_button, m_action_system_button },
+        { s_action_bumper, m_action_bumper },
+        { s_action_start_button, m_action_start_button },
+        { s_action_back_button, m_action_back_button },
+        { s_action_trigger_axis, m_action_trigger_axis },
+        { s_action_squeeze, m_action_squeeze },
+        { s_touch_actions[0], m_touch_actions[0] },
+        { s_touch_actions[1], m_touch_actions[1] },
+        { s_touch_actions[2], m_touch_actions[2] },
+        { s_touch_actions[3], m_touch_actions[3] },
+        { s_touch_actions[4], m_touch_actions[4] },
+        { s_touch_actions[5], m_touch_actions[5] },
+        { s_touch_actions[6], m_touch_actions[6] },
+        { s_touch_actions[7], m_touch_actions[7] },
+        { s_touch_actions[8], m_touch_actions[8] },
+        { s_touch_actions[9], m_touch_actions[9] },
         { s_action_thumbrest_touch_left, m_action_thumbrest_touch_left },
         { s_action_thumbrest_touch_right, m_action_thumbrest_touch_right },
 
@@ -1264,14 +1346,16 @@ private:
     vr::VRInputValueHandle_t m_right_joystick{};
 
     std::chrono::steady_clock::time_point m_last_controller_update{};
-    std::chrono::steady_clock::time_point m_last_xinput_update{};
-    std::chrono::steady_clock::time_point m_last_xinput_spoof_sent{};
+    std::atomic<std::chrono::steady_clock::time_point> m_last_xinput_update{};
+    std::atomic<std::chrono::steady_clock::time_point> m_last_xinput_spoof_sent{};
     std::chrono::steady_clock::time_point m_last_xinput_l3_r3_menu_open{};
     std::chrono::steady_clock::time_point m_last_interaction_display{};
-    std::chrono::steady_clock::time_point m_last_engine_tick{};
+    std::atomic<std::chrono::steady_clock::time_point> m_last_engine_tick{};
     std::chrono::steady_clock::time_point m_last_mod_frame{};
     std::chrono::steady_clock::time_point m_last_tick_gap_log{};
     std::atomic_bool m_has_observed_xinput{false};
+    std::mutex m_gamepad_recovery_mtx{};
+    uevr::input_recovery::GamepadRecovery m_gamepad_recovery{}; // protected by m_gamepad_recovery_mtx
 
     struct UILayerPoseTelemetrySnapshot {
         uint64_t sample_count{};
@@ -1352,9 +1436,6 @@ private:
     std::chrono::steady_clock::time_point m_shf_auto_2d_last_sample{};
     bool m_shf_auto_2d_active{false};
     bool m_shf_auto_2d_previous_mode{false};
-    std::chrono::steady_clock::time_point m_dispatch_auto_2d_last_sample{};
-    bool m_dispatch_auto_2d_active{false};
-    bool m_dispatch_auto_2d_previous_mode{false};
     std::chrono::steady_clock::time_point m_mixtape_auto_2d_last_sample{};
     std::atomic_bool m_mixtape_auto_2d_active{false};
     bool m_mixtape_auto_2d_previous_mode{false};
@@ -1421,7 +1502,7 @@ private:
     std::atomic<uint32_t> m_stalker2_transition_stress_events{0};
     std::atomic<uint32_t> m_stalker2_transition_deferred_frames{0};
 
-    uint32_t m_lowest_xinput_user_index{};
+    std::atomic_uint32_t m_lowest_xinput_user_index{};
 
     std::chrono::nanoseconds m_last_input_delay{};
     std::chrono::nanoseconds m_avg_input_delay{};
@@ -1517,12 +1598,14 @@ private:
         PROSPI_AUTO_CAMERA_SEQUENCER_OBSERVE = 0,
         PROSPI_AUTO_CAMERA_SEQUENCER_ASSIST = 1,
         PROSPI_AUTO_CAMERA_SEQUENCER_LEARNED_ASSIST = 2,
+        PROSPI_AUTO_CAMERA_SEQUENCER_CALIBRATED_FRAMING = uevr::prospi::framing::calibrated_mode,
     };
 
     static const inline std::vector<std::string> s_prospi_auto_camera_sequencer_mode_names{
         "Observe Only",
         "Assist",
         "Learned Assist",
+        "Calibrated Framing (Experimental)",
     };
 
     const std::unique_ptr<RenderingMethodSetting> m_rendering_method{
@@ -1542,6 +1625,9 @@ private:
     const ModToggle::Ptr m_enable_gui{ ModToggle::create(generate_name("EnableGUI"), true) };
     const ModToggle::Ptr m_enable_depth{ ModToggle::create(generate_name("PassDepthToRuntime"), false, true) };
     const ModToggle::Ptr m_openxr_afr_depth_target_stability{ ModToggle::create(generate_name("OpenXRAFRDepthTargetStability"), false, true) };
+    std::string m_health_snapshot_text{}, m_health_export_status{};
+    nlohmann::json m_health_snapshot{};
+    uint64_t m_health_cvar_revision{};
     const ModToggle::Ptr m_enable_hitch_diagnostics{ ModToggle::create(generate_name("EnableHitchDiagnostics"), false, true) };
     const ModToggle::Ptr m_ktjl_openxr_factory_repair{ ModToggle::create(generate_name("KTJLOpenXRFactoryRepair"), false, true) };
     const ModToggle::Ptr m_decoupled_pitch{ ModToggle::create(generate_name("DecoupledPitch"), false) };
@@ -1651,6 +1737,13 @@ private:
     const ModToggle::Ptr m_prospi_remove_frame_pace{
         ModToggle::create(generate_name("ProSpiRemoveFramePace"), false)
     };
+
+    static const inline std::vector<std::string> s_prospi_camera_trace_detail_names{
+        "Light (1 Hz + cuts/marks)", "Detailed (30 Hz + bursts)",
+    };
+    const ModToggle::Ptr m_prospi_show_stadium_roofs{
+        ModToggle::create(generate_name("ProSpiShowStadiumRoofs"), false)
+    };
     const ModToggle::Ptr m_match_game_fov_prospi_crowd_visibility_guard{ ModToggle::create(generate_name("MatchGameFOVProSpiCrowdVisibilityGuard"), false) };
     const ModSlider::Ptr m_match_game_fov_prospi_crowd_visibility_trigger_fov{ ModSlider::create(generate_name("MatchGameFOVProSpiCrowdVisibilityTriggerFOV"), 10.0f, 40.0f, 26.0f) };
     const ModSlider::Ptr m_match_game_fov_prospi_crowd_visibility_hold_seconds{ ModSlider::create(generate_name("MatchGameFOVProSpiCrowdVisibilityHoldSeconds"), 0.5f, 15.0f, 4.0f) };
@@ -1728,6 +1821,13 @@ private:
     const ModSlider::Ptr m_match_game_fov_prospi_camera_safety_telephoto_trigger_fov{ ModSlider::create(generate_name("MatchGameFOVProSpiCameraSafetyTelephotoTriggerFOV"), 5.0f, 60.0f, 26.0f) };
     const ModSlider::Ptr m_match_game_fov_prospi_camera_safety_outfield_y_max{ ModSlider::create(generate_name("MatchGameFOVProSpiCameraSafetyOutfieldYMax"), -20000.0f, 5000.0f, -6000.0f) };
     const ModToggle::Ptr m_match_game_fov_prospi_auto_camera_sequencer{ ModToggle::create(generate_name("MatchGameFOVProSpiAutoCameraSequencer"), false) };
+    const ModToggle::Ptr m_match_game_fov_prospi_native_focus_guard{ ModToggle::create(generate_name("MatchGameFOVProSpiNativeFocusGuard"), false) };
+    const ModToggle::Ptr m_prospi_camera_trace_enabled{ ModToggle::create(generate_name("ProSpiCameraTrace"), false) };
+    const ModCombo::Ptr m_prospi_camera_trace_detail{ ModCombo::create(generate_name("ProSpiCameraTraceDetail"), s_prospi_camera_trace_detail_names, 0) };
+    const ModKey::Ptr m_prospi_camera_trace_bad_key{ ModKey::create(generate_name("ProSpiCameraTraceBadKey"), VK_F6) };
+    const ModKey::Ptr m_prospi_camera_trace_good_key{ ModKey::create(generate_name("ProSpiCameraTraceGoodKey"), VK_F7) };
+    const ModKey::Ptr m_prospi_camera_trace_toggle_key{ ModKey::create(generate_name("ProSpiCameraTraceToggleKey"), VK_F9) };
+    const ModString::Ptr m_prospi_camera_trace_stadium{ ModString::create(generate_name("ProSpiCameraTraceStadium"), "unspecified") };
     const ModToggle::Ptr m_match_game_fov_prospi_cinematic_camera_assist{ ModToggle::create(generate_name("MatchGameFOVProSpiCinematicCameraAssist"), false) };
     const ModCombo::Ptr m_match_game_fov_prospi_auto_camera_sequencer_mode{ ModCombo::create(generate_name("MatchGameFOVProSpiAutoCameraSequencerMode"), s_prospi_auto_camera_sequencer_mode_names, PROSPI_AUTO_CAMERA_SEQUENCER_ASSIST) };
     const ModSlider::Ptr m_match_game_fov_prospi_auto_camera_sequencer_trigger_fov{ ModSlider::create(generate_name("MatchGameFOVProSpiAutoCameraSequencerTriggerFOV"), 5.0f, 60.0f, 26.0f) };
@@ -1822,6 +1922,7 @@ private:
     const ModToggle::Ptr m_native_stereo_fix_preserve_secondary_pass{ ModToggle::create(generate_name("NativeStereoFixPreserveSecondaryPass"), true) };
     const ModToggle::Ptr m_native_stereo_fix_texture_array_submit{ ModToggle::create(generate_name("NativeStereoFixTextureArraySubmit"), false) };
     const ModToggle::Ptr m_native_stereo_fix_async_openxr_wait{ ModToggle::create(generate_name("NativeStereoFixAsyncOpenXRWait"), false) };
+    const ModToggle::Ptr m_native_openxr_wait_only{ ModToggle::create(generate_name("NativeOpenXRAsyncWaitOnly"), uevr::openxr_wait::default_enabled) };
     const ModToggle::Ptr m_stalker2_native_pair_experiment{ ModToggle::create(generate_name("Stalker2NativePairExperiment"), false) };
     const ModToggle::Ptr m_stalker2_sharpen_priority{ ModToggle::create(generate_name("Stalker2SharpenExistingPriority"), false) };
 
@@ -1842,6 +1943,12 @@ private:
     const ModToggle::Ptr m_compatibility_head_turn_camera_stabilizer{ ModToggle::create(generate_name("Compatibility_HeadTurnCameraStabilizer"), false, true) };
     const ModToggle::Ptr m_compatibility_ui_layer_pose_telemetry{ ModToggle::create(generate_name("Compatibility_UILayerPoseTelemetry"), false, true) };
     const ModToggle::Ptr m_compatibility_ui_layer_pose_stabilizer{ ModToggle::create(generate_name("Compatibility_UILayerPoseStabilizer"), false, true) };
+    const ModToggle::Ptr m_compatibility_dispatch_world_locked_movies{ ModToggle::create(generate_name("Compatibility_DispatchWorldLockedMovies"), false, true) };
+    const ModToggle::Ptr m_compatibility_pre57_slate_ui_observation{ ModToggle::create(generate_name("Compatibility_Pre57SlateUIObservation"), false, true) };
+    const ModToggle::Ptr m_compatibility_swgr_bink_seek_budget{ ModToggle::create(generate_name("Compatibility_SWGRBinkSeekBudget"), false, true) };
+    const ModToggle::Ptr m_compatibility_swgr_disable_panini{ ModToggle::create(generate_name("Compatibility_SWGRDisablePanini"), false, true) };
+    const ModToggle::Ptr m_compatibility_swgr_panini_component{ ModToggle::create(generate_name("Compatibility_SWGRPaniniComponentFallback"), false, true) };
+    const ModToggle::Ptr m_compatibility_swgr_letterboxing{ ModToggle::create(generate_name("Compatibility_SWGRLetterboxingFix"), false, true) };
     const ModToggle::Ptr m_compatibility_fullscreen_16x9_cameras{ ModToggle::create(generate_name("Compatibility_Fullscreen16x9Cameras"), false, true) };
     const ModSlider::Ptr m_compatibility_fullscreen_16x9_camera_aspect{ ModSlider::create(generate_name("Compatibility_Fullscreen16x9CameraAspect"), 0.0f, 4.0f, 0.0f, true) };
     const ModToggle::Ptr m_compatibility_subnautica2_native_water{ ModToggle::create(generate_name("Compatibility_Subnautica2NativeWater"), false, true) };
@@ -2039,8 +2146,10 @@ private:
 
     void update_fullscreen_16x9_camera_compatibility(sdk::UGameEngine* engine);
     void update_game_fov();
+    void publish_prospi_camera_calibrations();
+    void update_prospi_camera_trace_control();
     void clear_prospi_balanced_player_visibility_cache();
-    void update_prospi_player_visibility_guard();
+    void update_prospi_player_visibility_guard(sdk::UGameEngine* engine);
     void attempt_hook_prospi_player_visibility();
     static void prospi_player_visibility_hook(safetyhook::Context& ctx);
     void update_prospi_frame_pace_override(sdk::UGameEngine* engine);
@@ -2148,6 +2257,7 @@ public:
             *m_prospi_balanced_player_preservation,
             *m_prospi_preserve_enabled_player_models,
             *m_prospi_remove_frame_pace,
+            *m_prospi_show_stadium_roofs,
             *m_match_game_fov_prospi_crowd_visibility_guard,
             *m_match_game_fov_prospi_crowd_visibility_trigger_fov,
             *m_match_game_fov_prospi_crowd_visibility_hold_seconds,
@@ -2202,6 +2312,13 @@ public:
             *m_match_game_fov_prospi_camera_safety_telephoto_trigger_fov,
             *m_match_game_fov_prospi_camera_safety_outfield_y_max,
             *m_match_game_fov_prospi_auto_camera_sequencer,
+            *m_match_game_fov_prospi_native_focus_guard,
+            *m_prospi_camera_trace_enabled,
+            *m_prospi_camera_trace_detail,
+            *m_prospi_camera_trace_bad_key,
+            *m_prospi_camera_trace_good_key,
+            *m_prospi_camera_trace_toggle_key,
+            *m_prospi_camera_trace_stadium,
             *m_match_game_fov_prospi_cinematic_camera_assist,
             *m_match_game_fov_prospi_auto_camera_sequencer_mode,
             *m_match_game_fov_prospi_auto_camera_sequencer_trigger_fov,
@@ -2296,6 +2413,7 @@ public:
             *m_native_stereo_fix_preserve_secondary_pass,
             *m_native_stereo_fix_texture_array_submit,
             *m_native_stereo_fix_async_openxr_wait,
+            *m_native_openxr_wait_only,
             *m_stalker2_native_pair_experiment,
             *m_stalker2_sharpen_priority,
             *m_splitscreen_compatibility_mode,
@@ -2308,6 +2426,12 @@ public:
             *m_compatibility_head_turn_camera_stabilizer,
             *m_compatibility_ui_layer_pose_telemetry,
             *m_compatibility_ui_layer_pose_stabilizer,
+            *m_compatibility_dispatch_world_locked_movies,
+            *m_compatibility_pre57_slate_ui_observation,
+            *m_compatibility_swgr_bink_seek_budget,
+            *m_compatibility_swgr_disable_panini,
+            *m_compatibility_swgr_panini_component,
+            *m_compatibility_swgr_letterboxing,
             *m_compatibility_fullscreen_16x9_cameras,
             *m_compatibility_fullscreen_16x9_camera_aspect,
             *m_compatibility_subnautica2_native_water,
@@ -2351,6 +2475,14 @@ private:
     std::atomic<float> m_game_fov_raw{0.0f};
     std::atomic<float> m_game_fov_base{0.0f};
     std::atomic<float> m_game_fov_dolly_offset{0.0f};
+    uevr::prospi::cut_guard::Publication m_prospi_camera_cut_offsets;
+    mutable uevr::prospi::cut_guard::ViewCache m_prospi_camera_view_cache;
+    mutable uevr::prospi::repair::Continuity m_prospi_framing_repair;
+    mutable uevr::prospi::trace::CameraProbe m_prospi_view_identity_probe;
+    mutable uevr::prospi::shot::Identity m_prospi_last_view_identity{};
+    mutable uint64_t m_prospi_last_view_identity_time{};
+    mutable std::atomic<int32_t> m_prospi_current_view_status{0};
+    mutable std::atomic<int32_t> m_prospi_framing_repair_status{0};
     std::atomic<bool> m_game_fov_valid{false};
     std::atomic<int32_t> m_match_game_fov_prospi_preset{0};
     std::atomic<float> m_match_game_fov_prospi_actual_min_active{0.0f};
@@ -2372,6 +2504,7 @@ private:
     std::atomic<uint64_t> m_prospi_cut_cadence_guard_generation{0};
     std::mutex m_prospi_camera_calibration_mtx{};
     std::unordered_map<std::string, ProSpiCameraCalibration> m_prospi_camera_calibrations{};
+    uevr::prospi::matching::PublishedCalibrations<ProSpiCameraCalibration> m_prospi_camera_match_snapshot{};
     std::string m_prospi_current_camera_id{};
     struct ProSpiCameraCutHistoryEntry {
         std::string camera_id{};
@@ -2389,6 +2522,19 @@ private:
         std::chrono::steady_clock::time_point last_seen{};
     };
     std::mutex m_prospi_camera_history_mtx{};
+    uevr::prospi::trace::Recorder m_prospi_camera_trace{};
+    uevr::prospi::trace::SamplingPolicy m_prospi_camera_trace_sampling{};
+    uevr::prospi::trace::CameraProbe m_prospi_camera_trace_probe{};
+    uevr::prospi::trace::CameraProbe m_prospi_native_focus_probe{};
+    std::atomic<int32_t> m_prospi_native_focus_status{};
+    std::atomic<float> m_prospi_native_focus_dolly_before{}, m_prospi_native_focus_dolly_after{};
+    std::atomic<float> m_prospi_native_focus_lift_before{}, m_prospi_native_focus_lift_after{};
+    uevr::prospi::roof::VisibilityGuard m_prospi_roof_visibility{};
+    std::atomic<bool> m_prospi_camera_trace_requested{};
+    std::atomic<uint32_t> m_prospi_camera_trace_markers{};
+    std::array<std::atomic<int32_t>, 3> m_prospi_camera_trace_keys{VK_F6, VK_F7, VK_F9};
+    bool m_prospi_camera_trace_start_attempted{}, m_prospi_camera_trace_previous_write{};
+    uint32_t m_prospi_camera_trace_key_edges{};
     std::deque<ProSpiCameraCutHistoryEntry> m_prospi_camera_cut_history{};
     std::string m_prospi_selected_history_camera_id{};
     uint64_t m_prospi_camera_cut_sequence{0};
@@ -2542,6 +2688,19 @@ private:
     static constexpr int64_t PROSPI_BALANCED_CAMERA_RESET_DEBOUNCE_MS = 350;
     safetyhook::MidHook m_prospi_player_visibility_hook{};
     bool m_prospi_player_visibility_hook_attempted{false};
+    std::optional<uevr::prospi::players::Layout> m_prospi_player_layout;
+    std::atomic<bool> m_prospi_player_native_ready{};
+    std::mutex m_prospi_player_views_mutex;
+    std::array<uevr::prospi::players::View, 2> m_prospi_player_views{};
+    std::array<uevr::prospi::players::Matrix, 2> m_prospi_player_projections{};
+    std::array<int64_t, 2> m_prospi_player_projection_times{};
+    std::array<uint64_t, 2> m_prospi_player_projection_generations{};
+    uintptr_t m_prospi_player_world{};
+    int32_t m_prospi_player_world_index{-1}, m_prospi_player_world_serial{};
+    std::atomic<uint32_t> m_prospi_player_thread{};
+    std::atomic<uint64_t> m_prospi_player_scope{1};
+    std::atomic<uint32_t> m_prospi_player_tick{};
+    std::atomic<uint32_t> m_prospi_player_tracked{};
     std::atomic<bool> m_prospi_player_visibility_guard_enabled{false};
     std::atomic<uint8_t> m_prospi_player_visibility_mode{
         static_cast<uint8_t>(ProSpiPlayerVisibilityMode::OFF)
@@ -2659,6 +2818,9 @@ private:
     std::atomic<float> m_prospi_auto_camera_sequencer_confidence{0.0f};
     std::atomic<float> m_prospi_auto_camera_sequencer_fov_before{0.0f};
     std::atomic<float> m_prospi_auto_camera_sequencer_fov_after{0.0f};
+    std::atomic<int32_t> m_prospi_calibrated_framing_status{0};
+    uevr::prospi::celebration::FocusContinuity m_prospi_celebration_focus;
+    uevr::prospi::trace::CameraProbe m_prospi_celebration_identity_probe;
     bool m_prospi_auto_camera_sequencer_logged_active{false};
     int32_t m_prospi_auto_camera_sequencer_logged_zone{0};
     std::string m_prospi_auto_camera_sequencer_logged_camera_id{};
@@ -2668,6 +2830,7 @@ private:
     int32_t m_prospi_auto_camera_sequencer_last_play_mode{0};
     float m_prospi_auto_camera_sequencer_last_dolly{0.0f};
     bool m_prospi_auto_camera_sequencer_last_valid{false};
+    uevr::prospi::return_smoothing::Timeline m_prospi_camera_return_timeline{};
     std::chrono::steady_clock::time_point m_prospi_auto_camera_sequencer_last_ball_follow_time{};
     bool m_prospi_auto_camera_observation_valid{false};
     glm::vec3 m_prospi_auto_camera_observation_location{};
@@ -2715,17 +2878,22 @@ private:
     bool m_backbuffer_inconsistency{false};
     bool m_init_finished{false};
     bool m_has_hw_scheduling{false}; // hardware accelerated GPU scheduling
-    bool m_spoofed_gamepad_connection{false};
+    std::atomic_bool m_spoofed_gamepad_connection{false};
     bool m_aim_temp_disabled{false};
     bool m_subnautica2_save_thumbnail_guard_done{false};
     bool m_subnautica2_save_thumbnail_fallback_logged{false};
     bool m_subnautica2_save_thumbnail_guard_warned_exhausted{false};
     bool m_subnautica2_save_thumbnail_guard_found_candidate{false};
-    std::jthread m_native_openxr_async_wait_thread{};
-    std::mutex m_native_openxr_async_wait_mtx{};
-    std::condition_variable m_native_openxr_async_wait_cv{};
-    std::atomic_bool m_native_openxr_async_wait_inflight{false};
-    bool m_native_openxr_async_wait_pending{false};
+    struct NativeOpenXRAsyncRequest {
+        std::shared_ptr<runtimes::OpenXR> runtime;
+        uevr::native_array::FrameKey frame;
+        uint64_t array_generation{};
+        uevr::openxr_wait::Operation operation{uevr::openxr_wait::Operation::array_pre_acquire};
+        uevr::openxr_wait::Reservation wait_only{};
+    };
+    uevr::native_array::AsyncWorker<NativeOpenXRAsyncRequest> m_native_openxr_async_worker;
+    std::atomic<uevr::openxr_wait::Operation> m_native_openxr_async_operation{uevr::openxr_wait::Operation::array_pre_acquire};
+    bool m_native_openxr_wait_only_was_requested{};
     uint32_t m_subnautica2_save_thumbnail_guard_full_sweeps{0};
     uint32_t m_subnautica2_save_thumbnail_guard_patched_objects{0};
     int32_t m_subnautica2_save_thumbnail_guard_cursor{0};
@@ -2858,6 +3026,7 @@ private:
     static std::string actions_json;
     static std::string binding_rift_json;
     static std::string bindings_oculus_touch_json;
+    static std::string bindings_frame_controller_json;
     static std::string binding_vive;
     static std::string bindings_vive_controller;
     static std::string bindings_knuckles;
@@ -2866,6 +3035,7 @@ private:
         { "actions.json", actions_json },
         { "binding_rift.json", binding_rift_json },
         { "bindings_oculus_touch.json", bindings_oculus_touch_json },
+        { "bindings_frame_controller.json", bindings_frame_controller_json },
         { "binding_vive.json", binding_vive },
         { "bindings_vive_controller.json", bindings_vive_controller },
         { "bindings_knuckles.json", bindings_knuckles }

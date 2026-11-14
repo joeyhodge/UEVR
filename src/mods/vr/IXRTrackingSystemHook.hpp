@@ -7,6 +7,9 @@
 #include <memory>
 
 #include <sdk/StereoStuff.hpp>
+#include <sdk/FinchAim.hpp>
+#include <sdk/ObjectIdentity.hpp>
+#include "FinchMenuView.hpp"
 #include <safetyhook.hpp>
 
 #include "Mod.hpp"
@@ -19,6 +22,7 @@ class IXRCamera;
 class IHeadMountedDisplay;
 class APlayerController;
 class APlayerCameraManager;
+class UClass;
 }
 
 class FFakeStereoRenderingHook;
@@ -43,6 +47,7 @@ public:
 
     void manual_update_control_rotation(sdk::UGameEngine* engine = nullptr);
     void update_view_rotation(sdk::UObject* reference_obj, Rotator<float>* rot);
+    bool preserve_finch_journal_pitch() const;
 
 private:
     struct ReferenceController {
@@ -61,6 +66,11 @@ private:
 
     void pre_initialize();
     void initialize();
+    bool try_install_finch_aim();
+    bool try_prepare_finch_menu_view();
+    bool is_current_finch_controller(sdk::APlayerController* controller) const;
+    static Rotator<float>* finch_camera_handoff(sdk::APlayerController* controller,
+        Rotator<float>* output, float delta_time, const Rotator<float>* requested, bool face_pawn);
     bool analyze_head_tracking_allowed(uintptr_t return_address);
 
     // IXRTrackingSystem
@@ -84,6 +94,7 @@ private:
     // IHeadMountedDisplay
     static bool is_hmd_connected(sdk::IHeadMountedDisplay*);
     static int32_t* get_ideal_debug_canvas_render_target_size(sdk::IHeadMountedDisplay*, int32_t* out);
+    static int32_t* get_gears_debug_canvas_render_target_size(sdk::IHeadMountedDisplay*, int32_t* out);
     static SharedPtr* get_view_extension(sdk::IHeadMountedDisplay*, SharedPtr* out);
 
     // IXRCamera
@@ -160,6 +171,7 @@ private:
     uintptr_t m_addr_of_process_view_rotation_ptr{};
     //std::unique_ptr<PointerHook> m_process_view_rotation_hook{};
     safetyhook::InlineHook m_process_view_rotation_hook{};
+    safetyhook::InlineHook m_finch_camera_handoff_hook{};
     safetyhook::MidHook m_daysgone_weapon_aim_trace_hook{};
     std::atomic<void*> m_daysgone_active_pawn{};
     std::atomic<void*> m_daysgone_active_controller{};
@@ -185,11 +197,22 @@ private:
     std::chrono::steady_clock::time_point m_daysgone_weapon_aim_next_retry{};
     bool m_attempted_hook_view_rotation{false};
     bool m_initialized{false};
+    std::atomic<bool> m_finch_aim_hook_owned{false};
+    sdk::finch::aim::Contract m_finch_aim_contract{};
+    sdk::finch::aim::Layout m_finch_aim_layout{};
+    sdk::finch::aim::SetupBudget m_finch_aim_setup{};
+    std::array<sdk::UClass*, 6> m_finch_aim_classes{};
+    sdk::finch::aim::Contract m_finch_menu_contract{};
+    sdk::finch::aim::Layout m_finch_menu_layout{};
+    sdk::finch::aim::SetupBudget m_finch_menu_setup{};
+    uevr::finch_menu::Binding m_finch_menu_binding{};
+    std::array<sdk::object_liveness::Identity, 8> m_finch_menu_objects{};
     bool m_is_leq_4_25{false}; // <= 4.25, IsHeadTrackingAllowedForWorld does not exist
     bool m_is_leq_4_17{false}; // <= 4.17, IXRTrackingSystem and IXRCamera do not exist
     bool m_relative_transform_corrected{false}; // For UpdatePlayerCamera, causes player to become a midget if not corrected
 
     size_t m_offset_in_engine{0};
+    uintptr_t m_gears_debug_canvas_return_address{};
 
     union {
         Rotator<float> m_last_view_rotation;

@@ -1,0 +1,130 @@
+[
+  {
+    "edition": "ebaseball",
+    "updater_rva": 92606640,
+    "handoff_rva": 92609688,
+    "enabled": 1760,
+    "bounds": 2016,
+    "transform": 904,
+    "register": "r12b",
+    "witnesses": [
+      {
+        "rva": 92607408,
+        "bytes": "488db7e0070000f30f110ef30f1187f4070000f30f1187ec070000",
+        "asm": [
+          "lea rsi, [rdi + 0x7e0]",
+          "movss dword ptr [rsi], xmm1",
+          "movss dword ptr [rdi + 0x7f4], xmm0",
+          "movss dword ptr [rdi + 0x7ec], xmm0"
+        ]
+      },
+      {
+        "rva": 92607437,
+        "bytes": "488db7e0070000488bd6488b8f88030000e8fd76f9ff",
+        "asm": [
+          "lea rsi, [rdi + 0x7e0]",
+          "mov rdx, rsi",
+          "mov rcx, qword ptr [rdi + 0x388]",
+          "call 0x1457e8ae0"
+        ]
+      },
+      {
+        "rva": 92607898,
+        "bytes": "80bfe006000000740984db7405",
+        "asm": [
+          "cmp byte ptr [rdi + 0x6e0], 0",
+          "je 0x1458515ac",
+          "test bl, bl",
+          "je 0x1458515ac"
+        ]
+      },
+      {
+        "rva": 92609680,
+        "bytes": "e86bcdf8ff4c8b08450fb6c4488b5708488bc841ff91e8000000f30f108f70070000488bcfe8c6e4",
+        "asm": [
+          "visibility handoff incl. backend getter and model ID"
+        ]
+      },
+      {
+        "rva": 92179168,
+        "bytes": "48895c2408574883ec20488bd9488bfa488d0dfa990a15e8547bb2014885ff74124889bba0010000488b5c24304883c4205fc3488b83880100004885c0740f488b40304883c014488983a0010000488b5c24304883c4205fc3",
+        "asm": [
+          "sub_1457e8ae0"
+        ]
+      },
+      {
+        "rva": 92333664,
+        "bytes": "48895c2408574883ec20488bf9488bda488d0df5480815e8d41fb0010f1003488bc70f11070f104b100f114f100f1043200f1147200f104b30488b5c24300f114f304883c4205fc3",
+        "asm": [
+          "sub_14580e660"
+        ]
+      }
+    ],
+    "image_size": 771923968,
+    "timestamp": 1790730967,
+    "source": "Independently inspected native player updater, bounds setter and matrix copy from the matching EXE/BN database; preferred image base 0x140000000."
+  },
+  {
+    "edition": "2025",
+    "updater_rva": 90177104,
+    "handoff_rva": 90179593,
+    "enabled": 1752,
+    "bounds": 2448,
+    "transform": 896,
+    "register": "r15b",
+    "witnesses": [
+      {
+        "rva": 90177619,
+        "bytes": "488d9790090000488b8f80030000e88a65faff",
+        "asm": [
+          "lea rdx, [rdi + 0x990]",
+          "mov rcx, qword ptr [rdi + 0x380]",
+          "call 0x1455a65f0"
+        ]
+      },
+      {
+        "rva": 90178010,
+        "bytes": "488d9790090000488b8f80030000e80364faff",
+        "asm": [
+          "lea rdx, [rdi + 0x990]",
+          "mov rcx, qword ptr [rdi + 0x380]",
+          "call 0x1455a65f0"
+        ]
+      },
+      {
+        "rva": 90178030,
+        "bytes": "80bfd806000000740984db7405",
+        "asm": [
+          "cmp byte ptr [rdi + 0x6d8], 0",
+          "je 0x145600200",
+          "test bl, bl",
+          "je 0x145600200"
+        ]
+      },
+      {
+        "rva": 90179585,
+        "bytes": "e8aac9f9ff4c8b08450fb6c7488b5708488bc841ff91e0000000f30f108f60070000488bcfe8f5e6",
+        "asm": [
+          "visibility handoff incl. backend getter and model ID"
+        ]
+      },
+      {
+        "rva": 89810416,
+        "bytes": "48895c2408574883ec20488bd9488bfa488d0d8c1e8f13e8242ddc014885ff74124889bba0010000488b5c24304883c4205fc3488b83880100004885c0740f488b40304883c014488983a0010000488b5c24304883c4205fc3",
+        "asm": [
+          "sub_1455a65f0"
+        ]
+      },
+      {
+        "rva": 89961504,
+        "bytes": "48895c2408574883ec20488bf9488bda488d0df9d88c13e8f4ded9010f1003488bc70f11070f104b100f114f100f1043200f1147200f104b30488b5c24300f114f304883c4205fc3",
+        "asm": [
+          "sub_1455cb420"
+        ]
+      }
+    ],
+    "image_size": 737062912,
+    "timestamp": 1773341438,
+    "source": "Independently inspected native player updater, bounds setter and matrix copy from the matching EXE/BN database; preferred image base 0x140000000."
+  }
+]

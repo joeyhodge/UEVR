@@ -1,5 +1,11 @@
 #pragma once
 
+namespace uevr::ue59_native::dx11 {
+struct Binding;
+}
+
+#include <sdk/GalacticRacerRuntime.hpp>
+
 #include <memory>
 #include <array>
 #include <atomic>
@@ -34,6 +40,12 @@
 #include "CompatibilityPolicy.hpp"
 #include "UE58UIInitialization.hpp"
 #include "UE58OwnedUITexture.hpp"
+#include "Pre57SlateSafety.hpp"
+#include "GalacticRacerOwnedTexture.hpp"
+#include "utility/BufferedRTTextureCall.hpp"
+#include "Subnautica2BetaRenderTarget.hpp"
+#include "StupidNeverDiesUI.hpp"
+#include "DuneMonoMenu.hpp"
 #include "NativeFrameDiagnostics.hpp"
 #include "Stalker2NativePolicy.hpp"
 #include "UE57SlateSymbols.hpp"
@@ -76,6 +88,7 @@ public:
         uint32_t width{};
         uint32_t height{};
         std::optional<uevr::ue58_owned_ui::Resource> ue58_owned_resource{};
+        std::optional<uevr::swgr_owned::Resource> swgr_owned_resource{};
     };
 
     struct Everspace2D3D12SceneTargetSnapshot {
@@ -107,6 +120,24 @@ public:
         uintptr_t viewport{};
         mutable std::atomic_uint64_t last_seen_ms{};
     };
+
+    struct GalacticRacerSceneSnapshot {
+        Microsoft::WRL::ComPtr<ID3D12Resource> resource{};
+        D3D12_RESOURCE_DESC desc{};
+        uintptr_t source_texture{};
+        uint64_t generation{};
+        uintptr_t device_identity{};
+    };
+    std::shared_ptr<const GalacticRacerSceneSnapshot> get_swgr_scene_snapshot() const {
+        return swgr_scene_snapshot.load(std::memory_order_acquire);
+    }
+    std::shared_ptr<const GalacticRacerSceneSnapshot> get_swgr_ui_snapshot() const {
+        return swgr_ui_snapshot.load(std::memory_order_acquire);
+    }
+    std::unique_lock<std::mutex> try_pin_swgr_ui_registration() {
+        return std::unique_lock<std::mutex>{swgr_ui_lifetime_mutex, std::try_to_lock};
+    }
+    bool observe_swgr_scene_target(sdk::FViewport* viewport);
 
     std::shared_ptr<const NascarTextureSnapshot> get_nascar_scene_target_snapshot() const {
         auto snapshot = nascar_scene_target_snapshot.load(std::memory_order_acquire);
@@ -177,6 +208,21 @@ public:
         return static_cast<FRHITexture2D*&>(ui_target);
     }
 
+    std::shared_ptr<const uevr::buffered_rt::TextureCall> get_buffered_rt_call() const {
+        return buffered_rt_texture_call.load(std::memory_order_acquire);
+    }
+    FRHITexture2D* get_buffered_rt_ui_target() const { return buffered_rt_ui_owner.get(); }
+    std::optional<uevr::stupid_never_dies_ui::Extent> get_stupid_never_dies_ui_extent() const {
+        return uevr::stupid_never_dies_ui::extent_from_key(stupid_never_dies_ui_extent.load(std::memory_order_acquire));
+    }
+    void set_stupid_never_dies_ui_extent(uevr::stupid_never_dies_ui::Extent extent) {
+        stupid_never_dies_ui_extent.store(uevr::stupid_never_dies_ui::extent_key(extent), std::memory_order_release);
+    }
+    bool request_stupid_never_dies_ui_resize(const D3D12_RESOURCE_DESC& current,
+        uevr::stupid_never_dies_ui::Extent wanted) {
+        return uevr::stupid_never_dies_ui::request_resize_once(stupid_never_dies_ui_resize_pending, current, wanted);
+    }
+
     FRHITexture2D* get_dedicated_ui_target() {
         if (uevr::nascar::is_target()) { return get_ui_target(); }
         return static_cast<FRHITexture2D*&>(dedicated_ui_target);
@@ -195,6 +241,10 @@ public:
     }
 
     FRHITexture2D* get_render_target() {
+        if (swgr_scene_observation.load(std::memory_order_acquire)) {
+            const auto snapshot = get_swgr_scene_snapshot();
+            return snapshot ? reinterpret_cast<FRHITexture2D*>(snapshot->source_texture) : nullptr;
+        }
         if (uevr::nascar::is_target()) {
             const auto snapshot = get_nascar_scene_target_snapshot();
             // Identity only. D3D12 consumers retain the COM-owned snapshot.
@@ -279,6 +329,8 @@ public:
     void set_dedicated_ui_target(FRHITexture2D* rt, uint32_t width = 0, uint32_t height = 0);
     bool prepare_sw_zero_company_dedicated_ui_target(FRHITexture2D* rt, uint32_t width, uint32_t height);
     bool is_sw_zero_company_dedicated_ui_target_prepared(FRHITexture2D* rt) const;
+    bool try_get_pre57_slate_ui_native(FRHITexture2D* texture, Microsoft::WRL::ComPtr<ID3D12Resource>& native);
+    bool try_get_sw_zero_company_pinned_ui_resource(FRHITexture2D* rt, ID3D12Resource*& native) const;
     void inherit_dedicated_ui_state_from(VRRenderTargetManager_Base& source, const char* reason);
     void request_dedicated_ui_target(uint32_t width, uint32_t height);
     void destroy_dedicated_ui_target();
@@ -460,10 +512,15 @@ protected:
     uintptr_t texture_finalize_func{0};
     uintptr_t texture_extract_func{0};
     uintptr_t texture_finalize_callsite{0};
+    std::optional<uevr::subnautica2_beta::FinalizeOutput> subnautica2_beta_finalize_output;
     uintptr_t texture_extract_callsite{0};
 
     std::vector<uint8_t> texture_create_insn_bytes{};
     std::vector<uint8_t> texture_create_insn_bytes2{};
+    std::atomic<std::shared_ptr<const uevr::buffered_rt::TextureCall>> buffered_rt_texture_call{nullptr};
+    std::unique_ptr<FRHITexture2D, uevr::buffered_rt::ReleaseTexture> buffered_rt_ui_owner{nullptr, {}};
+    std::atomic_uint64_t stupid_never_dies_ui_extent{};
+    std::atomic_uint64_t stupid_never_dies_ui_resize_pending{};
 
     std::optional<size_t> m_viewport_force_separate_rt_offset{};
     bool m_attempted_find_force_separate_rt{false};
@@ -507,6 +564,11 @@ protected:
     void* ue58_pending_native_resource{nullptr};
     uint32_t ue58_pending_scene_target_observations{0};
     std::atomic<std::shared_ptr<const Everspace2D3D12SceneTargetSnapshot>> everspace2_scene_target_snapshot{};
+    std::atomic<std::shared_ptr<const GalacticRacerSceneSnapshot>> swgr_scene_snapshot{};
+    std::atomic<std::shared_ptr<const GalacticRacerSceneSnapshot>> swgr_ui_snapshot{};
+    std::mutex swgr_ui_lifetime_mutex{};
+    std::atomic_bool swgr_scene_observation{};
+    std::atomic_uint64_t swgr_scene_generation{};
     std::atomic<uint64_t> everspace2_scene_target_generation{};
     std::atomic<std::shared_ptr<const SWZeroCompanyD3D12SceneTargetSnapshot>> sw_zero_company_scene_target_snapshot{};
     std::atomic<uint64_t> sw_zero_company_scene_target_generation{};
@@ -741,6 +803,7 @@ public:
     void attempt_hooking();
     void attempt_hook_game_engine_tick(uintptr_t return_address = 0);
     void attempt_hook_slate_thread(uintptr_t return_address = 0, bool alternate = false);
+    void attempt_hook_stupid_never_dies_ui();
     void attempt_hook_ue57_slate_elements_pass();
     void attempt_hook_ue55_slate_output_texture_register();
     void attempt_hook_ue58_slate_output_texture_register();
@@ -812,6 +875,8 @@ public:
         return m_dune_has_live_pawn.load(std::memory_order_acquire);
     }
 
+    std::optional<uevr::dune_menu::Observation> get_dune_mono_menu_observation();
+
     struct DuneTrueStereoFrameSnapshot {
         uint32_t render_frame{};
         uint8_t eye{};
@@ -819,6 +884,7 @@ public:
 
     struct NativeStereoFramePacket {
         std::shared_ptr<const VRRenderTargetManager_Base::SceneCaptureTargetSnapshot> capture{};
+        std::shared_ptr<const uevr::ue59_native::dx11::Binding> ue59_dx11_binding{};
         sdk::FSceneViewFamily* family{};
         sdk::FSceneView* left_view{};
         sdk::FSceneView* right_view{};
@@ -847,7 +913,9 @@ public:
     std::shared_ptr<const NativeStereoFramePacket> get_native_stereo_frame_packet_for_submit(
         int32_t render_frame, uevr::native_frame::Backend backend = uevr::native_frame::Backend::unknown,
         uevr::native_frame::Ticket* diagnostic_ticket = nullptr) const;
-    void note_native_stereo_frame_packet_consumed(uint64_t serial);
+    bool ue59_dx11_split_pending(int32_t render_frame) const;
+    void note_native_stereo_frame_packet_consumed(uint64_t serial,
+        const uevr::ue59_native::dx11::Binding* submitted_dx11_binding = nullptr);
     void reject_native_stereo_frame_packet(uint64_t serial, const char* detail);
     void sync_stalker2_native_experiment(bool enabled);
     uint64_t stalker2_native_epoch() const { return m_stalker2_native_packets.epoch(); }
@@ -1035,10 +1103,19 @@ public:
     }
 
     bool has_slate_hook() {
-        return (bool)m_slate_thread_hook || m_nascar_slate_getter.active();
+        return (bool)m_slate_thread_hook || m_nascar_slate_getter.active() || (bool)m_swgr_slate_output_hook;
+    }
+
+    uintptr_t get_scene_view_constructor_hook_target_address() const {
+        return reinterpret_cast<uintptr_t>(m_sceneview_data.constructor_hook.target());
+    }
+
+    const std::vector<uint8_t>& get_scene_view_constructor_original_bytes() const {
+        return m_sceneview_data.constructor_hook.original_bytes();
     }
 
     uintptr_t get_slate_hook_target_address() const {
+        if (m_swgr_slate_output_hook) { return m_swgr_slate_output_hook.target_address(); }
         return m_slate_thread_hook.target_address();
     }
 
@@ -1085,10 +1162,22 @@ public:
     static void pre_render_dune_frame(ISceneViewExtension* extension, void* graph, sdk::FSceneViewFamily& family);
 
     const char* get_ghosting_fix_status_text();
+    const char* try_get_ghosting_fix_status_text() {
+        std::unique_lock lock{m_sceneview_data.mtx, std::try_to_lock};
+        return lock.owns_lock() ? get_ghosting_fix_status_text() : "snapshot busy; refresh later";
+    }
     const char* get_native_stereo_fix_status_text() const;
     bool is_native_stereo_fix_operational() const;
     bool is_hook_provenance_diagnostics_enabled() const noexcept {
         return m_hook_provenance_diagnostics.load(std::memory_order_acquire);
+    }
+    const char* get_pre57_slate_ui_observation_status() const {
+        std::scoped_lock lock{m_pre57_slate_observation_mutex};
+        return uevr::pre57_slate::name(m_pre57_slate_observation.state);
+    }
+    const char* try_get_pre57_slate_ui_observation_status() const {
+        std::unique_lock lock{m_pre57_slate_observation_mutex, std::try_to_lock};
+        return lock.owns_lock() ? uevr::pre57_slate::name(m_pre57_slate_observation.state) : "snapshot busy; refresh later";
     }
     uevr::vr_compatibility::UE58DedicatedUICapability get_ue58_dedicated_ui_capability() const {
         return m_ue58_slate_ui_capability.capability.load(std::memory_order_acquire);
@@ -1109,6 +1198,9 @@ public:
 
 private:
     std::string build_hook_provenance_json();
+    void update_pre57_slate_ui_observation();
+    void note_pre57_slate_ui_texture(uintptr_t texture, uintptr_t renderer = 0);
+    static void pre57_slate_ui_observation_hook(safetyhook::Context& context);
     void draw_hook_provenance_diagnostics();
     void note_ue58_slate_ui_runtime_observation(
         uintptr_t original,
@@ -1239,7 +1331,18 @@ private:
     static void ue57_add_slate_draw_elements_pass_hook(safetyhook::Context& ctx);
     static void slate_output_texture_register_hook_impl(safetyhook::Context& ctx, bool ue58);
     static void ue55_slate_output_texture_register_hook(safetyhook::Context& ctx);
+    static void stupid_never_dies_ui_hook(safetyhook::Context& ctx, bool lookup);
+    static void swgr_slate_output_hook(safetyhook::Context& ctx);
+    static void swgr_slate_output_restore_hook(safetyhook::Context& ctx);
+    static void swgr_bink_overlay_hook(void* viewport_closure, void* commands);
+    static void swgr_bink_packet_hook(safetyhook::Context& ctx);
+    void attempt_hook_swgr_bink_overlay();
+    static void swgr_bink_seek_hook(safetyhook::Context& ctx);
+    static void swgr_bink_seek_display_hook(safetyhook::Context& ctx);
+    void service_swgr_bink_seek_budget();
     static void* sw_zero_company_ue56_register_external_texture_hook(
+        void* graph_builder, void* texture, const wchar_t* name, uint8_t flags);
+    static void* goweday_register_external_texture_hook(
         void* graph_builder, void* texture, const wchar_t* name, uint8_t flags);
     static void ue58_slate_output_texture_register_hook(safetyhook::Context& ctx);
     static void daysgone_slate_intermediate_buffer_hook(safetyhook::Context& ctx);
@@ -1462,6 +1565,7 @@ private:
 
     std::atomic<NativeStereoFixState> m_native_stereo_fix_state{NativeStereoFixState::Off};
     std::atomic<std::shared_ptr<const NativeStereoFramePacket>> m_native_stereo_frame_packet{};
+    std::atomic<uint64_t> m_ue59_dx11_split_clocks{UINT64_MAX};
     uevr::stalker2_native::PacketRing<NativeStereoFramePacket> m_stalker2_native_packets{};
     std::atomic_bool m_stalker2_native_experiment{};
     std::atomic<uint64_t> m_native_stereo_packet_serial{};
@@ -1530,10 +1634,32 @@ private:
     safetyhook::MidHook m_dead_island_ue425_compute_light_grid_hook{};
     safetyhook::MidHook m_dead_island_ue425_hair_light_indices_hook{};
     safetyhook::InlineHook m_split_fiction_haze_view_builder_hook{};
+    // State outlives both the observer hook and the existing adapter callbacks.
+    std::atomic_bool m_pre57_slate_observation_enabled{};
+    std::atomic_uint64_t m_pre57_slate_observation_next_ms{};
+    bool m_pre57_slate_observation_attempted{};
+    mutable std::mutex m_pre57_slate_observation_mutex{};
+    uevr::pre57_slate::Observation m_pre57_slate_observation{};
+    std::optional<uevr::pre57_slate::Registration> m_pre57_slate_observation_registration{};
     safetyhook::InlineHook m_slate_thread_hook{};
+    safetyhook::MidHook m_stupid_never_dies_ui_hook{};
+    safetyhook::MidHook m_stupid_never_dies_ui_lookup_hook{};
+    std::optional<uevr::stupid_never_dies_ui::Call> m_stupid_never_dies_ui_call{};
     std::vector<safetyhook::MidHook> m_ue57_slate_elements_hooks{};
     safetyhook::MidHook m_ue55_slate_output_texture_register_hook{};
+    safetyhook::MidHook m_pre57_slate_observation_hook{};
+    safetyhook::MidHook m_swgr_slate_output_restore_hook{};
+    safetyhook::MidHook m_swgr_slate_output_hook{};
+    safetyhook::MidHook m_swgr_bink_packet_hook{};
+    safetyhook::InlineHook m_swgr_bink_overlay_hook{};
+    bool m_swgr_bink_attempted{};
+    safetyhook::MidHook m_swgr_bink_seek_hook{};
+    safetyhook::MidHook m_swgr_bink_seek_display_hook{};
+    bool m_swgr_bink_seek_attempted{};
+    std::atomic_bool m_swgr_bink_seek_enabled{};
+    std::atomic_uint64_t m_swgr_bink_budgeted_seeks{}, m_swgr_bink_seek_displays{};
     safetyhook::InlineHook m_sw_zero_company_ue56_slate_output_texture_register_hook{};
+    safetyhook::InlineHook m_goweday_slate_output_texture_register_hook{};
     std::vector<safetyhook::MidHook> m_ue58_slate_output_texture_register_hooks{};
 
     struct UE58SlateUICapabilityDiagnostics {

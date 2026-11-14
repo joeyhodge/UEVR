@@ -1,0 +1,215 @@
+{
+  "scope": "Original native GetStadiumComponents ownership discovery code; eBaseball and ProSpi 2025 separately verified in matching Binary Ninja databases. No fixed game RVAs are used by the runtime discovery.",
+  "cases": [
+    {
+      "edition": "ebaseball",
+      "actor_size": 544,
+      "owned_components_offset": 416,
+      "exec": 5417096240,
+      "entries": [
+        {
+          "role": "exec",
+          "address": 5417096240,
+          "original_entry": true,
+          "code": "48895c2408574883ec304c8b4a2033c04d85c9498bf80f95c04903c148894220488d542420e856f1ffff488bd8483bf8742e488b0f4885c97405e801af4600488b0b48890f48c703000000008b43088947088b430c89470c48c7430800000000488b4c24204885c97405e8d1ae4600488b5c24404883c4305fc3"
+        },
+        {
+          "role": "query",
+          "address": 5417092528,
+          "original_entry": true,
+          "code": "40534883ec2033c0488bda48890248894208e829e2ffff488bc34883c4205bc3"
+        },
+        {
+          "role": "collect",
+          "address": 5417084912,
+          "original_entry": true,
+          "code": "48895c241048896c2418565741574883ec208b420c33f6897208488bfa488be985c0790a33d2488bcfe8322bb5ffe88da14402488bd84885c07427e820a730024885c0741d488d5030486340383b43387f10488bc8488b4330483914c87503488bf3e8f9a630024c8bc7488bd3488bcd483bf07507e8e688c3ffeb05e8df8ac3ffe83aa14402488bd8e8a2210000488bd0488bcb4c8bf8e8a4c55f0084c00f858b00000048635f0885db0f8e7f0000008d43ff4c897424404863f0488d2cdd0000000048c1e6034c8bf5660f1f440000488b07498bd7488b4c28f8488b4910e85cc55f0084c075308b47088bc82bcb741a488b074c63c149c1e003498d1406488d0c06e88f2a4f048b4708ffc8488bcf894708e86825b5ffffcb4983ee084883ee084883ed0885db7fa64c8b742440488b5c2448488b6c24504883c420415f5f5ec3"
+        },
+        {
+          "role": "owner",
+          "address": 5413122384,
+          "original_entry": true,
+          "code": "48895c241048897c24184c896c24205541564157488bec4883ec704c8da9a0010000c745b401000000418b7d284d8d7d1033c94c897db8894db041bbffffffff44895dc0498bd848894dc4448bc185ff7472498b47104d8bcf4885c04c0f45c88d47ff9983e21f448d1402418b1141c1fa0585d2752b66660f1f840000000000ffc14183c020894db0448945c8413bca7f2f4863c144895dc0418b148185d274df8bcaf7d923ca894db44803c94883c901480fbdc9ffc94103c8894dc43bcf7e03897dc4458b7528458bc60f1045b0418bce4c896dd80f1055c083e11f458bce0f1145e041c1f8054183e1e00f1045d841d3e30f1155f0660f15d2f20f1155d00f104de80f1145b00f114dc0443bf77469498b4710448bf74885c04963c84d8bd74c0f45d08d47ff9983e21f8d3c02418b148ac1ff054123d3751c0f1f44000041ffc04183c120443bc77f2e4963c0418b148285d274e98bca8bc2f7d94823c84803c94883c901480fbdc9ffc94103c9413bce410f4fce448bf14889b4249000000048634dcc488b45b0413bce750b4c397dc07505493bc57442488b004803c9488b34c84885f6742048637b088d47018943083b430c7e0a8bd7488bcbe83ed3eeff488b03488934f88b45bc488d4db8f7d02145c8e83645eeffeba6488bb424900000004c8d5c2470498b5b28498b7b304d8b6b38498be3415f415e5dc3"
+        }
+      ],
+      "unwind_parts": [
+        {
+          "begin": 5417096240,
+          "end": 5417096362,
+          "record": [
+            48387120,
+            48387242,
+            210447924
+          ],
+          "chained": null
+        },
+        {
+          "begin": 5417092528,
+          "end": 5417092560,
+          "record": [
+            48383408,
+            48383440,
+            210447132
+          ],
+          "chained": null
+        },
+        {
+          "begin": 5417084912,
+          "end": 5417085091,
+          "record": [
+            48375792,
+            48375971,
+            210589040
+          ],
+          "chained": null
+        },
+        {
+          "begin": 5417085091,
+          "end": 5417085215,
+          "record": [
+            48375971,
+            48376095,
+            210710920
+          ],
+          "chained": [
+            48375792,
+            48375971,
+            210589040
+          ]
+        },
+        {
+          "begin": 5417085215,
+          "end": 5417085234,
+          "record": [
+            48376095,
+            48376114,
+            210710940
+          ],
+          "chained": [
+            48375792,
+            48375971,
+            210589040
+          ]
+        },
+        {
+          "begin": 5413122384,
+          "end": 5413122762,
+          "record": [
+            44413264,
+            44413642,
+            210513864
+          ],
+          "chained": null
+        },
+        {
+          "begin": 5413122762,
+          "end": 5413122894,
+          "record": [
+            44413642,
+            44413774,
+            210513888
+          ],
+          "chained": [
+            44413264,
+            44413642,
+            210513864
+          ]
+        }
+      ]
+    },
+    {
+      "edition": "prospi2025",
+      "actor_size": 544,
+      "owned_components_offset": 416,
+      "exec": 5414623744,
+      "entries": [
+        {
+          "role": "exec",
+          "address": 5414623744,
+          "original_entry": true,
+          "code": "48895c2408574883ec304c8b4a2033c04d85c9498bf80f95c04903c148894220488d542420e856f1ffff488bd8483bf8742e488b0f4885c97405e821544600488b0b48890f48c703000000008b43088947088b430c89470c48c7430800000000488b4c24204885c97405e8f1534600488b5c24404883c4305fc3"
+        },
+        {
+          "role": "query",
+          "address": 5414620032,
+          "original_entry": true,
+          "code": "40534883ec2033c0488bda48890248894208e829e2ffff488bc34883c4205bc3"
+        },
+        {
+          "role": "collect",
+          "address": 5414612416,
+          "original_entry": false,
+          "code": "e9fb54b318"
+        },
+        {
+          "role": "collect_body",
+          "address": 5829018304,
+          "original_entry": true,
+          "code": "48895c241048896c2418565741574883ec208b420c31f68972084889d74889cd85c0790a31d24889f9e892d601e7e86dd090e94889c34885c07427e810d67ce94885c0741d488d5030486340383b43387f104889c1488b4330483914c875034889dee8e9d57ce94989f84889da4889e94839c67507e8463410e7eb05e83f3610e7e81ad090e94889c3e8a2cc4ce74889c24889d94989c7e834f6abe748232d5f6ec90984c00f859400000048635f0885db0f8e880000008d43ff4c897424404863f0488d2cdd0000000048c1e6034989ee6666666666662e0f1f840000000000488b074c89fa488b4c28f8488b4910e8dcf5abe784c075308b470889c129d9741a488b074c63c149c1e003498d1406488d0c06e88f1cc7eb8b4708ffc84889f9894708e8b8d001e7ffcb4983ee084883ee084883ed0885db7fa64c8b742440488b5c2448488b6c24504883c420415f5f5ec3"
+        },
+        {
+          "role": "owner",
+          "address": 5410649984,
+          "original_entry": true,
+          "code": "48895c241048897c24184c896c24205541564157488bec4883ec704c8da9a0010000c745b401000000418b7d284d8d7d1033c94c897db8894db041bbffffffff44895dc0498bd848894dc4448bc185ff7472498b47104d8bcf4885c04c0f45c88d47ff9983e21f448d1402418b1141c1fa0585d2752b66660f1f840000000000ffc14183c020894db0448945c8413bca7f2f4863c144895dc0418b148185d274df8bcaf7d923ca894db44803c94883c901480fbdc9ffc94103c8894dc43bcf7e03897dc4458b7528458bc60f1045b0418bce4c896dd80f1055c083e11f458bce0f1145e041c1f8054183e1e00f1045d841d3e30f1155f0660f15d2f20f1155d00f104de80f1145b00f114dc0443bf77469498b4710448bf74885c04963c84d8bd74c0f45d08d47ff9983e21f8d3c02418b148ac1ff054123d3751c0f1f44000041ffc04183c120443bc77f2e4963c0418b148285d274e98bca8bc2f7d94823c84803c94883c901480fbdc9ffc94103c9413bce410f4fce448bf14889b4249000000048634dcc488b45b0413bce750b4c397dc07505493bc57442488b004803c9488b34c84885f6742048637b088d47018943083b430c7e0a8bd7488bcbe83ed3eeff488b03488934f88b45bc488d4db8f7d02145c8e83645eeffeba6488bb424900000004c8d5c2470498b5b28498b7b304d8b6b38498be3415f415e5dc3"
+        }
+      ],
+      "unwind_parts": [
+        {
+          "begin": 5414623744,
+          "end": 5414623866,
+          "record": [
+            45914624,
+            45914746,
+            193552324
+          ],
+          "chained": null
+        },
+        {
+          "begin": 5414620032,
+          "end": 5414620064,
+          "record": [
+            45910912,
+            45910944,
+            193551532
+          ],
+          "chained": null
+        },
+        {
+          "begin": 5829018304,
+          "end": 5829018490,
+          "record": [
+            460309184,
+            460309370,
+            730377136
+          ],
+          "chained": null
+        },
+        {
+          "begin": 5410649984,
+          "end": 5410650362,
+          "record": [
+            41940864,
+            41941242,
+            193618264
+          ],
+          "chained": null
+        },
+        {
+          "begin": 5410650362,
+          "end": 5410650494,
+          "record": [
+            41941242,
+            41941374,
+            193618288
+          ],
+          "chained": [
+            41940864,
+            41941242,
+            193618264
+          ]
+        }
+      ]
+    }
+  ]
+}

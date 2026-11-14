@@ -1,0 +1,74 @@
+{
+  "provenance": "Read-only ProSpi 2025 EXE code/RIP/vtable slices, independently checked in Binary Ninja; no game objects.",
+  "sha256": "03f6832e8f544935fafadba0efdb02865cf12ed3f2a590cc6d20eed50be4aca1",
+  "base": 5368709120,
+  "timestamp": 1773341438,
+  "image_size": 737062912,
+  "vertical_fov_offset": 24,
+  "blocks": [
+    {
+      "rva": 89799040,
+      "bytes": "488bc44889580848897010574881ecc00000000f2970e80f2978d8440f2940c8"
+    },
+    {
+      "rva": 89799152,
+      "bytes": "4885db480f44d84038b0140400007405488bd8eb08488bc8e8c3010000488bcf"
+    },
+    {
+      "rva": 89799206,
+      "bytes": "440f285370440f295424300f2883800000000f29442420f3410f5cc20f28d045"
+    },
+    {
+      "rva": 89769099,
+      "bytes": "b801000000f00fc1054869100b8b0d4269100b908b0d3b69100b9048ffc983e1"
+    },
+    {
+      "rva": 89789616,
+      "bytes": "40534883ec20488bd9488d0d526e8f13e86b7edc01488b430833c9488b400848"
+    },
+    {
+      "rva": 89796336,
+      "bytes": "40534883ec20488bd9488d0dbe548f13e82b64dc01488bc34883c4205bc3cccc"
+    },
+    {
+      "rva": 89789392,
+      "bytes": "4883ec28488d0d376f8f13e8507fdc0133c04883c428c3cccccccccccccccccc"
+    },
+    {
+      "rva": 89771744,
+      "bytes": "4883ec28488d0d45b38f13e840c4dc01488b0529670f0b488b40104883c428c3"
+    },
+    {
+      "rva": 48838688,
+      "bytes": "4883ec48f20f101a8b42080f28e3f30f100d3e8da3040f28c389442438f30f10"
+    },
+    {
+      "rva": 48836912,
+      "bytes": "40534883ec50f20f1012488bd98b4208488d4c24300f28ca89442448f30f1044"
+    },
+    {
+      "rva": 48838096,
+      "bytes": "48895c2408574883ec30488b5910488bf90f297424204885db7411488b832802"
+    },
+    {
+      "rva": 89789647,
+      "bytes": "483b05b2260f0b"
+    },
+    {
+      "rva": 89769104,
+      "bytes": "f00fc1054869100b"
+    },
+    {
+      "rva": 139063088,
+      "bytes": "d0135a4501000000"
+    },
+    {
+      "rva": 128669928,
+      "bytes": "2038e942010000003031e94201000000d035e94201000000"
+    },
+    {
+      "rva": 89799327,
+      "bytes": "488b4360f30f107018"
+    }
+  ]
+}

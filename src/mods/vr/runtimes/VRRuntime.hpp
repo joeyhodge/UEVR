@@ -7,12 +7,16 @@
 #include <shared_mutex>
 #include <optional>
 #include <array>
+#include "../SteamFrameInput.hpp"
 
 #include <spdlog/spdlog.h>
 #include <sdk/Math.hpp>
 #include <utility/Config.hpp>
+#include <utility/PacingRecorder.hpp>
 
 struct VRRuntime {
+    // Observation identity only; never participates in timing or frame ownership.
+    const uint64_t diagnostic_id{utility::pacing::next_runtime_id()};
     enum class Error : int64_t {
         UNSPECIFIED = -1,
         SUCCESS = 0,
@@ -137,6 +141,13 @@ struct VRRuntime {
     bool is_openvr() const {
         return this->type() == Type::OPENVR;
     }
+
+    uint8_t get_frame_controller_mask() const {
+        return frame_controller_profiles.mask();
+    }
+
+    // Physical left/right controller identity, never inferred from the headset.
+    uevr::steam_frame::ControllerProfileCache frame_controller_profiles{};
 
     void handle_pause_select(bool systembutton_pressed) {
         const auto now = std::chrono::steady_clock::now();

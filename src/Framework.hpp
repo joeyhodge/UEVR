@@ -15,6 +15,7 @@
 #include <utility/Address.hpp>
 #include <sdk/Math.hpp>
 #include <utility/Patch.hpp>
+#include "utility/FrameworkInitialization.hpp"
 
 #include <sdk/threading/ThreadWorker.hpp>
 #include <mods/vr/d3d12/CommandContext.hpp>
@@ -377,9 +378,8 @@ private:
     std::chrono::steady_clock::time_point m_last_framework_on_frame{};
     std::chrono::steady_clock::time_point m_last_page_dec_time{};
     std::chrono::steady_clock::time_point m_last_page_inc_time{};
-    std::chrono::steady_clock::time_point m_next_d3d12_init_attempt{};
+    uevr::initialization::D3D12Retry m_d3d12_init_retry{};
     uint32_t m_frames_since_init{0};
-    uint32_t m_d3d12_init_failure_count{0};
     bool m_has_last_chance{true};
     bool m_first_initialize{true};
 

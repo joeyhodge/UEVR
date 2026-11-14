@@ -1,4 +1,6 @@
 #include "../VR.hpp"
+#include "SteamFrameBindings.hpp"
+#include "ControllerTouchBindings.hpp"
 
 std::string VR::actions_json = R"(
 {
@@ -94,8 +96,78 @@ std::string VR::actions_json = R"(
       "type": "boolean"
     },
     {
+      "name": "/actions/default/in/Bumper",
+      "type": "boolean",
+      "requirement": "optional"
+    },
+    {
+      "name": "/actions/default/in/StartButton",
+      "type": "boolean",
+      "requirement": "optional"
+    },
+    {
+      "name": "/actions/default/in/BackButton",
+      "type": "boolean",
+      "requirement": "optional"
+    },
+    {
+      "name": "/actions/default/in/TriggerAxis",
+      "type": "vector1",
+      "requirement": "optional"
+    },
+    {
       "name": "/actions/default/in/Squeeze",
       "type": "vector1"
+    },
+    {
+      "name": "/actions/default/in/TriggerTouch",
+      "type": "boolean",
+      "requirement": "optional"
+    },
+    {
+      "name": "/actions/default/in/GripTouch",
+      "type": "boolean",
+      "requirement": "optional"
+    },
+    {
+      "name": "/actions/default/in/BumperTouch",
+      "type": "boolean",
+      "requirement": "optional"
+    },
+    {
+      "name": "/actions/default/in/JoystickTouch",
+      "type": "boolean",
+      "requirement": "optional"
+    },
+    {
+      "name": "/actions/default/in/DPad_UpTouch",
+      "type": "boolean",
+      "requirement": "optional"
+    },
+    {
+      "name": "/actions/default/in/DPad_RightTouch",
+      "type": "boolean",
+      "requirement": "optional"
+    },
+    {
+      "name": "/actions/default/in/DPad_DownTouch",
+      "type": "boolean",
+      "requirement": "optional"
+    },
+    {
+      "name": "/actions/default/in/DPad_LeftTouch",
+      "type": "boolean",
+      "requirement": "optional"
+    },
+    {
+      "name": "/actions/default/in/StartButtonTouch",
+      "type": "boolean",
+      "requirement": "optional"
+    },
+    {
+      "name": "/actions/default/in/BackButtonTouch",
+      "type": "boolean",
+      "requirement": "optional"
     },
     {
       "name": "/actions/default/in/Teleport",
@@ -148,10 +220,16 @@ std::string VR::actions_json = R"(
     {
       "controller_type": "rift",
       "binding_url": "binding_rift.json"
+    },
+    {
+      "controller_type": "frame_controller",
+      "binding_url": "bindings_frame_controller.json"
     }
   ],
   "localization": []
 })";
+
+std::string VR::bindings_frame_controller_json = uevr::steam_frame::make_openvr_bindings().dump(4);
 
 std::string VR::binding_rift_json = R"(
 {
@@ -182,7 +260,7 @@ std::string VR::binding_rift_json = R"(
    "simulated_actions" : []
 })";
 
-std::string VR::bindings_oculus_touch_json = R"(
+std::string VR::bindings_oculus_touch_json = uevr::controller_touch::make_openvr_defaults(R"(
 {
    "alias_info" : {},
    
@@ -386,7 +464,7 @@ std::string VR::bindings_oculus_touch_json = R"(
    "name" : "oculus_touch",
    "options" : {},
    "simulated_actions" : []
-})";
+})");
 
 std::string VR::binding_vive = R"(
 {

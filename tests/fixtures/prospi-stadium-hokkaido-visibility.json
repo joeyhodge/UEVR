@@ -1,0 +1,4534 @@
+{
+  "scope": "read-only same-process Hokkaido Night camera-hidden / behind-plate comparison; existing structural guard enabled",
+  "captured_components": 503,
+  "changed_components": 185,
+  "rows": [
+    {
+      "component": "p07_alpha_outfield__00_adv_R.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__00_adv_R",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__00_adv_R",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__00_adv_3rd_pillar4.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__00_adv_3rd_pillar4",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__00_adv_3rd_pillar4",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__00_adv_3rd_pillar3.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__00_adv_3rd_pillar3",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__00_adv_3rd_pillar3",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__00_2F_tower11Window02.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__00_2F_tower11Window02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__00_2F_tower11Window02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__10_backnet.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__10_backnet",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__10_backnet",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__10_adv_cameraman3rd.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__10_adv_cameraman3rd",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__10_adv_cameraman3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__10_adv_cameraman1st.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__10_adv_cameraman1st",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__10_adv_cameraman1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__01_soratoshiba_handrail06.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__01_soratoshiba_handrail06",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__01_soratoshiba_handrail06",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__01_soratoshiba_handrail08.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__01_soratoshiba_handrail08",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__01_soratoshiba_handrail08",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__00_of_L_fence03.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__00_of_L_fence03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__00_of_L_fence03",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__00_std_soratoshiba08.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__00_std_soratoshiba08",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__00_std_soratoshiba08",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__00_adv_L.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__00_adv_L",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__00_adv_L",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__01_soratoshiba_handrail05.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__01_soratoshiba_handrail05",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__01_soratoshiba_handrail05",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__01_concourseLight_tower11_2.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__01_concourseLight_tower11_2",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__01_concourseLight_tower11_2",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__01_concourseLight_tower11.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__01_concourseLight_tower11",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__01_concourseLight_tower11",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__01_roof_grazedFrame02.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__01_roof_grazedFrame02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__01_roof_grazedFrame02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__00_adv_R_3F01.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__00_adv_R_3F01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__00_adv_R_3F01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__00_std_soratoshiba_illust.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__00_std_soratoshiba_illust",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__00_std_soratoshiba_illust",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__01_adv_rubber_L03.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__01_adv_rubber_L03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__01_adv_rubber_L03",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__01_alpha_outfield034.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__01_alpha_outfield034",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__01_alpha_outfield034",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__01_alpha_outfield040.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__01_alpha_outfield040",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__01_alpha_outfield040",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__01_alpha_outfield043.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__01_alpha_outfield043",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__01_alpha_outfield043",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__00_adv_R1.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__00_adv_R1",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__00_adv_R1",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__01_alpha_outfield045.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__01_alpha_outfield045",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__01_alpha_outfield045",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__01_alpha_outfield037.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__01_alpha_outfield037",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__01_alpha_outfield037",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__00_std_R_1F_shopSign02.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__00_std_R_1F_shopSign02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__00_std_R_1F_shopSign02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__00_std_2F_R_shopSign01.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__00_std_2F_R_shopSign01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__00_std_2F_R_shopSign01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_adv_stand_out_R.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_adv_stand_out_R",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_adv_stand_out_R",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_2F_1st_cocacolaSeat_adv.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_2F_1st_cocacolaSeat_adv",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_2F_1st_cocacolaSeat_adv",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_3rd_1F_shop4.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_3rd_1F_shop4",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_3rd_1F_shop4",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_3rd_1F_shop11.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_3rd_1F_shop11",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_3rd_1F_shop11",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_home_1F2.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_home_1F2",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_home_1F2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_3rd_1F_shop.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_3rd_1F_shop",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_3rd_1F_shop",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_suiteroom.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_suiteroom",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_suiteroom",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_adv_R_4F01.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_adv_R_4F01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_adv_R_4F01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_3rd_stair_sub05.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_3rd_stair_sub05",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_3rd_stair_sub05",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_3rd_1F_shop13.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_3rd_1F_shop13",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_3rd_1F_shop13",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_adv_stand_out_L.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_adv_stand_out_L",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_adv_stand_out_L",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_1st_stair_sub04.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_1st_stair_sub04",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_1st_stair_sub04",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_buttersEyeLounge01.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_buttersEyeLounge01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_buttersEyeLounge01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_3rd_2F_shop12.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_3rd_2F_shop12",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_3rd_2F_shop12",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_adv_L1.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_adv_L1",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_adv_L1",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_3rd_stair_sub06.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_3rd_stair_sub06",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_3rd_stair_sub06",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_bullpen_L.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_bullpen_L",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_bullpen_L",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_home_1F.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_home_1F",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_home_1F",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_3rd_1F_shop3.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_3rd_1F_shop3",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_3rd_1F_shop3",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_adv_stand_out_R02.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_adv_stand_out_R02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_adv_stand_out_R02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_1st_stair_sub01.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_1st_stair_sub01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_1st_stair_sub01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_home_2F_02.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_home_2F_02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_home_2F_02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_3rd_2F_shop1.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_3rd_2F_shop1",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_3rd_2F_shop1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_1st_4F_01.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_1st_4F_01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_1st_4F_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_passage_3F.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_passage_3F",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_passage_3F",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_buttersEye_desk01.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_buttersEye_desk01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_buttersEye_desk01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_3rd_2F_shop2.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_3rd_2F_shop2",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_3rd_2F_shop2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_1st_stair_sub06.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_1st_stair_sub06",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_1st_stair_sub06",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_3rd_nozleFrame1.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_3rd_nozleFrame1",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_3rd_nozleFrame1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_3rd_4F_01.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_3rd_4F_01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_3rd_4F_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_home_1F3.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_home_1F3",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_home_1F3",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_home_2F_01.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_home_2F_01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_home_2F_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_home_4F_conroom.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_home_4F_conroom",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_home_4F_conroom",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_home_4F_01.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_home_4F_01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_home_4F_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_3rd_ceiling01.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_3rd_ceiling01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_3rd_ceiling01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_bullpen_R.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_bullpen_R",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_bullpen_R",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_1st_stair_sub05.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_1st_stair_sub05",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_1st_stair_sub05",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_home_4F_stairs_sub1.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_home_4F_stairs_sub1",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_home_4F_stairs_sub1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_home_stair_sub01.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_home_stair_sub01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_home_stair_sub01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__03_std_2F_R02.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__03_std_2F_R02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__03_std_2F_R02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__02_concourseLight_L05.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__02_concourseLight_L05",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__02_concourseLight_L05",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__02_concourseLight_L04.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__02_concourseLight_L04",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__02_concourseLight_L04",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__02_std_L03.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__02_std_L03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__02_std_L03",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__02_std_L05_0.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__02_std_L05_0",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__02_std_L05_0",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__01_std_L04.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__01_std_L04",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__01_std_L04",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__04_1st_fence09.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__04_1st_fence09",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__04_1st_fence09",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__01_std_L02.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__01_std_L02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__01_std_L02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__04_alpha_outfield064.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__04_alpha_outfield064",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__04_alpha_outfield064",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__04_soratoshiba_handrail01.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__04_soratoshiba_handrail01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__04_soratoshiba_handrail01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__02_soratoshiba_handrail07.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__02_soratoshiba_handrail07",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__02_soratoshiba_handrail07",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__03_std_3rd_net03.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__03_std_3rd_net03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__03_std_3rd_net03",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__03_soratoshiba_handrail03.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__03_soratoshiba_handrail03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__03_soratoshiba_handrail03",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__03_of_handrail03.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__03_of_handrail03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__03_of_handrail03",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__02_std_L02.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__02_std_L02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__02_std_L02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__02_std_L05_1.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__02_std_L05_1",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__02_std_L05_1",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__04_alpha_outfield055.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__04_alpha_outfield055",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__04_alpha_outfield055",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__05_soratoshiba_handrail02.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__05_soratoshiba_handrail02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__05_soratoshiba_handrail02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__05_roof_movedFrame04.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__05_roof_movedFrame04",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__05_roof_movedFrame04",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__05_of_fence07.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__05_of_fence07",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__05_of_fence07",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__05_buttersEyeLounge_net.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__05_buttersEyeLounge_net",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__05_buttersEyeLounge_net",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__04_concourseLight_R02.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__04_concourseLight_R02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__04_concourseLight_R02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__04_alpha_outfield062.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__04_alpha_outfield062",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__04_alpha_outfield062",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__04_alpha_outfield053.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__04_alpha_outfield053",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__04_alpha_outfield053",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__02_alpha_outfield048.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__02_alpha_outfield048",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__02_alpha_outfield048",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_S_stairs_infield00.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_S_stairs_infield00",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_S_stairs_infield00",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_1F_gate01.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_1F_gate01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_1F_gate01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_1st_1F_shop03.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_1st_1F_shop03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_1st_1F_shop03",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_score_sub_clock.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_score_sub_clock",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_score_sub_clock",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_S_stairs_if_home_4F.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_S_stairs_if_home_4F",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_S_stairs_if_home_4F",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_S_stairs_infield03.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_S_stairs_infield03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_S_stairs_infield03",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_S_stairs_if_home_3F.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_S_stairs_if_home_3F",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_S_stairs_if_home_3F",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_1st_1F_walls01.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_1st_1F_walls01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_1st_1F_walls01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_1st_1F_shop02.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_1st_1F_shop02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_1st_1F_shop02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_1st_1F_shop01.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_1st_1F_shop01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_1st_1F_shop01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_1st_1F_walls02.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_1st_1F_walls02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_1st_1F_walls02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_1st_2F_02.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_1st_2F_02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_1st_2F_02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_1st_2F_03.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_1st_2F_03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_1st_2F_03",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_1st_2F_shop02.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_1st_2F_shop02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_1st_2F_shop02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_1st_2F_shop01.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_1st_2F_shop01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_1st_2F_shop01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_S_stairs_infield02.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_S_stairs_infield02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_S_stairs_infield02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_S_stairs_if_home_2F.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_S_stairs_if_home_2F",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_S_stairs_if_home_2F",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__11_soratoshiba_handrail10.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__11_soratoshiba_handrail10",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__11_soratoshiba_handrail10",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__11_of_handrail04.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__11_of_handrail04",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__11_of_handrail04",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__23_displayTemplate2_L.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__23_displayTemplate2_L",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__23_displayTemplate2_L",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__23_displayTemplate2_R.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__23_displayTemplate2_R",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__23_displayTemplate2_R",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__23_displayTemplate4_L.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__23_displayTemplate4_L",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__23_displayTemplate4_L",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__23_displayTemplate4_R.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__23_displayTemplate4_R",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__23_displayTemplate4_R",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__24_displayTemplate3_L.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__24_displayTemplate3_L",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__24_displayTemplate3_L",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__25_scoredisp1_L_ps5_bottom.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__25_scoredisp1_L_ps5_bottom",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__25_scoredisp1_L_ps5_bottom",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__10_soratoshiba_handrail08.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__10_soratoshiba_handrail08",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__10_soratoshiba_handrail08",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__13_pole_R_alp.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__13_pole_R_alp",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__13_pole_R_alp",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__10_soratoshiba_handrail11.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__10_soratoshiba_handrail11",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__10_soratoshiba_handrail11",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__10_soratoshiba_booth_parts.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__10_soratoshiba_booth_parts",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__10_soratoshiba_booth_parts",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__14_of_R_fenceLine.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__14_of_R_fenceLine",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__14_of_R_fenceLine",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__22_sb_photo_ps5_R.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__22_sb_photo_ps5_R",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__22_sb_photo_ps5_R",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__22_sb_photo_ps5_L.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__22_sb_photo_ps5_L",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__22_sb_photo_ps5_L",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__14_2F_tower11logo.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__14_2F_tower11logo",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__14_2F_tower11logo",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__24_displayTemplate3_R.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__24_displayTemplate3_R",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__24_displayTemplate3_R",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__25_scoredisp1_L_ps5_top.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__25_scoredisp1_L_ps5_top",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__25_scoredisp1_L_ps5_top",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__25_scoredisp1_R_ps5_bottom.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__25_scoredisp1_R_ps5_bottom",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__25_scoredisp1_R_ps5_bottom",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__10_pole_L_alp.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__10_pole_L_alp",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__10_pole_L_alp",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__05_std_3rd_fence03.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__05_std_3rd_fence03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__05_std_3rd_fence03",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__05_field_3rd_backnetFence03.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__05_field_3rd_backnetFence03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__05_field_3rd_backnetFence03",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__07_std_1st_window01.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__07_std_1st_window01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__07_std_1st_window01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__05_field_1st_dugoutclubGlass.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__05_field_1st_dugoutclubGlass",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__05_field_1st_dugoutclubGlass",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__05_concourseLight_1st_01.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__05_concourseLight_1st_01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__05_concourseLight_1st_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__07_speed_sub_top.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__07_speed_sub_top",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__07_speed_sub_top",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__04_alpha_infield063.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__04_alpha_infield063",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__04_alpha_infield063",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__05_1st_fence01.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__05_1st_fence01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__05_1st_fence01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__09_std_3rd_03.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__09_std_3rd_03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__09_std_3rd_03",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__09_concourseLight_3rd_04.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__09_concourseLight_3rd_04",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__09_concourseLight_3rd_04",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__04_field_3rd_dugoutclubGlass.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__04_field_3rd_dugoutclubGlass",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__04_field_3rd_dugoutclubGlass",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__04_lightcore_L_if.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__04_lightcore_L_if",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__04_lightcore_L_if",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__08_std_3rd_fence04.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__08_std_3rd_fence04",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__08_std_3rd_fence04",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__08_backnet_wire.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__08_backnet_wire",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__08_backnet_wire",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__04_field_fence1.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__04_field_fence1",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__04_field_fence1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__04_pipe1F_3rd1.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__04_pipe1F_3rd1",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__04_pipe1F_3rd1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__05_field_3rd_fence01.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__05_field_3rd_fence01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__05_field_3rd_fence01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__08_of_fence03.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__08_of_fence03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__08_of_fence03",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__10_adv_bench3rd_bokyu.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__10_adv_bench3rd_bokyu",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__10_adv_bench3rd_bokyu",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__05_field_3rd_backnetFence02.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__05_field_3rd_backnetFence02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__05_field_3rd_backnetFence02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__05_handrail_3F.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__05_handrail_3F",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__05_handrail_3F",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__06_field_1st_dugoutclubFence.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__06_field_1st_dugoutclubFence",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__06_field_1st_dugoutclubFence",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__06_adv_field_1st_dugoutclub03.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__06_adv_field_1st_dugoutclub03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__06_adv_field_1st_dugoutclub03",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__05_bench_1st_sign.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__05_bench_1st_sign",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__05_bench_1st_sign",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__05_3rd_fence01.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__05_3rd_fence01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__05_3rd_fence01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__05_std_3rd_fence04.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__05_std_3rd_fence04",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__05_std_3rd_fence04",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__08_ribbonVsion.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__08_ribbonVsion",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__08_ribbonVsion",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__05_roof_catWalk.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__05_roof_catWalk",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__05_roof_catWalk",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__05_std_1st_02.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__05_std_1st_02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__05_std_1st_02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__04_lightcore_R_if.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__04_lightcore_R_if",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__04_lightcore_R_if",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__07_speed_kmh.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__07_speed_kmh",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__07_speed_kmh",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__07_score_sub.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__07_score_sub",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__07_score_sub",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__06_score_sub_inning.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__06_score_sub_inning",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__06_score_sub_inning",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__06_field_3rd_fence02.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__06_field_3rd_fence02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__06_field_3rd_fence02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__06_1st_fence02.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__06_1st_fence02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__06_1st_fence02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__04_std_3rd_swingBox_alp.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__04_std_3rd_swingBox_alp",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__04_std_3rd_swingBox_alp",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__06_home_fence01.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__06_home_fence01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__06_home_fence01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__10_adv_bench1st_bokyu.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__10_adv_bench1st_bokyu",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__10_adv_bench1st_bokyu",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__07_speed_sub_bottom.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__07_speed_sub_bottom",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__07_speed_sub_bottom",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__07_backnet_demo_spi.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__07_backnet_demo_spi",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__07_backnet_demo_spi",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__04_home_suiteRoomWindow1.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__04_home_suiteRoomWindow1",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__04_home_suiteRoomWindow1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__04_field_1st_dugoutclub_obj.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__04_field_1st_dugoutclub_obj",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__04_field_1st_dugoutclub_obj",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__04_pipe2F_3rd1.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__04_pipe2F_3rd1",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__04_pipe2F_3rd1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_concourseLight_R_1f.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__06_concourseLight_R_1f",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__06_concourseLight_R_1f",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_L_fence03.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__06_L_fence03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__06_L_fence03",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_of_L_fence02.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__06_of_L_fence02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__06_of_L_fence02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_of_L_fenceLine.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__06_of_L_fenceLine",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__06_of_L_fenceLine",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_of_shutter01.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__06_of_shutter01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__06_of_shutter01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_R_fence09.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__06_R_fence09",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__06_R_fence09",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_batterIslounge_lightEmissive_00.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__06_batterIslounge_lightEmissive_00",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__06_batterIslounge_lightEmissive_00",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__05_soratoshiba_handrail10.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__05_soratoshiba_handrail10",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__05_soratoshiba_handrail10",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_soratoshiba_handrail03.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__06_soratoshiba_handrail03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__06_soratoshiba_handrail03",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__05_soratoshiba_handrail13.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__05_soratoshiba_handrail13",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__05_soratoshiba_handrail13",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_roof_movedFrame03.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__06_roof_movedFrame03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__06_roof_movedFrame03",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_1st_2F_shop03.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_1st_2F_shop03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_1st_2F_shop03",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_1st_3F_01.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_1st_3F_01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_1st_3F_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_1st_3F_02.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_1st_3F_02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_1st_3F_02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_std_1st_3F_03.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_std_1st_3F_03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_std_1st_3F_03",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__10_field_C_rubberFence01.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__10_field_C_rubberFence01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__10_field_C_rubberFence01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__09_visionFrame_R.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__09_visionFrame_R",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__09_visionFrame_R",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__09_std_R_net06.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__09_std_R_net06",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__09_std_R_net06",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__09_std_R_net05.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__09_std_R_net05",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__09_std_R_net05",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__09_std_L01.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__09_std_L01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__09_std_L01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__09_std_C_window01.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__09_std_C_window01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__09_std_C_window01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__09_std_3rd_1F_shop_escalator04.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__09_std_3rd_1F_shop_escalator04",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__09_std_3rd_1F_shop_escalator04",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__09_soratoshiba_tree02.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__09_soratoshiba_tree02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__09_soratoshiba_tree02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__09_lightcore_R_of.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__09_lightcore_R_of",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__09_lightcore_R_of",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__09_lightcore_L_of.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__09_lightcore_L_of",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__09_lightcore_L_of",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__08_std_3rd_1F_shop_escalator03.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__08_std_3rd_1F_shop_escalator03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__08_std_3rd_1F_shop_escalator03",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__08_std_soratoshiba09.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__08_std_soratoshiba09",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__08_std_soratoshiba09",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__08_soratoshiba_handrail09.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__08_soratoshiba_handrail09",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__08_soratoshiba_handrail09",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__08_roof_light_R_of.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__08_roof_light_R_of",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__08_roof_light_R_of",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__08_roof_light_L_of.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__08_roof_light_L_of",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__08_roof_light_L_of",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__08_R_of_net02.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__08_R_of_net02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__08_R_of_net02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__08_of_rubberFence02.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__08_of_rubberFence02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__08_of_rubberFence02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__08_of_fence04.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__08_of_fence04",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__08_of_fence04",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__09_visionFrame_L.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__09_visionFrame_L",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__09_visionFrame_L",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__08_buttersEyeLounge_net2.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__08_buttersEyeLounge_net2",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__08_buttersEyeLounge_net2",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__09_std_L_net04.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__09_std_L_net04",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__09_std_L_net04",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__09_std_L03.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__09_std_L03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__09_std_L03",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__09_soratoshiba_handrail06.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__09_soratoshiba_handrail06",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__09_soratoshiba_handrail06",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__09_concourseLight_L04.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__09_concourseLight_L04",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__09_concourseLight_L04",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__08_R_fence01.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__08_R_fence01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__08_R_fence01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__08_of_home_fence03.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__08_of_home_fence03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__08_of_home_fence03",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__08_of_fence02.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__08_of_fence02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__08_of_fence02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__02_concourseLight_3rd_2F_02.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__02_concourseLight_3rd_2F_02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__02_concourseLight_3rd_2F_02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__02_concourseLight_3rd_01.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__02_concourseLight_3rd_01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__02_concourseLight_3rd_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__01_std_3rd_fence05.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__01_std_3rd_fence05",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__01_std_3rd_fence05",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__01_std_2F_home_lamp.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__01_std_2F_home_lamp",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__01_std_2F_home_lamp",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__01_concourseLight_3rd_2F_02.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__01_concourseLight_3rd_2F_02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__01_concourseLight_3rd_2F_02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__01_roof_fixedFrame02.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__01_roof_fixedFrame02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__01_roof_fixedFrame02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__01_gate_3rd_foliage.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__01_gate_3rd_foliage",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__01_gate_3rd_foliage",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__01_field_home_backnetFence.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__01_field_home_backnetFence",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__01_field_home_backnetFence",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__01_field_3rd_backnetFence.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__01_field_3rd_backnetFence",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__01_field_3rd_backnetFence",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__01_field_1st_backnetFence.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__01_field_1st_backnetFence",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__01_field_1st_backnetFence",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__01_concourseLight_home_01.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__01_concourseLight_home_01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__01_concourseLight_home_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__01_concourseLight_3rd_2F_01.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__01_concourseLight_3rd_2F_01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__01_concourseLight_3rd_2F_01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_std_1st_window02.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_std_1st_window02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_std_1st_window02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_std_1st_2F_shopSign01.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_std_1st_2F_shopSign01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_std_1st_2F_shopSign01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_roof_fixedFrame03.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_roof_fixedFrame03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_roof_fixedFrame03",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_of_fence05.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_of_fence05",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_of_fence05",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_std_1st_1F_shopSign01.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_std_1st_1F_shopSign01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_std_1st_1F_shopSign01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_field_fence2.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_field_fence2",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_field_fence2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_cameraman_3rd_fence02_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_cameraman_3rd_fence02_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_cameraman_3rd_fence02_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_cameraman_1st_fence01_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_cameraman_1st_fence01_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_cameraman_1st_fence01_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_bench_3rd_fridgeWindow_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_bench_3rd_fridgeWindow_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_bench_3rd_fridgeWindow_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__04_1st_fence08.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__04_1st_fence08",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__04_1st_fence08",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__02_std_3rd_1F_shop_escalator.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__02_std_3rd_1F_shop_escalator",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__02_std_3rd_1F_shop_escalator",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__02_roof_light_L_if.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__02_roof_light_L_if",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__02_roof_light_L_if",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__02_roof_light_R_if.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__02_roof_light_R_if",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__02_roof_light_R_if",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__03_roof_light01.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__03_roof_light01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__03_roof_light01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__03_home_suiteRoomWindow02.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__03_home_suiteRoomWindow02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__03_home_suiteRoomWindow02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__03_field_3rd_dugoutclub_obj.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__03_field_3rd_dugoutclub_obj",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__03_field_3rd_dugoutclub_obj",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__03_field_3rd_dugoutclub03.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__03_field_3rd_dugoutclub03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__03_field_3rd_dugoutclub03",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__03_concourseLight_3rd_2f4.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__03_concourseLight_3rd_2f4",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__03_concourseLight_3rd_2f4",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__03_concourseLight_3rd_1f.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__03_concourseLight_3rd_1f",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__03_concourseLight_3rd_1f",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__03_concourseLight_1st02.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__03_concourseLight_1st02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__03_concourseLight_1st02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__02_std_L04.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__02_std_L04",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__02_std_L04",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_std_home_2F_04.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_std_home_2F_04",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_std_home_2F_04",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_std_3rd_1F_shopSign02.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_std_3rd_1F_shopSign02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_std_3rd_1F_shopSign02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_std_2F_home_parts1.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_std_2F_home_parts1",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_std_2F_home_parts1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__03_std_3rd_nozle.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__03_std_3rd_nozle",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__03_std_3rd_nozle",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__01_concourseLight_3rd1.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__01_concourseLight_3rd1",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__01_concourseLight_3rd1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__01_adv_pillar_3rd.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__01_adv_pillar_3rd",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__01_adv_pillar_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__03_std_3rd_net01.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__03_std_3rd_net01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__03_std_3rd_net01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__03_std_1st_04.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__03_std_1st_04",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__03_std_1st_04",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__03_std_1F_home_pipe.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__03_std_1F_home_pipe",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__03_std_1F_home_pipe",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__03_roof_R_light02.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__03_roof_R_light02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__03_roof_R_light02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__01_bench_1st_fence01_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__01_bench_1st_fence01_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__01_bench_1st_fence01_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__02_concourseLight_3rd_2F_03.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__02_concourseLight_3rd_2F_03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__02_concourseLight_3rd_2F_03",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__01_bench_1st_fence02_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__01_bench_1st_fence02_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__01_bench_1st_fence02_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__01_bench_3rd_fence02_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__01_bench_3rd_fence02_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__01_bench_3rd_fence02_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_adv_3rd_dugout1.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_adv_3rd_dugout1",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_adv_3rd_dugout1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_adv_3rd_pillar5.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_adv_3rd_pillar5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_adv_3rd_pillar5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_adv_3rd_gate01.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_adv_3rd_gate01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_adv_3rd_gate01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_adv_1st_pillar1.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_adv_1st_pillar1",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_adv_1st_pillar1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_1st_fence10.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_1st_fence10",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_1st_fence10",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_1st_2F_window.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_1st_2F_window",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_1st_2F_window",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_wall_grazedFrame_PS5.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_wall_grazedFrame_PS5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_wall_grazedFrame_PS5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_tower11foodhall.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_tower11foodhall",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_tower11foodhall",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_vision_adv_R.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_vision_adv_R",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_vision_adv_R",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_vision_adv_L.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_vision_adv_L",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_vision_adv_L",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_yezosikaDeer_sphere.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_yezosikaDeer_sphere",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_yezosikaDeer_sphere",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_tower11table.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_tower11table",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_tower11table",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_soratoshiba11.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_soratoshiba11",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_soratoshiba11",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_soratoshiba05.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_soratoshiba05",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_soratoshiba05",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_R_1F_obj02.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_R_1F_obj02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_R_1F_obj02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_R_1F_obj01.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_R_1F_obj01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_R_1F_obj01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_R_1F_booth01.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_R_1F_booth01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_R_1F_booth01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_R_1F_escalator.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_R_1F_escalator",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_R_1F_escalator",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_L_stair_sub01.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_L_stair_sub01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_L_stair_sub01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_L_rubberFence03.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_L_rubberFence03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_L_rubberFence03",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_L_rubberFence02.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_L_rubberFence02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_L_rubberFence02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_adv_bench1st01.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_adv_bench1st01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_adv_bench1st01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_adv_rubber1_L.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_adv_rubber1_L",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_adv_rubber1_L",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_adv_docomo.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_adv_docomo",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_adv_docomo",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_adv_bench3rd07.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_adv_bench3rd07",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_adv_bench3rd07",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_adv_bench3rd05.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_adv_bench3rd05",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_adv_bench3rd05",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_adv_bench3rd02.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_adv_bench3rd02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_adv_bench3rd02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_adv_bench1st05.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_adv_bench1st05",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_adv_bench1st05",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_vision_L.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_vision_L",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_vision_L",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_vision_R.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_vision_R",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_vision_R",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_adv_bench1st04.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_adv_bench1st04",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_adv_bench1st04",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_R_1F_shop01.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_R_1F_shop01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_R_1F_shop01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_soratoshiba01.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_soratoshiba01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_soratoshiba01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_R_1F_shop03.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_R_1F_shop03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_R_1F_shop03",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_R_stair_sub01.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_R_stair_sub01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_R_stair_sub01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_R_rubberFence01.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_R_rubberFence01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_R_rubberFence01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_R_ledVision.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_R_ledVision",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_R_ledVision",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_R_4F_01.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_R_4F_01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_R_4F_01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_R_1F_shop02.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_R_1F_shop02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_R_1F_shop02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_bench_1st_fridgeWindow_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_bench_1st_fridgeWindow_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_bench_1st_fridgeWindow_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_adv_stand_inL.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_adv_stand_inL",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_adv_stand_inL",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_adv_stand2F_inL.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_adv_stand2F_inL",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_adv_stand2F_inL",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_alpha_infield051.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_alpha_infield051",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_alpha_infield051",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_adv_stand_inR.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_adv_stand_inR",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_adv_stand_inR",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_adv_rubber_R.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_adv_rubber_R",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_adv_rubber_R",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_adv_rubber_home2.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_adv_rubber_home2",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_adv_rubber_home2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p06_alpha_infield__00_adv_rubber_home.fbx(nhokkaido)",
+      "mesh": "SM_p06_alpha_infield__00_adv_rubber_home",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p06_alpha_infield__00_adv_rubber_home",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_roof_movedFrame01.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_roof_movedFrame01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_roof_movedFrame01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_roof_grazedFrame3.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_roof_grazedFrame3",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_roof_grazedFrame3",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_pole_R.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_pole_R",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_pole_R",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_pole_L.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_pole_L",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_pole_L",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_outfield_L_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_outfield_L_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_outfield_L_ps5",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_of_C_rubberFence01.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_of_C_rubberFence01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_of_C_rubberFence01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_exit1_ex1.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_exit1_ex1",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_exit1_ex1",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_dustbox_R.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_dustbox_R",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_dustbox_R",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_dustbox_L.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_dustbox_L",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_dustbox_L",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_evacuation_decolight_R1.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_evacuation_decolight_R1",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_evacuation_decolight_R1",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_evacuation_decolight_L1.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_evacuation_decolight_L1",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_evacuation_decolight_L1",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_displayTemplate1_R.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_displayTemplate1_R",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_displayTemplate1_R",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_displayTemplate1_L.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_displayTemplate1_L",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_displayTemplate1_L",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_concourseLight_R.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_concourseLight_R",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_concourseLight_R",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_concourseLight_L.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_concourseLight_L",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_concourseLight_L",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_buttersEyeLounge_net_support.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_buttersEyeLounge_net_support",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_buttersEyeLounge_net_support",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_1F_tower11.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_1F_tower11",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_1F_tower11",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_1F_flagshipStore03.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_1F_flagshipStore03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_1F_flagshipStore03",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_1F_flagshipStore02.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_1F_flagshipStore02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_1F_flagshipStore02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_L_2F_01.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_L_2F_01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_L_2F_01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_C_rubberFence02.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_C_rubberFence02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_C_rubberFence02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_blackCurtain.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_blackCurtain",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_blackCurtain",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_2F_tower11_6.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_2F_tower11_6",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_2F_tower11_6",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_2F_tower11_5.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_2F_tower11_5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_2F_tower11_5",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_2F_tower11_4.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_2F_tower11_4",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_2F_tower11_4",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_2F_tower11_3.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_2F_tower11_3",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_2F_tower11_3",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_2F_tower11_2.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_2F_tower11_2",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_2F_tower11_2",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_2F_tower11_1.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_2F_tower11_1",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_2F_tower11_1",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_2F_R_shop03.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_2F_R_shop03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_2F_R_shop03",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_2F_R_shop02.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_2F_R_shop02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_2F_R_shop02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_1st_pillar1.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_1st_pillar1",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_1st_pillar1",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_2F_R_shop01.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_2F_R_shop01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_2F_R_shop01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_1F_tower11_01.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_1F_tower11_01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_1F_tower11_01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_S_stairs_of_R_3F.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_S_stairs_of_R_3F",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_S_stairs_of_R_3F",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_std_1F_flagshipStore01.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_std_1F_flagshipStore01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_std_1F_flagshipStore01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_S_stairs_of_R_4F.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_S_stairs_of_R_4F",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_S_stairs_of_R_4F",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_S_stairs_of_R_2F.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_S_stairs_of_R_2F",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_S_stairs_of_R_2F",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_S_stairs_of_R_1F.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_S_stairs_of_R_1F",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_S_stairs_of_R_1F",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_S_stairs_of_L_2F.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_S_stairs_of_L_2F",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_S_stairs_of_L_2F",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_S_stairs_of_L_1F.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_S_stairs_of_L_1F",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_S_stairs_of_L_1F",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_L_stairs_of_R_3F.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_L_stairs_of_R_3F",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_L_stairs_of_R_3F",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_led_R_bullpen_adv.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_led_R_bullpen_adv",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_led_R_bullpen_adv",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_L_stairs_of_R_4F.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_L_stairs_of_R_4F",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_L_stairs_of_R_4F",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_L_stairs_of_R_2F2.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_L_stairs_of_R_2F2",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_L_stairs_of_R_2F2",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_L_stairs_of_R_2F.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_L_stairs_of_R_2F",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_L_stairs_of_R_2F",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_L_stairs_of_R_1F.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_L_stairs_of_R_1F",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_L_stairs_of_R_1F",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p03_outfield_L_stairs_of_L_1F.fbx(nhokkaido)",
+      "mesh": "SM_p03_outfield_L_stairs_of_L_1F",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p03_outfield_L_stairs_of_L_1F",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_led_adv010.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_led_adv010",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_led_adv010",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_led_adv009.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_led_adv009",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_led_adv009",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_L_stairs_if_home_3F.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_L_stairs_if_home_3F",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_L_stairs_if_home_3F",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_led_adv002.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_led_adv002",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_led_adv002",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_L_stairs_if_home_4F.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_L_stairs_if_home_4F",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_L_stairs_if_home_4F",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_L_stairs_if_home_2F.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_L_stairs_if_home_2F",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_L_stairs_if_home_2F",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_L_stairs_if_home_1F.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_L_stairs_if_home_1F",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_L_stairs_if_home_1F",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_L_stairs_if_3rd_4F.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_L_stairs_if_3rd_4F",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_L_stairs_if_3rd_4F",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_L_stairs_if_3rd_3F02.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_L_stairs_if_3rd_3F02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_L_stairs_if_3rd_3F02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_L_stairs_if_3rd_3F01.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_L_stairs_if_3rd_3F01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_L_stairs_if_3rd_3F01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_L_stairs_if_1st_2F01.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_L_stairs_if_1st_2F01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_L_stairs_if_1st_2F01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_L_stairs_if_1st_1F02.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_L_stairs_if_1st_1F02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_L_stairs_if_1st_1F02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_L_stairs_if_1st_3F01.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_L_stairs_if_1st_3F01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_L_stairs_if_1st_3F01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_L_stairs_if_1st_1F01.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_L_stairs_if_1st_1F01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_L_stairs_if_1st_1F01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_home_adv00.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_home_adv00",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_home_adv00",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_field_home_backnetFence02.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_field_home_backnetFence02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_field_home_backnetFence02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_field_backnetRoom.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_field_backnetRoom",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_field_backnetRoom",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_field_backnetFenceFrame.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_field_backnetFenceFrame",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_field_backnetFenceFrame",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_field_3rd_rubberFence03.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_field_3rd_rubberFence03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_field_3rd_rubberFence03",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_field_3rd_dugoutClubWall_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_field_3rd_dugoutClubWall_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_field_3rd_dugoutClubWall_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_S_stairs_if_1st_4F01.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_S_stairs_if_1st_4F01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_S_stairs_if_1st_4F01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_S_stairs_if_1st_3F02.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_S_stairs_if_1st_3F02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_S_stairs_if_1st_3F02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_S_stairs_if_1st_3F01.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_S_stairs_if_1st_3F01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_S_stairs_if_1st_3F01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_S_stairs_if_1st_2F02.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_S_stairs_if_1st_2F02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_S_stairs_if_1st_2F02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_S_stairs_if_1st_2F01.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_S_stairs_if_1st_2F01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_S_stairs_if_1st_2F01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_S_stairs_if_1st_1F02.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_S_stairs_if_1st_1F02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_S_stairs_if_1st_1F02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_S_stairs_if_1st_1F01.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_S_stairs_if_1st_1F01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_S_stairs_if_1st_1F01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_roof_fixedFrame01.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_roof_fixedFrame01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_roof_fixedFrame01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_led_adv011.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_led_adv011",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_led_adv011",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_led_adv008.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_led_adv008",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_led_adv008",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_L_stairs_if_3rd_2F.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_L_stairs_if_3rd_2F",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_L_stairs_if_3rd_2F",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_led_adv006.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_led_adv006",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_led_adv006",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_led_adv003.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_led_adv003",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_led_adv003",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_L_stairs_if_3rd_1F.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_L_stairs_if_3rd_1F",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_L_stairs_if_3rd_1F",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_L_stairs_if_1st_4F02.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_L_stairs_if_1st_4F02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_L_stairs_if_1st_4F02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_L_stairs_if_1st_4F01.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_L_stairs_if_1st_4F01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_L_stairs_if_1st_4F01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_L_stairs_if_1st_3F02.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_L_stairs_if_1st_3F02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_L_stairs_if_1st_3F02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_field_3rd_dugoutclub02.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_field_3rd_dugoutclub02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_field_3rd_dugoutclub02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_field_3rd_cameraman_pole_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_field_3rd_cameraman_pole_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_field_3rd_cameraman_pole_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_field_3rd_dugoutclub01.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_field_3rd_dugoutclub01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_field_3rd_dugoutclub01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_field_3rd_backnetFence01.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_field_3rd_backnetFence01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_field_3rd_backnetFence01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_field_1st_rubberFence01.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_field_1st_rubberFence01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_field_1st_rubberFence01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_S_stairs_if_home_1F.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_S_stairs_if_home_1F",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_S_stairs_if_home_1F",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_cameraman_3rd_obj_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_cameraman_3rd_obj_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_cameraman_3rd_obj_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_cameraman_1st_rubberFence01_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_cameraman_1st_rubberFence01_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_cameraman_1st_rubberFence01_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_cameraman_1st_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_cameraman_1st_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_cameraman_1st_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_cameraman_1st_obj_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_cameraman_1st_obj_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_cameraman_1st_obj_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_cameraman3rd_wall02_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_cameraman3rd_wall02_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_cameraman3rd_wall02_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_bench_3rd_wall03_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_bench_3rd_wall03_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_bench_3rd_wall03_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_bench_3rd_wall02_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_bench_3rd_wall02_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_bench_3rd_wall02_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_chair01_1st_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_chair01_1st_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_chair01_1st_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_chair02_3rd_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_chair02_3rd_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_chair02_3rd_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_cameramanParts_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_cameramanParts_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_cameramanParts_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_bench_3rd_rubberFence_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_bench_3rd_rubberFence_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_bench_3rd_rubberFence_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_bench_3rd_props_02_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_bench_3rd_props_02_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_bench_3rd_props_02_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_bench_3rd_parts_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_bench_3rd_parts_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_bench_3rd_parts_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_dorna.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_dorna",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_dorna",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_cameraman_3rd_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_cameraman_3rd_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_cameraman_3rd_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_bench_1st_props_01_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_bench_1st_props_01_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_bench_1st_props_01_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_bench_1st_parts01_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_bench_1st_parts01_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_bench_1st_parts01_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_bench_1st_monitor_bullpen_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_bench_1st_monitor_bullpen_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_bench_1st_monitor_bullpen_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_bench_1st_light_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_bench_1st_light_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_bench_1st_light_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_field_1st_dugoutclub03.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_field_1st_dugoutclub03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_field_1st_dugoutclub03",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_field_1st_dugoutclub02.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_field_1st_dugoutclub02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_field_1st_dugoutclub02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_concourseLight_3rd.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_concourseLight_3rd",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_concourseLight_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_cameraman_3rd_rubberFence02_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_cameraman_3rd_rubberFence02_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_cameraman_3rd_rubberFence02_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_cheering.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_cheering",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_cheering",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_electric_box_01_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_electric_box_01_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_electric_box_01_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_cameraman_3rd_rubberFence01_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_cameraman_3rd_rubberFence01_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_cameraman_3rd_rubberFence01_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_dustbox_3rd.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_dustbox_3rd",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_dustbox_3rd",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_dustbox_1st1.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_dustbox_1st1",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_dustbox_1st1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_dustbox_1st.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_dustbox_1st",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_dustbox_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_concourseLight_1st.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_concourseLight_1st",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_concourseLight_1st",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_bench_3rd_floor_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_bench_3rd_floor_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_bench_3rd_floor_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_bench_3rd_door02_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_bench_3rd_door02_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_bench_3rd_door02_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_bench_3rd_monitor_bullpen_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_bench_3rd_monitor_bullpen_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_bench_3rd_monitor_bullpen_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_bench_3rd_light_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_bench_3rd_light_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_bench_3rd_light_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_bench_3rd_ceiling_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_bench_3rd_ceiling_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_bench_3rd_ceiling_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_bench_3rd_bottle_01_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_bench_3rd_bottle_01_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_bench_3rd_bottle_01_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_bench_1st_wall02_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_bench_1st_wall02_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_bench_1st_wall02_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_bench_1st_wall01_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_bench_1st_wall01_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_bench_1st_wall01_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_bench_1st_rubberFence_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_bench_1st_rubberFence_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_bench_1st_rubberFence_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_field_1st_backnetFence02.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_field_1st_backnetFence02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_field_1st_backnetFence02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_evacuation_decolight_in1.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_evacuation_decolight_in1",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_evacuation_decolight_in1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_field_1st_dugoutclub01.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_field_1st_dugoutclub01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_field_1st_dugoutclub01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_electric_box_04_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_electric_box_04_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_electric_box_04_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_electric_box_03_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_electric_box_03_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_electric_box_03_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_electric_box_02_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_electric_box_02_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_electric_box_02_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p00_soto__00_field_out01.fbx(nhokkaido)",
+      "mesh": "SM_p00_soto__00_field_out01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p00_soto__00_field_out01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p00_soto__00_field_out01_bluebear.fbx(nhokkaido)",
+      "mesh": "SM_p00_soto__00_field_out01_bluebear",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p00_soto__00_field_out01_bluebear",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_bench_1st_floor_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_bench_1st_floor_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_bench_1st_floor_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_bench_1st_doors01_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_bench_1st_doors01_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_bench_1st_doors01_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_bench_1st_ceiling_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_bench_1st_ceiling_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_bench_1st_ceiling_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_bench_1st_bottle_01_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_bench_1st_bottle_01_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_bench_1st_bottle_01_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_band02_ps5.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_band02_ps5",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_band02_ps5",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p00_soto__00_field_out04.fbx(nhokkaido)",
+      "mesh": "SM_p00_soto__00_field_out04",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p00_soto__00_field_out04",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p00_soto__00_distant_view.fbx(nhokkaido)",
+      "mesh": "SM_p00_soto__00_distant_view",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p00_soto__00_distant_view",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_adv_3rd_pillar3.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_adv_3rd_pillar3",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_adv_3rd_pillar3",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield_adv_1st_2F.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield_adv_1st_2F",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield_adv_1st_2F",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p02_infield__02_std_3rd_nozleFrame1.fbx(nhokkaido)",
+      "mesh": "SM_p02_infield__02_std_3rd_nozleFrame1",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p02_infield__02_std_3rd_nozleFrame1",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p00_soto__05_fence01.fbx(nhokkaido)",
+      "mesh": "SM_p00_soto__05_fence01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p00_soto__05_fence01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p00_soto__00_field_out03.fbx(nhokkaido)",
+      "mesh": "SM_p00_soto__00_field_out03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p00_soto__00_field_out03",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__07_of_home_fence01.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__07_of_home_fence01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__07_of_home_fence01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__07_of_fence06.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__07_of_fence06",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__07_of_fence06",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__07_L_of_net01.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__07_L_of_net01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__07_L_of_net01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__07_L_fence01.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__07_L_fence01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__07_L_fence01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__07_batterIslounge_light_00.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__07_batterIslounge_light_00",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__07_batterIslounge_light_00",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__07_adv_tower11_01.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__07_adv_tower11_01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__07_adv_tower11_01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__07_adv_rubber_L02.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__07_adv_rubber_L02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__07_adv_rubber_L02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_wall_grazedFrame01.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__06_wall_grazedFrame01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__06_wall_grazedFrame01",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_std_2F_tower11Window01.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__06_std_2F_tower11Window01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__06_std_2F_tower11Window01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_std_2F_R01.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__06_std_2F_R01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__06_std_2F_R01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_soratoshiba_net.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__06_soratoshiba_net",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__06_soratoshiba_net",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_soratoshiba_handrail11.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__06_soratoshiba_handrail11",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__06_soratoshiba_handrail11",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__06_soratoshiba_handrail09.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__06_soratoshiba_handrail09",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__06_soratoshiba_handrail09",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__07_std_L04.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__07_std_L04",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__07_std_L04",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__07_std_R_1F_obj02.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__07_std_R_1F_obj02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__07_std_R_1F_obj02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__07_tower11_tree01.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__07_tower11_tree01",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__07_tower11_tree01",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__07_wallGrazed02.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__07_wallGrazed02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__07_wallGrazed02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__08_2F_tower11Window02.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__08_2F_tower11Window02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__08_2F_tower11Window02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__08_2F_tower12Window02.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__08_2F_tower12Window02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__08_2F_tower12Window02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__07_roof_movedFrame02.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__07_roof_movedFrame02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__07_roof_movedFrame02",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__07_roof_movedFrame03.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__07_roof_movedFrame03",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__07_roof_movedFrame03",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__07_soratoshiba_handrail02.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__07_soratoshiba_handrail02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__07_soratoshiba_handrail02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__07_soratoshiba_handrail05.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__07_soratoshiba_handrail05",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__07_soratoshiba_handrail05",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__07_soratoshiba_handrail07.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__07_soratoshiba_handrail07",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__07_soratoshiba_handrail07",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__07_soratoshiba_handrail13.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__07_soratoshiba_handrail13",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__07_soratoshiba_handrail13",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__07_std_3rd_1F_shop_escalator02.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__07_std_3rd_1F_shop_escalator02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__07_std_3rd_1F_shop_escalator02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__07_of_home_fence02.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__07_of_home_fence02",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__07_of_home_fence02",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__07_of_home_fence04.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__07_of_home_fence04",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__07_of_home_fence04",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__07_R_fence06.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__07_R_fence06",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__07_R_fence06",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__07_R_fence08.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__07_R_fence08",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__07_R_fence08",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__07_R_fence09.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__07_R_fence09",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__07_R_fence09",
+      "behind_pitcher": false,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__26_score2_R_bottom.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__26_score2_R_bottom",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__26_score2_R_bottom",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__26_score0_L_speed.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__26_score0_L_speed",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__26_score0_L_speed",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__25_scoredisp2_L_ps5_top.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__25_scoredisp2_L_ps5_top",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__25_scoredisp2_L_ps5_top",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__26_score1_L_top.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__26_score1_L_top",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__26_score1_L_top",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__26_score2_L_top.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__26_score2_L_top",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__26_score2_L_top",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__26_score2_R_top.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__26_score2_R_top",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__26_score2_R_top",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__25_scoredisp2_R_ps5_bottom.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__25_scoredisp2_R_ps5_bottom",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__25_scoredisp2_R_ps5_bottom",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__25_scoredisp2_R_ps5_top.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__25_scoredisp2_R_ps5_top",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__25_scoredisp2_R_ps5_top",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__28_aurora.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__28_aurora",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__28_aurora",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__26_score2_L_bottom.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__26_score2_L_bottom",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__26_score2_L_bottom",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__26_score1_R_top.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__26_score1_R_top",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__26_score1_R_top",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__26_score1_R_bottom.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__26_score1_R_bottom",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__26_score1_R_bottom",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__26_score0_R_speed.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__26_score0_R_speed",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__26_score0_R_speed",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__26_score1_L_bottom.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__26_score1_L_bottom",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__26_score1_L_bottom",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__25_scoredisp2_L_ps5_bottom.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__25_scoredisp2_L_ps5_bottom",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__25_scoredisp2_L_ps5_bottom",
+      "behind_pitcher": true,
+      "behind_plate": true,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    },
+    {
+      "component": "p07_alpha_outfield__25_scoredisp1_R_ps5_top.fbx(nhokkaido)",
+      "mesh": "SM_p07_alpha_outfield__25_scoredisp1_R_ps5_top",
+      "package": "/Game/Stadiums/Hokkaido/Meshes/Night/SM_p07_alpha_outfield__25_scoredisp1_R_ps5_top",
+      "behind_pitcher": false,
+      "behind_plate": false,
+      "hidden_in_game": false,
+      "actor_hidden": false
+    }
+  ]
+}

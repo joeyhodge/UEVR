@@ -1,3 +1,6 @@
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <atomic>
 #include <cstddef>
 #include "../include/uevr/API.h"
@@ -7,12 +10,20 @@
 #include <limits>
 #include <mutex>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <spdlog/sinks/base_sink.h>
 #include "utility/Logging.hpp"
 #include "utility/SupportDiagnostics.hpp"
 #include "utility/UObjectAllocatorDiscovery.hpp"
+#include "utility/SceneCaptureLifecycle.hpp"
+#include "DiagnosticSnapshotTests.hpp"
+#include "PacingRecorderTests.hpp"
+#include "SupportHealthTests.hpp"
+#include "DispatchMoviePolicyTests.hpp"
+#include "utility/PostInitValidation.hpp"
+#include "utility/PostInitCodeMemory.hpp"
 // Some backend translation units still include Windows headers without NOMINMAX.
 #define max(a, b) windows_max_macro_must_not_expand(a, b)
 #include "mods/vr/CVarDiagnostics.hpp"
@@ -30,6 +41,7 @@ int test_cadence_replay();
 int test_ue58_ui_initialization();
 int test_ktjl_openxr_factory();
 int test_uobject_browser_cost();
+int test_buffered_rt_texture_call();
 
 namespace {
 // Existing SDK tables must remain a byte-for-byte prefix for pre-2.40 plugins.
@@ -66,6 +78,188 @@ static_assert(UEVR_PLUGIN_VERSION_MAJOR == 2 && UEVR_PLUGIN_VERSION_MINOR >= 40)
 int failures{};
 void expect(bool value, const char* message) {
     if (!value) { ++failures; std::cerr << "FAILED: " << message << '\n'; }
+}
+
+void test_scene_capture_lifecycle() {
+    using uevr::scene_capture::component_plan;
+    const auto run = [](bool legacy, bool passive, bool deferred_supported,
+                        bool component_created, bool target_created) {
+        const auto plan = component_plan(legacy, passive, deferred_supported);
+        int finished = component_created && (legacy || !plan.deferred_add) ? 1 : 0;
+        bool configured_before_finish = !plan.finish_after_configuration;
+        if (component_created && target_created) {
+            configured_before_finish = true;
+            finished += plan.finish_after_configuration ? 1 : 0;
+        }
+        return std::pair{finished, configured_before_finish};
+    };
+
+    expect(component_plan(false, false, true).deferred_add &&
+           component_plan(false, false, true).finish_after_configuration,
+        "validated modern/Deadzone captures defer completion until configured");
+    expect(run(false, false, true, true, true) == std::pair{1, true},
+        "deferred captures finish exactly once after target/flags/visibility setup");
+    expect(run(false, false, false, true, true) == std::pair{1, true},
+        "legacy/unknown immediate adds retain registration timing without a second finish");
+    for (bool supported : {false, true}) {
+        expect(run(false, true, supported, true, true).first == 0,
+            "Bodycam passive holders remain unregistered");
+        expect(run(true, false, supported, true, true).first == 1,
+            "Days Gone custom factories are not finished a second time");
+        expect(!component_plan(true, true, supported).deferred_add,
+            "custom legacy factory has precedence over passive/deferred flags");
+    }
+    expect(run(false, false, true, false, true).first == 0,
+        "component creation failure cannot finish a missing component");
+    expect(run(false, false, true, true, false).first == 0,
+        "target creation failure leaves a deferred component unfinished for existing cleanup");
+    for (int generation = 0; generation != 3; ++generation) {
+        expect(run(false, false, true, true, true).first == 1,
+            "retry/recreation uses a fresh per-component lifecycle plan");
+    }
+}
+
+void test_source_post_init_validation() {
+    using uevr::post_init::validates_source_slot_body;
+    const auto validate = [](std::span<const uint8_t> bytes, size_t* reads = nullptr) {
+        constexpr uintptr_t base = 0x1000;
+        return validates_source_slot_body(base, [=](uintptr_t address) -> std::span<const uint8_t> {
+            if (reads) { ++*reads; }
+            if (address < base || address - base >= bytes.size()) { return {}; }
+            return bytes.subspan(address - base, (std::min)(size_t{15}, bytes.size() - (address - base)));
+        });
+    };
+    constexpr std::array<uint8_t, 1> noop{0xC3};
+    constexpr std::array<uint8_t, 3> noop_ret_zero{0xC2,0,0};
+    constexpr std::array<uint8_t, 6> call_return{0xE8,0,0,0,0,0xC3};
+    // A development check: CALL, TEST AL,AL, JE over NOP/INT3, RET.
+    constexpr std::array<uint8_t, 12> guarded_assert{0xE8,0,0,0,0,0x84,0xC0,0x74,0x02,0x90,0xCC,0xC3};
+    constexpr std::array<uint8_t, 7> unguarded_trap{0xE8,0,0,0,0,0xCC,0xC3};
+    constexpr std::array<uint8_t, 6> direct_thunk{0xE9,0,0,0,0,0xC3};
+    constexpr std::array<uint8_t, 2> cycle{0xEB,0xFE};
+    constexpr std::array<uint8_t, 3> ret_with_pop{0xC2,8,0};
+    expect(validate(noop), "folded no-op is callable only at the source-verified slot");
+    expect(validate(noop_ret_zero), "Hotel188 RET 0 is equivalent to a folded no-op at the verified slot");
+    expect(!validate(std::span{noop_ret_zero}.first(1)) && !validate(std::span{noop_ret_zero}.first(2)),
+        "truncated RET imm16 cannot validate a source slot");
+    for (uint32_t immediate = 1; immediate <= UINT16_MAX; ++immediate) {
+        const std::array<uint8_t, 3> nonzero_cleanup{0xC2, static_cast<uint8_t>(immediate), static_cast<uint8_t>(immediate >> 8)};
+        expect(!validate(nonzero_cleanup), "every nonzero RET imm16 remains unsafe for the modern void ABI");
+    }
+    expect(validate(call_return), "ordinary PostInitProperties prefix remains accepted");
+    expect(validate(guarded_assert), "a conditional assertion trap does not reject the verified function");
+    expect(!validate(unguarded_trap), "unguarded INT3 still fails closed even after a call");
+    expect(validate(direct_thunk), "short direct thunks validate their target without execution");
+    expect(!validate(cycle), "self-referential thunk is rejected without unbounded traversal");
+    expect(!validate(ret_with_pop), "callee-pop returns do not validate the modern void ABI");
+    expect(!validate({}), "missing code fails closed");
+    for (size_t length = 1; length < call_return.size() - 1; ++length) {
+        expect(!validate(std::span{call_return}.first(length)), "truncated instruction fails closed");
+    }
+    auto wrong_bypass = guarded_assert;
+    wrong_bypass[8] = 1;
+    expect(!validate(wrong_bypass), "a branch to the trap itself is not an assertion bypass");
+    wrong_bypass[8] = 0x70;
+    expect(!validate(wrong_bypass), "out-of-image branch targets fail closed");
+    expect(!validate(std::span{direct_thunk}.first(5)), "unreadable thunk target is not accepted");
+    std::array<uint8_t, 31> excessive_thunks{};
+    for (size_t offset = 0; offset < 30; offset += 5) { excessive_thunks[offset] = 0xE9; }
+    excessive_thunks.back() = 0xC3;
+    expect(!validate(excessive_thunks), "thunk traversal has a hard hop limit");
+    std::array<uint8_t, 300> long_prefix{};
+    long_prefix.fill(0x90);
+    size_t reads{};
+    expect(!validate(long_prefix, &reads) && reads == 256,
+        "a body without calls/return has a hard byte budget");
+
+    // NewTrinity UE5.8.2 PDB-confirmed UObject::PostInitProperties prefix.
+    // The former linear checker rejected the guarded INT3 at +0xBC and then
+    // selected GetDetailedInfoInternal (slot 9) instead of the verified slot 10.
+    constexpr std::array<uint8_t, 280> development_prefix{
+        0x48,0x89,0x5C,0x24,0x10,0x57,0x48,0x83,0xEC,0x70,0x48,0x8B,0xF9,0xE8,0xEE,0xB9,
+        0x01,0x00,0x48,0x8D,0x8C,0x24,0x80,0x00,0x00,0x00,0x48,0x8B,0xD0,0x48,0x89,0x4C,
+        0x24,0x60,0x48,0x8D,0x0D,0xB7,0x2A,0xC5,0xFF,0x48,0x89,0x4C,0x24,0x58,0x48,0x8D,
+        0x4C,0x24,0x58,0xE8,0x68,0x7C,0x3C,0xFF,0x48,0x89,0x7C,0x24,0x50,0x48,0x8B,0x88,
+        0xD8,0x00,0x00,0x00,0x48,0x8D,0x58,0x58,0x48,0x85,0xC9,0x48,0x8D,0x44,0x24,0x50,
+        0x48,0x0F,0x44,0xCB,0x48,0x3B,0xC1,0x72,0x64,0x48,0x63,0x93,0x8C,0x00,0x00,0x00,
+        0x4C,0x8D,0x44,0x24,0x50,0x48,0x8D,0x04,0xD1,0x4C,0x3B,0xC0,0x73,0x4F,0x48,0x63,
+        0x83,0x88,0x00,0x00,0x00,0x4C,0x8D,0x0D,0x54,0x27,0x2E,0x0D,0x48,0xC7,0x44,0x24,
+        0x40,0x08,0x00,0x00,0x00,0x41,0xB8,0x94,0x08,0x00,0x00,0x48,0x89,0x44,0x24,0x38,
+        0x48,0x8D,0x44,0x24,0x50,0x48,0x89,0x54,0x24,0x30,0x48,0x8D,0x15,0xBF,0x93,0x2D,
+        0x0D,0x48,0x89,0x4C,0x24,0x28,0x48,0x8D,0x0D,0x5B,0x28,0x2E,0x0D,0x48,0x89,0x44,
+        0x24,0x20,0xE8,0x29,0x64,0x4E,0xFF,0x84,0xC0,0x74,0x02,0x90,0xCC,0x8B,0x83,0x88,
+        0x00,0x00,0x00,0x4C,0x8D,0x83,0x8C,0x00,0x00,0x00,0x41,0x3B,0x00,0x75,0x0D,0xB9,
+        0x08,0x08,0x00,0x00,0x48,0x8B,0xD3,0xE8,0x64,0x39,0xFD,0xFF,0x8D,0x48,0x01,0x48,
+        0xC7,0x44,0x24,0x20,0x00,0x00,0x00,0x00,0x89,0x8B,0x88,0x00,0x00,0x00,0x41,0xB0,
+        0x01,0x48,0x8B,0x93,0x80,0x00,0x00,0x00,0x48,0x63,0xC8,0x48,0x85,0xD2,0x48,0x8B,
+        0x44,0x24,0x50,0x48,0x0F,0x44,0xD3,0x45,0x33,0xC9,0x48,0x89,0x04,0xCA,0x48,0x8B,
+        0xD7,0x48,0x8B,0x4F,0x10,0x48,0x8B,0x01};
+    expect(validate(development_prefix), "matching development-build PostInitProperties validates at its real slot");
+    using uevr::post_init::may_scan_legacy_virtuals;
+    expect(!may_scan_legacy_virtuals(true, false),
+        "a rejected modern source slot never falls back to unrelated nearby/legacy virtuals");
+    expect(!may_scan_legacy_virtuals(true, true) && !may_scan_legacy_virtuals(false, true),
+        "a validated source/legacy slot is never rescanned");
+    expect(may_scan_legacy_virtuals(false, false), "unclassified legacy layouts keep their established discovery path");
+    using uevr::post_init::relative_target;
+    expect(!relative_target(0, -1) && !relative_target((std::numeric_limits<uintptr_t>::max)(), 1),
+        "branch arithmetic rejects underflow and overflow");
+
+    constexpr std::array<uint8_t, 6> import_thunk{0xFF,0x25,0,0,0,0};
+    const auto read_import_code = [&](uintptr_t address) -> std::span<const uint8_t> {
+        if (address == 0x1000) { return import_thunk; }
+        if (address == 0x2000) { return noop; } // A different loaded module.
+        return {};
+    };
+    expect(validates_source_slot_body(0x1000, read_import_code,
+        [](uintptr_t address) -> std::optional<uintptr_t> {
+            return address == 0x1006 ? std::optional<uintptr_t>{0x2000} : std::nullopt;
+        }), "RIP-relative import thunks validate their pointer and target module");
+    expect(!validates_source_slot_body(0x1000, read_import_code),
+        "unreadable RIP-relative pointer slots fail closed");
+    expect(!validates_source_slot_body(0x1000, read_import_code,
+        [](uintptr_t) -> std::optional<uintptr_t> { return 0x3000; }),
+        "non-module/invalid import targets fail closed");
+    expect(!validates_source_slot_body(0x1000, read_import_code,
+        [](uintptr_t) -> std::optional<uintptr_t> { return 0x1000; }),
+        "indirect thunk cycles are bounded too");
+
+    SYSTEM_INFO info{};
+    GetSystemInfo(&info);
+    const auto page = static_cast<size_t>(info.dwPageSize);
+    auto* memory = static_cast<uint8_t*>(VirtualAlloc(nullptr, page * 3,
+        MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+    expect(memory != nullptr, "code-window fixture allocation succeeds");
+    if (memory) {
+        constexpr std::array<uint8_t, 6> boundary_code{0xE8,0,0,0,0,0xC3};
+        memcpy(memory + page - 3, boundary_code.data(), boundary_code.size());
+        memory[page * 2 - 1] = 0xC3;
+        DWORD old{};
+        expect(VirtualProtect(memory, page, PAGE_EXECUTE_READWRITE, &old) != 0 &&
+               VirtualProtect(memory + page, page, PAGE_EXECUTE_READ, &old) != 0 &&
+               VirtualProtect(memory + page * 2, page, PAGE_NOACCESS, &old) != 0,
+            "code-window fixture protections are installed");
+        const auto base = reinterpret_cast<uintptr_t>(memory);
+        const auto reader = [&](uintptr_t address) {
+            return uevr::post_init::module_window(address, base, base + page * 3, 15, true);
+        };
+        expect(validates_source_slot_body(base + page - 3, reader),
+            "an instruction crossing readable executable regions is accepted");
+        expect(validates_source_slot_body(base + page * 2 - 1, reader),
+            "a complete return at the no-access boundary is accepted");
+        expect(!validates_source_slot_body(base + page * 2, reader),
+            "no-access code is rejected without dereferencing it");
+        expect(uevr::post_init::module_window(base + page * 2 - 1, base, base + page * 2, 15, true).size() == 1,
+            "code windows never exceed loaded-image bounds");
+        expect(VirtualProtect(memory + page, page, PAGE_READONLY, &old) != 0,
+            "data-only protection is installed");
+        expect(reader(base + page).empty() &&
+               uevr::post_init::module_window(base + page, base, base + page * 3, sizeof(uintptr_t), false).size() == sizeof(uintptr_t),
+            "readable data is allowed only for pointer slots, never as callable code");
+        expect(VirtualProtect(memory + page, page, PAGE_EXECUTE_READ | PAGE_GUARD, &old) != 0 &&
+               reader(base + page).empty(), "guarded executable pages are never read");
+        VirtualFree(memory, 0, MEM_RELEASE);
+    }
 }
 
 class CountingSink final : public spdlog::sinks::base_sink<std::mutex> {
@@ -444,6 +638,12 @@ void test_uobject_allocator_discovery() {
 }
 
 int main() {
+    pacing_recorder_tests::run(expect);
+    support_health_tests::run(expect);
+    dispatch_movie_tests::run(expect);
+    diagnostic_snapshot_tests::run(expect);
+    test_scene_capture_lifecycle();
+    test_source_post_init_validation();
     test_opaque_states();
     test_logging();
     test_readbacks();
@@ -459,6 +659,7 @@ int main() {
     failures += test_ue58_ui_initialization();
     failures += test_ktjl_openxr_factory();
     failures += test_uobject_browser_cost();
+    failures += test_buffered_rt_texture_call();
     if (failures != 0) { return 1; }
     std::cout << "Diagnostic safety tests passed\n";
     return 0;

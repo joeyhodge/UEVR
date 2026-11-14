@@ -26,6 +26,10 @@
 
 #include "Mod.hpp"
 #include "../MonoRenderingPolicy.hpp"
+#include "../DuneMonoMenu.hpp"
+#include "../ControllerTouchBindings.hpp"
+#include "../NativeOpenXRArrayPolicy.hpp"
+#include "../NativeOpenXRWaitOnly.hpp"
 
 #include "VRRuntime.hpp"
 
@@ -67,7 +71,7 @@ struct OpenXR final : public VRRuntime {
     }
 
     bool can_run_frame_loop() const {
-        return ready() &&
+        return ready() && !native_wait_only_handoff.faulted() &&
             (this->session_state == XR_SESSION_STATE_READY ||
              this->session_state == XR_SESSION_STATE_SYNCHRONIZED ||
              this->session_state == XR_SESSION_STATE_VISIBLE ||
@@ -102,6 +106,12 @@ struct OpenXR final : public VRRuntime {
     VRRuntime::Error synchronize_frame(
         std::optional<uint32_t> frame_count = std::nullopt,
         SyncFrameCallsite callsite = SyncFrameCallsite::Unknown) override;
+    std::optional<uevr::native_array::FrameKey> native_async_wait_request();
+    std::optional<uevr::native_array::FrameKey> synchronize_native_async_frame(uevr::native_array::FrameKey request);
+    std::optional<uevr::openxr_wait::Reservation> native_wait_only_request();
+    bool synchronize_native_wait_only(uevr::openxr_wait::Reservation request);
+    void fail_native_wait_only(uevr::openxr_wait::Reservation request);
+    bool native_async_pre_acquire_allowed(uevr::native_array::FrameKey frame);
     VRRuntime::Error fix_frame() override {
         // sync if necessary.
         VRRuntime::fix_frame();
@@ -160,14 +170,23 @@ public:
     std::string get_path_string(XrPath path) const;
     std::string get_session_state_string(XrSessionState state) const;
     XrPath get_path(const std::string& path) const;
-    std::string get_current_interaction_profile() const;
-    XrPath get_current_interaction_profile_path() const;
+    std::string get_current_interaction_profile(VRRuntime::Hand hand = VRRuntime::Hand::LEFT) const;
+    XrPath get_current_interaction_profile_path(VRRuntime::Hand hand = VRRuntime::Hand::LEFT) const;
+    void refresh_frame_controller_types();
+    XrPath frame_interaction_profile_path{XR_NULL_PATH};
+    std::chrono::steady_clock::time_point last_frame_controller_refresh{};
+    int frame_binding_editor_hand{};
 
     std::optional<std::string> initialize_actions(const std::string& json_string);
 
     XrResult begin_frame(const char* caller = "unknown");
+    struct PackedStereoSubmission {
+        XrSwapchain color_swapchain{XR_NULL_HANDLE};
+        bool submitted{};
+    };
     XrResult end_frame(const std::vector<XrCompositionLayerBaseHeader*>& quad_layers, bool has_depth = false,
-        uevr::ui_composition::Compositor* ui_composition = nullptr);
+        uevr::ui_composition::Compositor* ui_composition = nullptr, PackedStereoSubmission* packed_stereo = nullptr,
+        uint64_t dispatch_movie_epoch = 0);
     XrResult recover_wedged_frame(const char* reason);
     bool close_synced_frame_without_layers(const char* reason);
     bool discard_synced_frame_without_layers(const char* reason);
@@ -214,7 +233,7 @@ public:
 
     void trigger_haptic_vibration(float duration, float frequency, float amplitude, VRRuntime::Hand source) const;
     void display_bindings_editor();
-    void save_bindings();
+    void save_bindings(const std::string& interaction_profile = {});
 
 public: 
     // OpenXR specific fields
@@ -226,9 +245,13 @@ public:
     std::chrono::high_resolution_clock::time_point profiler_start_time{};
 
     std::recursive_mutex sync_mtx{};
+    uint64_t native_async_session_generation{1}; // sync_mtx owned, including session-state events.
+    uevr::openxr_wait::Handoff native_wait_only_handoff;
     std::recursive_mutex sync_assignment_mtx{};
     std::recursive_mutex event_mtx{};
     std::recursive_mutex swapchain_mtx{};
+    void note_native_array_copy(bool success);
+    std::atomic<XrTime> native_array_copy_time{0};
 
     // Making it static because for some reason destroying it doesn't actually completely destroy everything.
     // So we must make sure it always exists if we ever re-initialize OpenXR.
@@ -391,6 +414,9 @@ public:
     std::optional<Stalker2PairSubmit> m_stalker2_pair_submit{}; // sync_assignment_mtx
     std::atomic_bool m_stalker2_pair_pending{};
     void end_mono_transition_frame();
+    std::optional<uevr::dune_menu::Frame> begin_dune_mono_ui_frame(const uevr::dune_menu::Observation& owner);
+    XrResult end_dune_mono_ui_frame(const uevr::dune_menu::Frame& frame,
+        std::span<const XrCompositionLayerBaseHeader* const> layers);
     void reset_mono_projection_history();
     void note_mono_projection();
     void note_mono_main_family(uint32_t frame, bool main_family);
@@ -405,6 +431,12 @@ public:
     };
     std::array<MonoFrame, QUEUE_SIZE> mono_frames{}; // protected by sync_assignment_mtx
     std::optional<uint32_t> mono_copied_frame; // exact copy producer, not a later render callback
+    uevr::dune_menu::SceneCutoff dune_mono_ui_cutoff; // sync_assignment_mtx; never retimes a scene
+    std::optional<uevr::dune_menu::Frame> dune_mono_ui_frame; // sync_mtx; only the Present owner may finish this wait
+    uint64_t dune_mono_ui_serial{}; // sync_mtx
+    XrFrameState dune_mono_last_wait{XR_TYPE_FRAME_STATE}; // sync_mtx; actual wait result, never GT extrapolation
+    std::array<XrView, 2> dune_mono_ui_views{}; // sync_mtx; optional VD dummy poses from this UI wait
+    bool dune_mono_ui_views_valid{};
     bool capture_everspace2_submit_snapshot(uint32_t frame_count, PipelineState& snapshot);
     bool is_everspace2_snapshot_fresh(
         const PipelineState& snapshot,
@@ -567,6 +599,9 @@ public:
 
         STANDARD_COUNT = STANDARD_END - STANDARD_START,
         EXTRA_COUNT = EXTRA_END - EXTRA_START,
+
+        // Independent of scene/UI ranges; never changes existing indices.
+        DISPATCH_MOVIE = 100,
     };
 
     void clear_cached_swapchain_dimensions() {
@@ -710,7 +745,7 @@ public:
         std::vector<VectorActivator> vector_activators{};
     };
 
-    static inline std::vector<InteractionBinding> s_bindings_map {
+    static inline std::vector<InteractionBinding> s_bindings_map = uevr::controller_touch::add_openxr_controls<InteractionBinding>({
         {"/user/hand/*/input/aim/pose", "pose"},
         {"/user/hand/*/input/grip/pose", "grippose"},
         {"/user/hand/*/input/trigger", "trigger"}, // oculus?
@@ -751,7 +786,7 @@ public:
         {"/user/hand/*/input/trackpad", "touchpad"}, // vive & others
         {"/user/hand/*/input/trackpad/click", "touchpadclick"}, // vive & others
         {"/user/hand/*/output/haptic", "haptic"}, // most of them
-    };
+    });
 
     static inline std::vector<ActionVectorAssociation> s_action_vector_associations {
         { 

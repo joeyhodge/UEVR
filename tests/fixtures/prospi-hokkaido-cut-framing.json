@@ -1,0 +1,2296 @@
+{
+  "schema": 1,
+  "source_session": "session-4923318888100",
+  "stadium": "Hokkaido Nippon-Ham Fighters (reported)",
+  "limits": "No celebration recorded; authored look-at is not a verified player/ball or collision provider.",
+  "samples": [
+    {
+      "cut": 1,
+      "sequence": 3,
+      "time_ns": 4923325073800,
+      "camera": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 17.790611267089844,
+        "location": [
+          0.0,
+          -370.0,
+          40.0
+        ],
+        "rotation": [
+          7.876184463500977,
+          61.35696029663086,
+          2.1547610629113478e-07
+        ],
+        "valid": true
+      },
+      "view": {
+        "aspect": null,
+        "cache_timestamp": null,
+        "fov": 17.790611267089844,
+        "location": [
+          0.0,
+          -370.0,
+          40.0
+        ],
+        "rotation": [
+          7.929452896118164,
+          61.478816986083984,
+          -2.15503888512103e-07
+        ],
+        "valid": true
+      },
+      "native_source": {
+        "bridge_direction_error_degrees": 0.0,
+        "bridge_error_cm": 0.0,
+        "bridge_fov_error_degrees": 1.9073486328125e-06,
+        "camera_actor": 4119650368,
+        "capture_us": 160.8000030517578,
+        "focus_cm": 562.4411010742188,
+        "layout": "prospi-native-camera-v1",
+        "list_nodes": 13,
+        "look_at": [
+          265.98870849609375,
+          119.45855712890625,
+          117.59075927734375
+        ],
+        "native_frame": 40012,
+        "object": 7334642352,
+        "pcm": 8342383296,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 17.801469802856445,
+          "location": [
+            0.0,
+            -370.0,
+            40.0
+          ],
+          "rotation": [
+            7.929445743560791,
+            61.47881317138672,
+            0.0
+          ],
+          "valid": true
+        },
+        "provenance": "native publisher look-at before normalization; validated against UE bridge",
+        "status": "accepted",
+        "subject_identity_verified": false,
+        "time_ns": 4923319168900,
+        "valid": true
+      },
+      "dolly": 875.7057495117188,
+      "lift": 250.00042724609375,
+      "predicted_z": -80.00041961669922,
+      "floor": 170.0,
+      "max_lift": 400.0,
+      "base_fov": 90.0,
+      "camera_manager": 8342383296,
+      "zone": 1,
+      "framing_status": 3,
+      "automatic": true,
+      "recorded_neutral": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 90.0,
+        "location": [
+          397.6695251464844,
+          361.77093505859375,
+          408.4169006347656
+        ],
+        "rotation": [
+          7.929452896118164,
+          61.478816986083984,
+          -2.15503888512103e-07
+        ],
+        "valid": true
+      },
+      "close_correction": true,
+      "cut_rejection": false
+    },
+    {
+      "cut": 1,
+      "sequence": 108,
+      "time_ns": 4923822841000,
+      "camera": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 17.953462600708008,
+        "location": [
+          0.0,
+          -370.0,
+          40.0
+        ],
+        "rotation": [
+          8.643343925476074,
+          62.957176208496094,
+          0.0
+        ],
+        "valid": true
+      },
+      "view": {
+        "aspect": null,
+        "cache_timestamp": null,
+        "fov": 17.953462600708008,
+        "location": [
+          0.0,
+          -370.0,
+          40.0
+        ],
+        "rotation": [
+          8.703934669494629,
+          63.035709381103516,
+          4.318603146202804e-07
+        ],
+        "valid": true
+      },
+      "native_source": {
+        "bridge_direction_error_degrees": 0.0,
+        "bridge_error_cm": 0.0,
+        "bridge_fov_error_degrees": 1.9073486328125e-06,
+        "camera_actor": 4119650368,
+        "capture_us": 147.6999969482422,
+        "focus_cm": 518.5256958007812,
+        "layout": "prospi-native-camera-v1",
+        "list_nodes": 13,
+        "look_at": [
+          232.41041564941406,
+          86.83379364013672,
+          118.46772766113281
+        ],
+        "native_frame": 40027,
+        "object": 7334642352,
+        "pcm": 8342383296,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 17.964317321777344,
+          "location": [
+            0.0,
+            -370.0,
+            40.0
+          ],
+          "rotation": [
+            8.703923225402832,
+            63.03565979003906,
+            0.0
+          ],
+          "valid": true
+        },
+        "provenance": "native publisher look-at before normalization; validated against UE bridge",
+        "status": "accepted",
+        "subject_identity_verified": false,
+        "time_ns": 4923817287400,
+        "valid": true
+      },
+      "dolly": 874.1957397460938,
+      "lift": 261.37701416015625,
+      "predicted_z": -91.37701416015625,
+      "floor": 170.0,
+      "max_lift": 400.0,
+      "base_fov": 90.0,
+      "camera_manager": 8342383296,
+      "zone": 1,
+      "framing_status": 3,
+      "automatic": true,
+      "recorded_neutral": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 90.0,
+        "location": [
+          373.8909606933594,
+          364.93408203125,
+          430.65777587890625
+        ],
+        "rotation": [
+          8.703934669494629,
+          63.035709381103516,
+          4.318603146202804e-07
+        ],
+        "valid": true
+      },
+      "close_correction": true,
+      "cut_rejection": false
+    },
+    {
+      "cut": 1,
+      "sequence": 206,
+      "time_ns": 4924291893500,
+      "camera": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 18.10540008544922,
+        "location": [
+          0.0,
+          -370.0,
+          40.0
+        ],
+        "rotation": [
+          9.527806282043457,
+          63.95555114746094,
+          -4.3285788819957816e-07
+        ],
+        "valid": true
+      },
+      "view": {
+        "aspect": null,
+        "cache_timestamp": null,
+        "fov": 18.10540008544922,
+        "location": [
+          0.0,
+          -370.0,
+          40.0
+        ],
+        "rotation": [
+          9.578929901123047,
+          64.00353240966797,
+          4.3292294549246435e-07
+        ],
+        "valid": true
+      },
+      "native_source": {
+        "bridge_direction_error_degrees": 0.0,
+        "bridge_error_cm": 0.0,
+        "bridge_fov_error_degrees": 1.9073486328125e-06,
+        "camera_actor": 4119650368,
+        "capture_us": 153.60000610351562,
+        "focus_cm": 494.15667724609375,
+        "layout": "prospi-native-camera-v1",
+        "list_nodes": 13,
+        "look_at": [
+          213.5770263671875,
+          67.96549987792969,
+          122.23064422607422
+        ],
+        "native_frame": 40041,
+        "object": 7334642352,
+        "pcm": 8342383296,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 18.116252899169922,
+          "location": [
+            0.0,
+            -370.0,
+            40.0
+          ],
+          "rotation": [
+            9.578923225402832,
+            64.00349426269531,
+            0.0
+          ],
+          "valid": true
+        },
+        "provenance": "native publisher look-at before normalization; validated against UE bridge",
+        "status": "accepted",
+        "subject_identity_verified": false,
+        "time_ns": 4924286281700,
+        "valid": true
+      },
+      "dolly": 872.7862548828125,
+      "lift": 274.4690246582031,
+      "predicted_z": -104.46902465820312,
+      "floor": 170.0,
+      "max_lift": 400.0,
+      "base_fov": 90.0,
+      "camera_manager": 8342383296,
+      "zone": 1,
+      "framing_status": 3,
+      "automatic": true,
+      "recorded_neutral": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 90.0,
+        "location": [
+          357.20269775390625,
+          362.48870849609375,
+          455.87921142578125
+        ],
+        "rotation": [
+          9.578929901123047,
+          64.00353240966797,
+          4.3292294549246435e-07
+        ],
+        "valid": true
+      },
+      "close_correction": true,
+      "cut_rejection": false
+    },
+    {
+      "cut": 3,
+      "sequence": 220,
+      "time_ns": 4924375738700,
+      "camera": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 1.1679329872131348,
+        "location": [
+          -1050.0,
+          -11000.0,
+          620.0
+        ],
+        "rotation": [
+          -2.595519542694092,
+          83.97293090820312,
+          1.068313011387545e-07
+        ],
+        "valid": true
+      },
+      "view": {
+        "aspect": null,
+        "cache_timestamp": null,
+        "fov": 1.1679329872131348,
+        "location": [
+          -1050.0,
+          -11000.0,
+          620.0
+        ],
+        "rotation": [
+          -2.5954580307006836,
+          83.9724349975586,
+          2.1366257385579956e-07
+        ],
+        "valid": true
+      },
+      "native_source": {
+        "bridge_direction_error_degrees": 0.01978234015405178,
+        "bridge_error_cm": 0.0,
+        "bridge_fov_error_degrees": 1.1920928955078125e-07,
+        "camera_actor": 4119650368,
+        "capture_us": 244.3000030517578,
+        "focus_cm": 11101.36328125,
+        "layout": "prospi-native-camera-v1",
+        "list_nodes": 13,
+        "look_at": [
+          114.51774597167969,
+          28.66455078125,
+          117.28919982910156
+        ],
+        "native_frame": 40043,
+        "object": 7334642352,
+        "pcm": 8342383296,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 1.168552041053772,
+          "location": [
+            -1050.0,
+            -11000.0,
+            620.0
+          ],
+          "rotation": [
+            -2.5954527854919434,
+            83.97247314453125,
+            0.0
+          ],
+          "valid": true
+        },
+        "provenance": "native publisher look-at before normalization; validated against UE bridge",
+        "status": "accepted",
+        "subject_identity_verified": false,
+        "time_ns": 4924368241500,
+        "valid": true
+      },
+      "dolly": 9197.4580078125,
+      "lift": 0.0,
+      "predicted_z": 0.0,
+      "floor": 0.0,
+      "max_lift": 400.0,
+      "base_fov": 90.0,
+      "camera_manager": 8342383296,
+      "zone": 0,
+      "framing_status": 1,
+      "automatic": true,
+      "recorded_neutral": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 90.0,
+        "location": [
+          -85.197265625,
+          -1862.7724609375,
+          203.50390625
+        ],
+        "rotation": [
+          -2.5954580307006836,
+          83.9724349975586,
+          2.1366257385579956e-07
+        ],
+        "valid": true
+      },
+      "close_correction": false,
+      "cut_rejection": false
+    },
+    {
+      "cut": 3,
+      "sequence": 1270,
+      "time_ns": 4929373026800,
+      "camera": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 1.2555731534957886,
+        "location": [
+          -1050.0,
+          -11000.0,
+          620.0
+        ],
+        "rotation": [
+          -2.6193501949310303,
+          83.58805847167969,
+          -1.0683332618555141e-07
+        ],
+        "valid": true
+      },
+      "view": {
+        "aspect": null,
+        "cache_timestamp": null,
+        "fov": 1.2555731534957886,
+        "location": [
+          -1050.0,
+          -11000.0,
+          620.0
+        ],
+        "rotation": [
+          -2.6190426349639893,
+          83.58716583251953,
+          -1.0683329776384198e-07
+        ],
+        "valid": true
+      },
+      "native_source": {
+        "bridge_direction_error_degrees": 0.0,
+        "bridge_error_cm": 0.0,
+        "bridge_fov_error_degrees": 0.0,
+        "camera_actor": 4119650368,
+        "capture_us": 167.89999389648438,
+        "focus_cm": 11048.2060546875,
+        "layout": "prospi-native-camera-v1",
+        "list_nodes": 13,
+        "look_at": [
+          182.69775390625,
+          -32.391357421875,
+          115.15178680419922
+        ],
+        "native_frame": 40193,
+        "object": 7334642352,
+        "pcm": 8342383296,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 1.2556922435760498,
+          "location": [
+            -1050.0,
+            -11000.0,
+            620.0
+          ],
+          "rotation": [
+            -2.6190450191497803,
+            83.58718872070312,
+            0.0
+          ],
+          "valid": true
+        },
+        "provenance": "native publisher look-at before normalization; validated against UE bridge",
+        "status": "accepted",
+        "subject_identity_verified": false,
+        "time_ns": 4929367605600,
+        "valid": true
+      },
+      "dolly": 9195.951171875,
+      "lift": 0.0,
+      "predicted_z": 0.0,
+      "floor": 0.0,
+      "max_lift": 400.0,
+      "base_fov": 90.0,
+      "camera_manager": 8342383296,
+      "zone": 0,
+      "framing_status": 1,
+      "automatic": true,
+      "recorded_neutral": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 90.0,
+        "location": [
+          -23.9638671875,
+          -1871.1337890625,
+          199.791015625
+        ],
+        "rotation": [
+          -2.6190426349639893,
+          83.58716583251953,
+          -1.0683329776384198e-07
+        ],
+        "valid": true
+      },
+      "close_correction": false,
+      "cut_rejection": false
+    },
+    {
+      "cut": 3,
+      "sequence": 2296,
+      "time_ns": 4934278022200,
+      "camera": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 1.259558081626892,
+        "location": [
+          -1050.0,
+          -11000.0,
+          620.0
+        ],
+        "rotation": [
+          -2.6018922328948975,
+          84.19306182861328,
+          -1.0683183404580632e-07
+        ],
+        "valid": true
+      },
+      "view": {
+        "aspect": null,
+        "cache_timestamp": null,
+        "fov": 1.259558081626892,
+        "location": [
+          -1050.0,
+          -11000.0,
+          620.0
+        ],
+        "rotation": [
+          -2.6015915870666504,
+          84.1927719116211,
+          2.136636254590485e-07
+        ],
+        "valid": true
+      },
+      "native_source": {
+        "bridge_direction_error_degrees": 0.0,
+        "bridge_error_cm": 0.0,
+        "bridge_fov_error_degrees": 1.1920928955078125e-07,
+        "camera_actor": 4119650368,
+        "capture_us": 136.3000030517578,
+        "focus_cm": 11075.2353515625,
+        "layout": "prospi-native-camera-v1",
+        "list_nodes": 13,
+        "look_at": [
+          69.451904296875,
+          7.041015625,
+          117.28584289550781
+        ],
+        "native_frame": 40340,
+        "object": 7334642352,
+        "pcm": 8342383296,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 1.2595582008361816,
+          "location": [
+            -1050.0,
+            -11000.0,
+            620.0
+          ],
+          "rotation": [
+            -2.6015970706939697,
+            84.19280242919922,
+            0.0
+          ],
+          "valid": true
+        },
+        "provenance": "native publisher look-at before normalization; validated against UE bridge",
+        "status": "accepted",
+        "subject_identity_verified": false,
+        "time_ns": 4934272790100,
+        "valid": true
+      },
+      "dolly": 9198.2880859375,
+      "lift": 0.0,
+      "predicted_z": 0.0,
+      "floor": 0.0,
+      "max_lift": 400.0,
+      "base_fov": 90.0,
+      "camera_manager": 8342383296,
+      "zone": 0,
+      "framing_status": 1,
+      "automatic": true,
+      "recorded_neutral": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 90.0,
+        "location": [
+          -120.26171875,
+          -1858.3486328125,
+          202.48291015625
+        ],
+        "rotation": [
+          -2.6015915870666504,
+          84.1927719116211,
+          2.136636254590485e-07
+        ],
+        "valid": true
+      },
+      "close_correction": false,
+      "cut_rejection": false
+    },
+    {
+      "cut": 4,
+      "sequence": 2317,
+      "time_ns": 4934570874300,
+      "camera": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 1.259558081626892,
+        "location": [
+          -1050.0,
+          -11000.0,
+          620.0
+        ],
+        "rotation": [
+          -2.6014413833618164,
+          84.19239807128906,
+          0.0
+        ],
+        "valid": true
+      },
+      "view": {
+        "aspect": null,
+        "cache_timestamp": null,
+        "fov": 1.259558081626892,
+        "location": [
+          -1147.59130859375,
+          -10999.6533203125,
+          484.302978515625
+        ],
+        "rotation": [
+          -2.1151113510131836,
+          83.52117919921875,
+          0.0
+        ],
+        "valid": true
+      },
+      "native_source": {
+        "bridge_direction_error_degrees": 0.01978234015405178,
+        "bridge_error_cm": 0.0,
+        "bridge_fov_error_degrees": 2.384185791015625e-07,
+        "camera_actor": 4119650368,
+        "capture_us": 157.0,
+        "focus_cm": 11657.626953125,
+        "layout": "prospi-native-camera-v1",
+        "list_nodes": 13,
+        "look_at": [
+          166.9097137451172,
+          575.63232421875,
+          54.05204772949219
+        ],
+        "native_frame": 40343,
+        "object": 7334642352,
+        "pcm": 8342383296,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 3.3752856254577637,
+          "location": [
+            -1147.59130859375,
+            -10999.6533203125,
+            484.302978515625
+          ],
+          "rotation": [
+            -2.115109920501709,
+            83.52119445800781,
+            0.0
+          ],
+          "valid": true
+        },
+        "provenance": "native publisher look-at before normalization; validated against UE bridge",
+        "status": "accepted",
+        "subject_identity_verified": false,
+        "time_ns": 4934563208000,
+        "valid": true
+      },
+      "dolly": 9198.2861328125,
+      "lift": 0.0,
+      "predicted_z": 0.0,
+      "floor": 0.0,
+      "max_lift": 400.0,
+      "base_fov": 90.0,
+      "camera_manager": 8342383296,
+      "zone": 0,
+      "framing_status": 1,
+      "automatic": true,
+      "recorded_neutral": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 90.0,
+        "location": [
+          -110.40283203125,
+          -1866.3359375,
+          144.819580078125
+        ],
+        "rotation": [
+          -2.1151113510131836,
+          83.52117919921875,
+          0.0
+        ],
+        "valid": true
+      },
+      "close_correction": false,
+      "cut_rejection": false
+    },
+    {
+      "cut": 4,
+      "sequence": 3126,
+      "time_ns": 4938463796500,
+      "camera": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 3.3752853870391846,
+        "location": [
+          -1147.59130859375,
+          -10999.6533203125,
+          484.302978515625
+        ],
+        "rotation": [
+          -2.1151113510131836,
+          83.52117919921875,
+          0.0
+        ],
+        "valid": true
+      },
+      "view": {
+        "aspect": null,
+        "cache_timestamp": null,
+        "fov": 3.3752853870391846,
+        "location": [
+          -1147.59130859375,
+          -10999.6533203125,
+          484.302978515625
+        ],
+        "rotation": [
+          -2.1151113510131836,
+          83.52117919921875,
+          0.0
+        ],
+        "valid": true
+      },
+      "native_source": {
+        "bridge_direction_error_degrees": 0.01978234015405178,
+        "bridge_error_cm": 0.0,
+        "bridge_fov_error_degrees": 2.384185791015625e-07,
+        "camera_actor": 4119650368,
+        "capture_us": 217.0,
+        "focus_cm": 11657.626953125,
+        "layout": "prospi-native-camera-v1",
+        "list_nodes": 13,
+        "look_at": [
+          166.9097137451172,
+          575.63232421875,
+          54.05204772949219
+        ],
+        "native_frame": 40459,
+        "object": 7334642352,
+        "pcm": 8342383296,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 3.3752856254577637,
+          "location": [
+            -1147.59130859375,
+            -10999.6533203125,
+            484.302978515625
+          ],
+          "rotation": [
+            -2.115109920501709,
+            83.52119445800781,
+            0.0
+          ],
+          "valid": true
+        },
+        "provenance": "native publisher look-at before normalization; validated against UE bridge",
+        "status": "accepted",
+        "subject_identity_verified": false,
+        "time_ns": 4938457269400,
+        "valid": true
+      },
+      "dolly": 9195.958984375,
+      "lift": 30.094757080078125,
+      "predicted_z": 144.90524291992188,
+      "floor": 175.0,
+      "max_lift": 400.0,
+      "base_fov": 90.0,
+      "camera_manager": 8342383296,
+      "zone": 4,
+      "framing_status": 1,
+      "automatic": true,
+      "recorded_neutral": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 90.0,
+        "location": [
+          -110.53922271728516,
+          -1867.5428466796875,
+          174.97927856445312
+        ],
+        "rotation": [
+          -2.1151113510131836,
+          83.52117919921875,
+          0.0
+        ],
+        "valid": true
+      },
+      "close_correction": false,
+      "cut_rejection": false
+    },
+    {
+      "cut": 4,
+      "sequence": 3926,
+      "time_ns": 4942280213900,
+      "camera": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 3.3752853870391846,
+        "location": [
+          -1147.59130859375,
+          -10999.6533203125,
+          484.302978515625
+        ],
+        "rotation": [
+          -2.1151113510131836,
+          83.52117919921875,
+          0.0
+        ],
+        "valid": true
+      },
+      "view": {
+        "aspect": null,
+        "cache_timestamp": null,
+        "fov": 3.3752853870391846,
+        "location": [
+          -1147.59130859375,
+          -10999.6533203125,
+          484.302978515625
+        ],
+        "rotation": [
+          -2.1151113510131836,
+          83.52117919921875,
+          0.0
+        ],
+        "valid": true
+      },
+      "native_source": {
+        "bridge_direction_error_degrees": 0.01978234015405178,
+        "bridge_error_cm": 0.0,
+        "bridge_fov_error_degrees": 2.384185791015625e-07,
+        "camera_actor": 4119650368,
+        "capture_us": 157.10000610351562,
+        "focus_cm": 11657.626953125,
+        "layout": "prospi-native-camera-v1",
+        "list_nodes": 13,
+        "look_at": [
+          166.9097137451172,
+          575.63232421875,
+          54.05204772949219
+        ],
+        "native_frame": 40574,
+        "object": 7334642352,
+        "pcm": 8342383296,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 3.3752856254577637,
+          "location": [
+            -1147.59130859375,
+            -10999.6533203125,
+            484.302978515625
+          ],
+          "rotation": [
+            -2.115109920501709,
+            83.52119445800781,
+            0.0
+          ],
+          "valid": true
+        },
+        "provenance": "native publisher look-at before normalization; validated against UE bridge",
+        "status": "accepted",
+        "subject_identity_verified": false,
+        "time_ns": 4942275036800,
+        "valid": true
+      },
+      "dolly": 9195.958984375,
+      "lift": 30.094757080078125,
+      "predicted_z": 144.90524291992188,
+      "floor": 175.0,
+      "max_lift": 400.0,
+      "base_fov": 90.0,
+      "camera_manager": 8342383296,
+      "zone": 4,
+      "framing_status": 1,
+      "automatic": true,
+      "recorded_neutral": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 90.0,
+        "location": [
+          -110.53922271728516,
+          -1867.5428466796875,
+          174.97927856445312
+        ],
+        "rotation": [
+          -2.1151113510131836,
+          83.52117919921875,
+          0.0
+        ],
+        "valid": true
+      },
+      "close_correction": false,
+      "cut_rejection": false
+    },
+    {
+      "cut": 7,
+      "sequence": 6820,
+      "time_ns": 4956734749300,
+      "camera": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 3.3752853870391846,
+        "location": [
+          -1147.59130859375,
+          -10999.6533203125,
+          484.302978515625
+        ],
+        "rotation": [
+          -2.1151113510131836,
+          83.52117919921875,
+          0.0
+        ],
+        "valid": true
+      },
+      "view": {
+        "aspect": null,
+        "cache_timestamp": null,
+        "fov": 3.3752853870391846,
+        "location": [
+          758.66650390625,
+          2590.9853515625,
+          1000.0
+        ],
+        "rotation": [
+          -16.858394622802734,
+          -109.99998474121094,
+          -8.921126664063195e-07
+        ],
+        "valid": true
+      },
+      "native_source": {
+        "bridge_direction_error_degrees": 0.0,
+        "bridge_error_cm": 0.0,
+        "bridge_fov_error_degrees": 3.814697265625e-06,
+        "camera_actor": 4119650368,
+        "capture_us": 142.10000610351562,
+        "focus_cm": 3448.18798828125,
+        "layout": "prospi-native-camera-v1",
+        "list_nodes": 13,
+        "look_at": [
+          -370.0,
+          -510.0,
+          0.0
+        ],
+        "native_frame": 40989,
+        "object": 7334642352,
+        "pcm": 8342383296,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 50.13241958618164,
+          "location": [
+            758.66650390625,
+            2590.98583984375,
+            1000.0
+          ],
+          "rotation": [
+            -16.8583984375,
+            -110.0,
+            0.0
+          ],
+          "valid": true
+        },
+        "provenance": "native publisher look-at before normalization; validated against UE bridge",
+        "status": "accepted",
+        "subject_identity_verified": false,
+        "time_ns": 4956728139100,
+        "valid": true
+      },
+      "dolly": 9195.958984375,
+      "lift": 30.094757080078125,
+      "predicted_z": 144.90524291992188,
+      "floor": 175.0,
+      "max_lift": 400.0,
+      "base_fov": 90.0,
+      "camera_manager": 8342383296,
+      "zone": 4,
+      "framing_status": 1,
+      "automatic": true,
+      "recorded_neutral": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 90.0,
+        "location": [
+          -2254.351806640625,
+          -5687.2236328125,
+          -1638.0941162109375
+        ],
+        "rotation": [
+          -16.858394622802734,
+          -109.99998474121094,
+          -8.921126664063195e-07
+        ],
+        "valid": true
+      },
+      "close_correction": false,
+      "cut_rejection": true
+    },
+    {
+      "cut": 8,
+      "sequence": 6827,
+      "time_ns": 4956768445100,
+      "camera": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 50.132415771484375,
+        "location": [
+          758.66650390625,
+          2590.9853515625,
+          1000.0
+        ],
+        "rotation": [
+          -16.858394622802734,
+          -109.99998474121094,
+          -8.921126664063195e-07
+        ],
+        "valid": true
+      },
+      "view": {
+        "aspect": null,
+        "cache_timestamp": null,
+        "fov": 50.132415771484375,
+        "location": [
+          741.621337890625,
+          2580.875244140625,
+          1000.0
+        ],
+        "rotation": [
+          -16.858394622802734,
+          -109.99998474121094,
+          -8.921126664063195e-07
+        ],
+        "valid": true
+      },
+      "native_source": {
+        "bridge_direction_error_degrees": 0.0,
+        "bridge_error_cm": 0.0,
+        "bridge_fov_error_degrees": 3.814697265625e-06,
+        "camera_actor": 4119650368,
+        "capture_us": 165.10000610351562,
+        "focus_cm": 3448.18798828125,
+        "layout": "prospi-native-camera-v1",
+        "list_nodes": 13,
+        "look_at": [
+          -387.04522705078125,
+          -520.110595703125,
+          0.0
+        ],
+        "native_frame": 40990,
+        "object": 7334642352,
+        "pcm": 8342383296,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 50.043033599853516,
+          "location": [
+            741.621337890625,
+            2580.875244140625,
+            1000.0
+          ],
+          "rotation": [
+            -16.8583984375,
+            -110.0,
+            0.0
+          ],
+          "valid": true
+        },
+        "provenance": "native publisher look-at before normalization; validated against UE bridge",
+        "status": "accepted",
+        "subject_identity_verified": false,
+        "time_ns": 4956761905600,
+        "valid": true
+      },
+      "dolly": 553.06494140625,
+      "lift": 0.0,
+      "predicted_z": 0.0,
+      "floor": 0.0,
+      "max_lift": 400.0,
+      "base_fov": 90.0,
+      "camera_manager": 8342383296,
+      "zone": 0,
+      "framing_status": 3,
+      "automatic": true,
+      "recorded_neutral": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 90.0,
+        "location": [
+          560.5914306640625,
+          2083.4990234375,
+          839.6071166992188
+        ],
+        "rotation": [
+          -16.858394622802734,
+          -109.99998474121094,
+          -8.921126664063195e-07
+        ],
+        "valid": true
+      },
+      "close_correction": false,
+      "cut_rejection": false
+    },
+    {
+      "cut": 8,
+      "sequence": 7420,
+      "time_ns": 4959680623900,
+      "camera": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 40.22599411010742,
+        "location": [
+          -114.43748474121094,
+          2048.8955078125,
+          1079.998779296875
+        ],
+        "rotation": [
+          -17.743560791015625,
+          -109.53231811523438,
+          8.964160542745958e-07
+        ],
+        "valid": true
+      },
+      "view": {
+        "aspect": null,
+        "cache_timestamp": null,
+        "fov": 40.22599411010742,
+        "location": [
+          -114.23744201660156,
+          2058.471923828125,
+          1083.998779296875
+        ],
+        "rotation": [
+          -17.786828994750977,
+          -109.50643157958984,
+          -8.966330256043875e-07
+        ],
+        "valid": true
+      },
+      "native_source": {
+        "bridge_direction_error_degrees": 0.0,
+        "bridge_error_cm": 0.0,
+        "bridge_fov_error_degrees": 3.814697265625e-06,
+        "camera_actor": 4119650368,
+        "capture_us": 163.8000030517578,
+        "focus_cm": 3548.5498046875,
+        "layout": "prospi-native-camera-v1",
+        "list_nodes": 13,
+        "look_at": [
+          -1242.504150390625,
+          -1126.5189208984375,
+          0.0
+        ],
+        "native_frame": 41075,
+        "object": 7334642352,
+        "pcm": 8342383296,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 40.09138107299805,
+          "location": [
+            -114.23744201660156,
+            2058.471923828125,
+            1083.998779296875
+          ],
+          "rotation": [
+            -17.78683853149414,
+            -109.50643157958984,
+            0.0
+          ],
+          "valid": true
+        },
+        "provenance": "native publisher look-at before normalization; validated against UE bridge",
+        "status": "accepted",
+        "subject_identity_verified": false,
+        "time_ns": 4959674305800,
+        "valid": true
+      },
+      "dolly": 658.2921752929688,
+      "lift": 0.0,
+      "predicted_z": 0.0,
+      "floor": 0.0,
+      "max_lift": 400.0,
+      "base_fov": 90.0,
+      "camera_manager": 8342383296,
+      "zone": 0,
+      "framing_status": 3,
+      "automatic": true,
+      "recorded_neutral": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 90.0,
+        "location": [
+          -323.5426025390625,
+          1467.62353515625,
+          882.906005859375
+        ],
+        "rotation": [
+          -17.786828994750977,
+          -109.50643157958984,
+          -8.966330256043875e-07
+        ],
+        "valid": true
+      },
+      "close_correction": false,
+      "cut_rejection": false
+    },
+    {
+      "cut": 8,
+      "sequence": 7973,
+      "time_ns": 4962345405400,
+      "camera": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 36.94538879394531,
+        "location": [
+          1944.3104248046875,
+          1417.354248046875,
+          1395.993896484375
+        ],
+        "rotation": [
+          -22.92970848083496,
+          -90.0,
+          9.270238479075488e-07
+        ],
+        "valid": true
+      },
+      "view": {
+        "aspect": null,
+        "cache_timestamp": null,
+        "fov": 36.94538879394531,
+        "location": [
+          1946.86669921875,
+          1417.403076171875,
+          1399.993896484375
+        ],
+        "rotation": [
+          -22.98861312866211,
+          -90.0,
+          0.0
+        ],
+        "valid": true
+      },
+      "native_source": {
+        "bridge_direction_error_degrees": 0.0,
+        "bridge_error_cm": 0.0,
+        "bridge_fov_error_degrees": 3.814697265625e-06,
+        "camera_actor": 4119650368,
+        "capture_us": 153.5,
+        "focus_cm": 3584.687255859375,
+        "layout": "prospi-native-camera-v1",
+        "list_nodes": 13,
+        "look_at": [
+          1946.86669921875,
+          -1882.596923828125,
+          0.0
+        ],
+        "native_frame": 41154,
+        "object": 7334642352,
+        "pcm": 8342383296,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 36.939788818359375,
+          "location": [
+            1946.86669921875,
+            1417.403076171875,
+            1399.993896484375
+          ],
+          "rotation": [
+            -22.988628387451172,
+            -90.0,
+            0.0
+          ],
+          "valid": true
+        },
+        "provenance": "native publisher look-at before normalization; validated against UE bridge",
+        "status": "accepted",
+        "subject_identity_verified": false,
+        "time_ns": 4962338548100,
+        "valid": true
+      },
+      "dolly": 691.612060546875,
+      "lift": 0.0,
+      "predicted_z": 0.0,
+      "floor": 0.0,
+      "max_lift": 400.0,
+      "base_fov": 90.0,
+      "camera_manager": 8342383296,
+      "zone": 0,
+      "framing_status": 3,
+      "automatic": true,
+      "recorded_neutral": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 90.0,
+        "location": [
+          1946.86669921875,
+          780.7171630859375,
+          1129.885986328125
+        ],
+        "rotation": [
+          -22.98861312866211,
+          -90.0,
+          0.0
+        ],
+        "valid": true
+      },
+      "close_correction": false,
+      "cut_rejection": false
+    },
+    {
+      "cut": 10,
+      "sequence": 8022,
+      "time_ns": 4962681912500,
+      "camera": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 5.489375114440918,
+        "location": [
+          -3999.999755859375,
+          -3050.0,
+          30.0
+        ],
+        "rotation": [
+          0.6986122131347656,
+          26.41021156311035,
+          0.0
+        ],
+        "valid": true
+      },
+      "view": {
+        "aspect": null,
+        "cache_timestamp": null,
+        "fov": 5.489375114440918,
+        "location": [
+          -4000.0,
+          -3050.0,
+          30.0
+        ],
+        "rotation": [
+          0.6986122131347656,
+          26.41021156311035,
+          0.0
+        ],
+        "valid": true
+      },
+      "native_source": {
+        "bridge_direction_error_degrees": 0.0,
+        "bridge_error_cm": 0.0,
+        "bridge_fov_error_degrees": 4.76837158203125e-07,
+        "camera_actor": 4119650368,
+        "capture_us": 169.39999389648438,
+        "focus_cm": 6741.12451171875,
+        "layout": "prospi-native-camera-v1",
+        "list_nodes": 13,
+        "look_at": [
+          2037.1142578125,
+          -51.791297912597656,
+          112.1928482055664
+        ],
+        "native_frame": 41161,
+        "object": 7334642352,
+        "pcm": 8342383296,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 5.492356777191162,
+          "location": [
+            -4000.0,
+            -3050.0,
+            30.0
+          ],
+          "rotation": [
+            0.6986104249954224,
+            26.410348892211914,
+            0.0
+          ],
+          "valid": true
+        },
+        "provenance": "native publisher look-at before normalization; validated against UE bridge",
+        "status": "accepted",
+        "subject_identity_verified": false,
+        "time_ns": 4962675407400,
+        "valid": true
+      },
+      "dolly": 0.0,
+      "lift": 140.0,
+      "predicted_z": 30.0,
+      "floor": 170.0,
+      "max_lift": 400.0,
+      "base_fov": 90.0,
+      "camera_manager": 8342383296,
+      "zone": 1,
+      "framing_status": 3,
+      "automatic": true,
+      "recorded_neutral": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 90.0,
+        "location": [
+          -4001.52880859375,
+          -3050.75927734375,
+          169.98959350585938
+        ],
+        "rotation": [
+          0.6986122131347656,
+          26.41021156311035,
+          0.0
+        ],
+        "valid": true
+      },
+      "close_correction": false,
+      "cut_rejection": false
+    },
+    {
+      "cut": 10,
+      "sequence": 8498,
+      "time_ns": 4965019588600,
+      "camera": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 5.707501411437988,
+        "location": [
+          -4000.0,
+          -3050.0,
+          30.0
+        ],
+        "rotation": [
+          0.7063302993774414,
+          26.492494583129883,
+          1.3341226789975735e-08
+        ],
+        "valid": true
+      },
+      "view": {
+        "aspect": null,
+        "cache_timestamp": null,
+        "fov": 5.707501411437988,
+        "location": [
+          -4000.0,
+          -3050.0,
+          30.0
+        ],
+        "rotation": [
+          0.7065488696098328,
+          26.494617462158203,
+          4.0023682146284045e-08
+        ],
+        "valid": true
+      },
+      "native_source": {
+        "bridge_direction_error_degrees": 0.0,
+        "bridge_error_cm": 0.0,
+        "bridge_fov_error_degrees": 4.76837158203125e-07,
+        "camera_actor": 4119650368,
+        "capture_us": 148.39999389648438,
+        "focus_cm": 6466.23681640625,
+        "layout": "prospi-native-camera-v1",
+        "list_nodes": 13,
+        "look_at": [
+          1786.68505859375,
+          -165.53646850585938,
+          109.73854064941406
+        ],
+        "native_frame": 41229,
+        "object": 7334642352,
+        "pcm": 8342383296,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 5.7079877853393555,
+          "location": [
+            -4000.0,
+            -3050.0,
+            30.0
+          ],
+          "rotation": [
+            0.7065621018409729,
+            26.494678497314453,
+            0.0
+          ],
+          "valid": true
+        },
+        "provenance": "native publisher look-at before normalization; validated against UE bridge",
+        "status": "accepted",
+        "subject_identity_verified": false,
+        "time_ns": 4965014157400,
+        "valid": true
+      },
+      "dolly": 0.0,
+      "lift": 140.0,
+      "predicted_z": 30.0,
+      "floor": 170.0,
+      "max_lift": 400.0,
+      "base_fov": 90.0,
+      "camera_manager": 8342383296,
+      "zone": 1,
+      "framing_status": 3,
+      "automatic": true,
+      "recorded_neutral": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 90.0,
+        "location": [
+          -4001.545166015625,
+          -3050.770263671875,
+          169.98934936523438
+        ],
+        "rotation": [
+          0.7065488696098328,
+          26.494617462158203,
+          4.0023682146284045e-08
+        ],
+        "valid": true
+      },
+      "close_correction": false,
+      "cut_rejection": false
+    },
+    {
+      "cut": 10,
+      "sequence": 8967,
+      "time_ns": 4967255179700,
+      "camera": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 5.936792850494385,
+        "location": [
+          -4000.0,
+          -3050.0,
+          30.0
+        ],
+        "rotation": [
+          0.7361645698547363,
+          26.648618698120117,
+          0.0
+        ],
+        "valid": true
+      },
+      "view": {
+        "aspect": null,
+        "cache_timestamp": null,
+        "fov": 5.936792850494385,
+        "location": [
+          -4000.0,
+          -3050.0,
+          30.0
+        ],
+        "rotation": [
+          0.736260175704956,
+          26.65050506591797,
+          1.3341314719639286e-08
+        ],
+        "valid": true
+      },
+      "native_source": {
+        "bridge_direction_error_degrees": 0.0,
+        "bridge_error_cm": 0.0,
+        "bridge_fov_error_degrees": 4.76837158203125e-07,
+        "camera_actor": 4119650368,
+        "capture_us": 235.0,
+        "focus_cm": 6162.078125,
+        "layout": "prospi-native-camera-v1",
+        "list_nodes": 13,
+        "look_at": [
+          1506.9569091796875,
+          -286.2412109375,
+          109.18102264404297
+        ],
+        "native_frame": 41296,
+        "object": 7334642352,
+        "pcm": 8342383296,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 5.94099760055542,
+          "location": [
+            -4000.0,
+            -3050.0,
+            30.0
+          ],
+          "rotation": [
+            0.736255407333374,
+            26.650554656982422,
+            0.0
+          ],
+          "valid": true
+        },
+        "provenance": "native publisher look-at before normalization; validated against UE bridge",
+        "status": "accepted",
+        "subject_identity_verified": false,
+        "time_ns": 4967248987400,
+        "valid": true
+      },
+      "dolly": 0.0,
+      "lift": 140.0,
+      "predicted_z": 30.0,
+      "floor": 170.0,
+      "max_lift": 400.0,
+      "base_fov": 90.0,
+      "camera_manager": 8342383296,
+      "zone": 1,
+      "framing_status": 3,
+      "automatic": true,
+      "recorded_neutral": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 90.0,
+        "location": [
+          -4001.60791015625,
+          -3050.806884765625,
+          169.98843383789062
+        ],
+        "rotation": [
+          0.736260175704956,
+          26.65050506591797,
+          1.3341314719639286e-08
+        ],
+        "valid": true
+      },
+      "close_correction": false,
+      "cut_rejection": false
+    },
+    {
+      "cut": 12,
+      "sequence": 8981,
+      "time_ns": 4967447510200,
+      "camera": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 10.868430137634277,
+        "location": [
+          0.0,
+          -370.0,
+          40.0
+        ],
+        "rotation": [
+          5.203333377838135,
+          51.822723388671875,
+          2.1432663288578624e-07
+        ],
+        "valid": true
+      },
+      "view": {
+        "aspect": null,
+        "cache_timestamp": null,
+        "fov": 10.868430137634277,
+        "location": [
+          0.0,
+          -370.0,
+          40.0
+        ],
+        "rotation": [
+          5.203579425811768,
+          51.82434844970703,
+          -2.1432670394005982e-07
+        ],
+        "valid": true
+      },
+      "native_source": {
+        "bridge_direction_error_degrees": 0.02797645516693592,
+        "bridge_error_cm": 0.0,
+        "bridge_fov_error_degrees": 0.0,
+        "camera_actor": 4119650368,
+        "capture_us": 167.39999389648438,
+        "focus_cm": 1058.6156005859375,
+        "layout": "prospi-native-camera-v1",
+        "list_nodes": 13,
+        "look_at": [
+          651.607421875,
+          458.76806640625,
+          136.01092529296875
+        ],
+        "native_frame": 41298,
+        "object": 7334642352,
+        "pcm": 8342383296,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 10.871915817260742,
+          "location": [
+            0.0,
+            -370.0,
+            40.0
+          ],
+          "rotation": [
+            5.203579902648926,
+            51.82429122924805,
+            0.0
+          ],
+          "valid": true
+        },
+        "provenance": "native publisher look-at before normalization; validated against UE bridge",
+        "status": "accepted",
+        "subject_identity_verified": false,
+        "time_ns": 4967441035700,
+        "valid": true
+      },
+      "dolly": 939.35400390625,
+      "lift": 215.19049072265625,
+      "predicted_z": -45.19049835205078,
+      "floor": 170.0,
+      "max_lift": 400.0,
+      "base_fov": 90.0,
+      "camera_manager": 8342383296,
+      "zone": 1,
+      "framing_status": 3,
+      "automatic": true,
+      "recorded_neutral": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 90.0,
+        "location": [
+          566.1351318359375,
+          350.0588073730469,
+          339.49810791015625
+        ],
+        "rotation": [
+          5.203579425811768,
+          51.82434844970703,
+          -2.1432670394005982e-07
+        ],
+        "valid": true
+      },
+      "close_correction": true,
+      "cut_rejection": false
+    },
+    {
+      "cut": 12,
+      "sequence": 9471,
+      "time_ns": 4970053321400,
+      "camera": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 12.854639053344727,
+        "location": [
+          0.0,
+          -370.0,
+          40.0
+        ],
+        "rotation": [
+          6.695879936218262,
+          54.60856246948242,
+          0.0
+        ],
+        "valid": true
+      },
+      "view": {
+        "aspect": null,
+        "cache_timestamp": null,
+        "fov": 12.854639053344727,
+        "location": [
+          0.0,
+          -370.0,
+          40.0
+        ],
+        "rotation": [
+          6.733719348907471,
+          54.660884857177734,
+          0.0
+        ],
+        "valid": true
+      },
+      "native_source": {
+        "bridge_direction_error_degrees": 0.01978234015405178,
+        "bridge_error_cm": 0.0,
+        "bridge_fov_error_degrees": 9.5367431640625e-07,
+        "camera_actor": 4119650368,
+        "capture_us": 151.89999389648438,
+        "focus_cm": 769.5972900390625,
+        "layout": "prospi-native-camera-v1",
+        "list_nodes": 13,
+        "look_at": [
+          442.07550048828125,
+          253.46299743652344,
+          130.23919677734375
+        ],
+        "native_frame": 41368,
+        "object": 7334642352,
+        "pcm": 8342383296,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 12.882723808288574,
+          "location": [
+            0.0,
+            -370.0,
+            40.0
+          ],
+          "rotation": [
+            6.733712196350098,
+            54.6609001159668,
+            0.0
+          ],
+          "valid": true
+        },
+        "provenance": "native publisher look-at before normalization; validated against UE bridge",
+        "status": "accepted",
+        "subject_identity_verified": false,
+        "time_ns": 4970047975900,
+        "valid": true
+      },
+      "dolly": 921.1864013671875,
+      "lift": 237.40969848632812,
+      "predicted_z": -67.40970611572266,
+      "floor": 170.0,
+      "max_lift": 400.0,
+      "base_fov": 90.0,
+      "camera_manager": 8342383296,
+      "zone": 1,
+      "framing_status": 3,
+      "automatic": true,
+      "recorded_neutral": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 90.0,
+        "location": [
+          513.0504760742188,
+          353.5595703125,
+          383.785888671875
+        ],
+        "rotation": [
+          6.733719348907471,
+          54.660884857177734,
+          0.0
+        ],
+        "valid": true
+      },
+      "close_correction": true,
+      "cut_rejection": false
+    },
+    {
+      "cut": 12,
+      "sequence": 9958,
+      "time_ns": 4972353614300,
+      "camera": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 14.824012756347656,
+        "location": [
+          0.0,
+          -370.0,
+          40.0
+        ],
+        "rotation": [
+          10.599974632263184,
+          62.54939270019531,
+          1.3028937928538653e-06
+        ],
+        "valid": true
+      },
+      "view": {
+        "aspect": null,
+        "cache_timestamp": null,
+        "fov": 14.824012756347656,
+        "location": [
+          0.0,
+          -370.0,
+          40.0
+        ],
+        "rotation": [
+          10.664137840270996,
+          62.607948303222656,
+          0.0
+        ],
+        "valid": true
+      },
+      "native_source": {
+        "bridge_direction_error_degrees": 0.0,
+        "bridge_error_cm": 0.0,
+        "bridge_fov_error_degrees": 9.5367431640625e-07,
+        "camera_actor": 4119650368,
+        "capture_us": 157.0,
+        "focus_cm": 522.8260498046875,
+        "layout": "prospi-native-camera-v1",
+        "list_nodes": 13,
+        "look_at": [
+          236.38597106933594,
+          86.18880462646484,
+          136.74966430664062
+        ],
+        "native_frame": 41437,
+        "object": 7334642352,
+        "pcm": 8342383296,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 14.856637001037598,
+          "location": [
+            0.0,
+            -370.0,
+            40.0
+          ],
+          "rotation": [
+            10.664127349853516,
+            62.607906341552734,
+            0.0
+          ],
+          "valid": true
+        },
+        "provenance": "native publisher look-at before normalization; validated against UE bridge",
+        "status": "accepted",
+        "subject_identity_verified": false,
+        "time_ns": 4972348246100,
+        "valid": true
+      },
+      "dolly": 903.1027221679688,
+      "lift": 296.1265869140625,
+      "predicted_z": -126.12657165527344,
+      "floor": 170.0,
+      "max_lift": 400.0,
+      "base_fov": 90.0,
+      "camera_manager": 8342383296,
+      "zone": 1,
+      "framing_status": 3,
+      "automatic": true,
+      "recorded_neutral": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 90.0,
+        "location": [
+          383.1089172363281,
+          369.3426513671875,
+          498.1327209472656
+        ],
+        "rotation": [
+          10.664137840270996,
+          62.607948303222656,
+          0.0
+        ],
+        "valid": true
+      },
+      "close_correction": true,
+      "cut_rejection": false
+    },
+    {
+      "cut": 14,
+      "sequence": 9972,
+      "time_ns": 4972440675300,
+      "camera": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 0.6333047747612,
+        "location": [
+          -1050.0,
+          -11000.0,
+          620.0
+        ],
+        "rotation": [
+          -2.4611151218414307,
+          84.25619506835938,
+          1.0682023088293136e-07
+        ],
+        "valid": true
+      },
+      "view": {
+        "aspect": null,
+        "cache_timestamp": null,
+        "fov": 0.6333047747612,
+        "location": [
+          -1050.0,
+          -11000.0,
+          620.0
+        ],
+        "rotation": [
+          -2.4608418941497803,
+          84.2557373046875,
+          0.0
+        ],
+        "valid": true
+      },
+      "native_source": {
+        "bridge_direction_error_degrees": 0.0,
+        "bridge_error_cm": 0.0,
+        "bridge_fov_error_degrees": 0.0,
+        "camera_actor": 4119650368,
+        "capture_us": 134.89999389648438,
+        "focus_cm": 11081.642578125,
+        "layout": "prospi-native-camera-v1",
+        "list_nodes": 13,
+        "look_at": [
+          58.11637878417969,
+          15.828857421875,
+          144.191162109375
+        ],
+        "native_frame": 41439,
+        "object": 7334642352,
+        "pcm": 8342383296,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 0.6333099007606506,
+          "location": [
+            -1050.0,
+            -11000.0,
+            620.0
+          ],
+          "rotation": [
+            -2.460846424102783,
+            84.25576782226562,
+            0.0
+          ],
+          "valid": true
+        },
+        "provenance": "native publisher look-at before normalization; validated against UE bridge",
+        "status": "accepted",
+        "subject_identity_verified": false,
+        "time_ns": 4972435028100,
+        "valid": true
+      },
+      "dolly": 9198.68359375,
+      "lift": 0.0,
+      "predicted_z": 0.0,
+      "floor": 0.0,
+      "max_lift": 400.0,
+      "base_fov": 90.0,
+      "camera_manager": 8342383296,
+      "zone": 0,
+      "framing_status": 1,
+      "automatic": true,
+      "recorded_neutral": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 90.0,
+        "location": [
+          -130.1669921875,
+          -1855.9482421875,
+          225.0400390625
+        ],
+        "rotation": [
+          -2.4608418941497803,
+          84.2557373046875,
+          0.0
+        ],
+        "valid": true
+      },
+      "close_correction": false,
+      "cut_rejection": false
+    },
+    {
+      "cut": 14,
+      "sequence": 10184,
+      "time_ns": 4973440591000,
+      "camera": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 0.6336812973022461,
+        "location": [
+          -1050.0,
+          -11000.0,
+          620.0
+        ],
+        "rotation": [
+          -2.4400575160980225,
+          84.20259094238281,
+          0.0
+        ],
+        "valid": true
+      },
+      "view": {
+        "aspect": null,
+        "cache_timestamp": null,
+        "fov": 0.6336812973022461,
+        "location": [
+          -1050.0,
+          -11000.0,
+          620.0
+        ],
+        "rotation": [
+          -2.4399757385253906,
+          84.20152282714844,
+          1.0681853979122025e-07
+        ],
+        "valid": true
+      },
+      "native_source": {
+        "bridge_direction_error_degrees": 0.0,
+        "bridge_error_cm": 0.0,
+        "bridge_fov_error_degrees": 0.0,
+        "camera_actor": 4119650368,
+        "capture_us": 150.1999969482422,
+        "focus_cm": 11075.083984375,
+        "layout": "prospi-native-camera-v1",
+        "list_nodes": 13,
+        "look_at": [
+          67.89756774902344,
+          8.427734375,
+          148.50509643554688
+        ],
+        "native_frame": 41469,
+        "object": 7334642352,
+        "pcm": 8342383296,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 0.633682370185852,
+          "location": [
+            -1050.0,
+            -11000.0,
+            620.0
+          ],
+          "rotation": [
+            -2.4399666786193848,
+            84.2015380859375,
+            0.0
+          ],
+          "valid": true
+        },
+        "provenance": "native publisher look-at before normalization; validated against UE bridge",
+        "status": "accepted",
+        "subject_identity_verified": false,
+        "time_ns": 4973435329200,
+        "valid": true
+      },
+      "dolly": 9198.4775390625,
+      "lift": 0.0,
+      "predicted_z": 0.0,
+      "floor": 0.0,
+      "max_lift": 400.0,
+      "base_fov": 90.0,
+      "camera_manager": 8342383296,
+      "zone": 0,
+      "framing_status": 1,
+      "automatic": true,
+      "recorded_neutral": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 90.0,
+        "location": [
+          -121.5234375,
+          -1856.8828125,
+          228.3955078125
+        ],
+        "rotation": [
+          -2.4399757385253906,
+          84.20152282714844,
+          1.0681853979122025e-07
+        ],
+        "valid": true
+      },
+      "close_correction": false,
+      "cut_rejection": false
+    },
+    {
+      "cut": 14,
+      "sequence": 10392,
+      "time_ns": 4974444854500,
+      "camera": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 0.6337157487869263,
+        "location": [
+          -1050.0,
+          -11000.0,
+          620.0
+        ],
+        "rotation": [
+          -2.434142589569092,
+          84.18923950195312,
+          0.0
+        ],
+        "valid": true
+      },
+      "view": {
+        "aspect": null,
+        "cache_timestamp": null,
+        "fov": 0.6337157487869263,
+        "location": [
+          -1050.0,
+          -11000.0,
+          620.0
+        ],
+        "rotation": [
+          -2.434142589569092,
+          84.18923950195312,
+          0.0
+        ],
+        "valid": true
+      },
+      "native_source": {
+        "bridge_direction_error_degrees": 0.0,
+        "bridge_error_cm": 0.0,
+        "bridge_fov_error_degrees": 5.960464477539063e-08,
+        "camera_actor": 4119650368,
+        "capture_us": 150.89999389648438,
+        "focus_cm": 11074.4931640625,
+        "layout": "prospi-native-camera-v1",
+        "list_nodes": 13,
+        "look_at": [
+          70.20950317382812,
+          7.647705078125,
+          149.6544647216797
+        ],
+        "native_frame": 41499,
+        "object": 7334642352,
+        "pcm": 8342383296,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 0.633715808391571,
+          "location": [
+            -1050.0,
+            -11000.0,
+            620.0
+          ],
+          "rotation": [
+            -2.434144973754883,
+            84.18921661376953,
+            0.0
+          ],
+          "valid": true
+        },
+        "provenance": "native publisher look-at before normalization; validated against UE bridge",
+        "status": "accepted",
+        "subject_identity_verified": false,
+        "time_ns": 4974439735200,
+        "valid": true
+      },
+      "dolly": 9198.42578125,
+      "lift": 0.0,
+      "predicted_z": 0.0,
+      "floor": 0.0,
+      "max_lift": 400.0,
+      "base_fov": 90.0,
+      "camera_manager": 8342383296,
+      "zone": 0,
+      "framing_status": 1,
+      "automatic": true,
+      "recorded_neutral": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 90.0,
+        "location": [
+          -119.5634765625,
+          -1857.095703125,
+          229.33349609375
+        ],
+        "rotation": [
+          -2.434142589569092,
+          84.18923950195312,
+          0.0
+        ],
+        "valid": true
+      },
+      "close_correction": false,
+      "cut_rejection": false
+    }
+  ]
+}

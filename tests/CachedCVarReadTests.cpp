@@ -4,6 +4,7 @@
 #include <iostream>
 #include <sdk/CVar.hpp>
 #include <sdk/MafiaDiscovery.hpp>
+#include <sdk/TownfallConsoleDiscovery.hpp>
 #include <utility/Scan.hpp>
 
 namespace {
@@ -102,5 +103,89 @@ int test_cached_cvar_reads() {
     expect(!valid_manager(), "non-executable console virtual functions prevent publication");
     variable_vtable[1] = reinterpret_cast<void*>(&destructor_stub);
     expect(valid_manager(), "a later valid snapshot is accepted after earlier incomplete snapshots");
+
+    namespace townfall = sdk::townfall;
+    expect(townfall::is_ue56_console_runtime(L"D:\\Games\\Townfall-Win64-Shipping.exe", 0x00050006),
+        "Townfall console repair is scoped to UE5.6 and the exact executable");
+    expect(townfall::is_ue56_console_runtime(L"d:/games/TOWNFALL-WIN64-SHIPPING.EXE", 0x00050006),
+        "Townfall console gate is case insensitive and handles both separators");
+    expect(!townfall::is_ue56_console_runtime(L"NotTownfall-Win64-Shipping.exe", 0x00050006) &&
+        !townfall::is_ue56_console_runtime(L"Townfall-Win64-Shipping.exe.bak", 0x00050006) &&
+        !townfall::is_ue56_console_runtime(L"Townfall-Win64-Shipping.exe", 0x0004001B) &&
+        !townfall::is_ue56_console_runtime(L"Townfall-Win64-Shipping.exe", 0x00050007),
+        "other executables and engine minors do not enter the Townfall repair");
+    expect(!townfall::uses_ue56_console_discovery(), "normal test executable retains stock discovery and lookup paths");
+
+    static sdk::FConsoleManager* manager_storage{};
+    manager_storage = reinterpret_cast<sdk::FConsoleManager*>(&manager);
+    const auto module = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    const auto storage = reinterpret_cast<uintptr_t>(&manager_storage);
+    auto* private_storage = manager_storage;
+    expect(townfall::detail::validate_console_manager_storage(storage, module),
+        "writable singleton storage and an independently anchored console map validate without vfunc calls");
+    manager_storage = reinterpret_cast<sdk::FConsoleManager*>(manager_vtable[0]);
+    expect(!townfall::detail::validate_console_manager_storage(storage, module),
+        "a Slate-style vtable slot pointing into executable code is not a manager");
+    expect(!townfall::detail::validate_console_manager_storage(0x10000, module) &&
+        !townfall::detail::validate_console_manager_storage(storage + 1, module) &&
+        !townfall::detail::validate_console_manager_storage(storage, 0) &&
+        !townfall::detail::validate_console_manager_storage(reinterpret_cast<uintptr_t>(&private_storage), module),
+        "unreadable, unaligned and ownerless singleton slots fail closed");
+    manager_storage = reinterpret_cast<sdk::FConsoleManager*>(&manager);
+
+    const auto lookup = [&] { return townfall::detail::find_console_object(manager_storage, L"R.ONEFRAMETHREADLAG"); };
+    expect(lookup() == elements[2].value, "validated lookup preserves case-insensitive exact CVar names");
+    expect(townfall::detail::fuzzy_find_console_objects(manager_storage, L"r.").size() == 3,
+        "validated fuzzy lookup preserves all matching console objects");
+    const auto sorted = townfall::detail::fuzzy_find_console_objects(manager_storage, L"");
+    expect(sorted.size() == 3 && sorted[0].key == elements[1].key && sorted[2].key == elements[2].key,
+        "fuzzy results use safely owned names for sorting");
+    manager.array.count = 4294963768u;
+    manager.array.elements = reinterpret_cast<sdk::ConsoleObjectElement*>(0xE8F98B48DA8B20ECull);
+    expect(!lookup() && townfall::detail::fuzzy_find_console_objects(manager_storage, L"").empty(),
+        "reported post-update garbage table is rejected before any entry traversal");
+    manager.array = {elements.data(), 3, 3};
+    manager.array.capacity = 2;
+    expect(!lookup(), "lookup rejects a count larger than capacity");
+    manager.array = {elements.data(), 3, 3};
+    elements[2].unk[0] = 0x7fffffff;
+    expect(!lookup(), "lookup never uses an unbounded FString length");
+    elements[2].unk[0] = elements[2].unk[1];
+    elements[2].key = reinterpret_cast<wchar_t*>(0x10000);
+    expect(!lookup() && townfall::detail::fuzzy_find_console_objects(manager_storage, L"OneFrame").empty(),
+        "unreadable individual names are skipped without a fault escaping lookup");
+    elements[2].key = const_cast<wchar_t*>(names[2].data());
+    std::array<wchar_t, 20> unterminated{};
+    std::copy(names[2].begin(), names[2].end(), unterminated.begin());
+    unterminated[names[2].size()] = L'!';
+    elements[2].key = unterminated.data();
+    expect(!lookup(), "unterminated console names cannot validate an exact match");
+    elements[2].key = const_cast<wchar_t*>(names[2].data());
+    expect(!townfall::detail::valid_console_table_shape(~uintptr_t{} - 7, 3, 3) &&
+        !townfall::detail::valid_console_table_shape(reinterpret_cast<uintptr_t>(elements.data()), 0, 0) &&
+        !townfall::detail::valid_console_table_shape(reinterpret_cast<uintptr_t>(elements.data()), 131073, 262144),
+        "table arithmetic, empty maps and over-budget tables are rejected");
+
+    SYSTEM_INFO info{};
+    GetSystemInfo(&info);
+    auto* pages = static_cast<uint8_t*>(VirtualAlloc(nullptr, info.dwPageSize * 3, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+    expect(pages != nullptr, "console table gap fixture allocates");
+    if (pages != nullptr) {
+        DWORD previous{};
+        expect(VirtualProtect(pages + info.dwPageSize, info.dwPageSize, PAGE_NOACCESS, &previous) != FALSE,
+            "console table gap fixture protects its middle page");
+        const auto count = static_cast<uint32_t>(info.dwPageSize * 3 / sizeof(sdk::ConsoleObjectElement));
+        manager.array = {reinterpret_cast<sdk::ConsoleObjectElement*>(pages), count, count};
+        expect(!lookup() && townfall::detail::fuzzy_find_console_objects(manager_storage, L"").empty(),
+            "readable first and last elements do not conceal an unreadable interior page");
+        VirtualFree(pages, 0, MEM_RELEASE);
+    }
+    manager.array = {elements.data(), 3, 3};
+    expect(lookup() == elements[2].value, "a valid table still works after rejection tests");
+    expect(manager_storage->find(L"r.OneFrameThreadLag") == elements[2].value &&
+        manager_storage->fuzzy_find(L"r.").size() == 3,
+        "non-Townfall games retain the existing public lookup path");
+    expect(calls == 2, "console validation and lookup never invoke candidate virtual functions");
+    manager_storage = nullptr;
     return failures;
 }

@@ -1,0 +1,7175 @@
+{
+  "schema": 1,
+  "source": "ProSpi automatic lightweight trace, 2026-10-10 21:29-21:40, Hokkaido/Nippon-Ham stadium",
+  "limits": "No manual bad-cut markers. Native look-at is authored focus, not proof of a player identity or collision-free path. First-base mirrors are synthetic and tested separately.",
+  "samples": [
+    {
+      "label": "4/9/895",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 3.757894277572632,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.9787387251853943,
+            151.6876678466797,
+            5.336863750926568e-08
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 1195.423828125,
+        "lift": 121.59825134277344,
+        "predicted_z": 50.41949462890625,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46022140444700
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 3.7603628635406494,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.9783780574798584,
+            151.6876983642578,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          -600.9277954101562,
+          390.0660705566406,
+          112.45975494384766
+        ],
+        "focus_cm": 4829.2431640625,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46022140295100,
+        "native_frame": 4634
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 3.757894277572632,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.9783767461776733,
+            151.68771362304688,
+            0.0
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2599.558837890625,
+            -1334.1051025390625,
+            171.99249267578125
+          ],
+          "rotation": [
+            0.9783767461776733,
+            151.68771362304688,
+            0.0
+          ],
+          "valid": true
+        },
+        "time_ns": 46022146327000
+      }
+    },
+    {
+      "label": "4/9/902",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 3.7603626251220703,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.9783767461776733,
+            151.68771362304688,
+            0.0
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 1195.423828125,
+        "lift": 121.60578918457031,
+        "predicted_z": 50.41194152832031,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46023330554400
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 3.762831926345825,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.9778135418891907,
+            151.68748474121094,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          -598.4154052734375,
+          388.7337951660156,
+          112.3636245727539
+        ],
+        "focus_cm": 4826.3984375,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46023330420800,
+        "native_frame": 4635
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 3.7603626251220703,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.9778029918670654,
+            151.68751525878906,
+            2.6684311649205483e-08
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2599.5595703125,
+            -1334.1011962890625,
+            171.98797607421875
+          ],
+          "rotation": [
+            0.9778029918670654,
+            151.68751525878906,
+            2.6684311649205483e-08
+          ],
+          "valid": true
+        },
+        "time_ns": 46023336158800
+      }
+    },
+    {
+      "label": "4/9/909",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 3.810011148452759,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.9194322228431702,
+            151.67376708984375,
+            0.0
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 1195.423828125,
+        "lift": 122.83353424072266,
+        "predicted_z": 49.18228530883789,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46024334377700
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 3.8140578269958496,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.9139358997344971,
+            151.69039916992188,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          -510.9459228515625,
+          341.3385009765625,
+          105.39508056640625
+        ],
+        "focus_cm": 4726.81201171875,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46024334142900,
+        "native_frame": 4655
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 3.810011148452759,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.9139338731765747,
+            151.69039916992188,
+            -1.3341908911002065e-08
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2599.409912109375,
+            -1334.088623046875,
+            171.88552856445312
+          ],
+          "rotation": [
+            0.9139338731765747,
+            151.69039916992188,
+            -1.3341908911002065e-08
+          ],
+          "valid": true
+        },
+        "time_ns": 46024342341400
+      }
+    },
+    {
+      "label": "4/9/916",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 3.883784532546997,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.913947582244873,
+            151.9546356201172,
+            1.3341908911002065e-08
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 1195.423828125,
+        "lift": 122.94776916503906,
+        "predicted_z": 49.06787109375,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46025352316000
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 3.8872528076171875,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.9166587591171265,
+            151.96173095703125,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          -465.0789794921875,
+          291.5539855957031,
+          104.59672546386719
+        ],
+        "focus_cm": 4662.869140625,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46025352161500,
+        "native_frame": 4677
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 3.883784532546997,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.9166523218154907,
+            151.96176147460938,
+            -1.3341920457321521e-08
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2596.7490234375,
+            -1339.07470703125,
+            172.05630493164062
+          ],
+          "rotation": [
+            0.9166523218154907,
+            151.96176147460938,
+            -1.3341920457321521e-08
+          ],
+          "valid": true
+        },
+        "time_ns": 46025358191400
+      }
+    },
+    {
+      "label": "4/9/923",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 3.9567155838012695,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.9490547180175781,
+            151.93777465820312,
+            1.334204302594344e-08
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 1195.423828125,
+        "lift": 122.21652221679688,
+        "predicted_z": 49.80024719238281,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46026368537700
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 3.9600181579589844,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.9473390579223633,
+            151.9359588623047,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          -403.71185302734375,
+          261.2124938964844,
+          105.96241760253906
+        ],
+        "focus_cm": 4594.4736328125,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46026368388700,
+        "native_frame": 4700
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 3.9567155838012695,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.9473403692245483,
+            151.93597412109375,
+            0.0
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2597.058349609375,
+            -1338.630859375,
+            171.96432495117188
+          ],
+          "rotation": [
+            0.9473403692245483,
+            151.93597412109375,
+            0.0
+          ],
+          "valid": true
+        },
+        "time_ns": 46026375356000
+      }
+    },
+    {
+      "label": "4/9/930",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 4.027995586395264,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.9020357131958008,
+            152.1742401123047,
+            1.334186627843792e-08
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 992.679931640625,
+        "lift": 126.38805389404297,
+        "predicted_z": 45.62760543823242,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46027369274400
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 4.031145095825195,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.9010165929794312,
+            152.18629455566406,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          -357.7425842285156,
+          214.26828002929688,
+          101.2628173828125
+        ],
+        "focus_cm": 4531.7998046875,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46027369121400,
+        "native_frame": 4722
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 4.027995586395264,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.9010111689567566,
+            152.1863250732422,
+            0.0
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2773.87109375,
+            -1437.8023681640625,
+            171.9822998046875
+          ],
+          "rotation": [
+            0.9010111689567566,
+            152.1863250732422,
+            0.0
+          ],
+          "valid": true
+        },
+        "time_ns": 46027376327400
+      }
+    },
+    {
+      "label": "4/9/937",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 4.103087902069092,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.9445536136627197,
+            152.5146942138672,
+            0.0
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 992.679931640625,
+        "lift": 125.65292358398438,
+        "predicted_z": 46.36415100097656,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46028390480900
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 4.105891227722168,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.9489158391952515,
+            152.52313232421875,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          -302.8956298828125,
+          155.72023010253906,
+          103.7972183227539
+        ],
+        "focus_cm": 4456.0986328125,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46028390332000,
+        "native_frame": 4745
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 4.103087902069092,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.9489044547080994,
+            152.52316284179688,
+            -1.334204302594344e-08
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2771.263671875,
+            -1443.0103759765625,
+            172.07521057128906
+          ],
+          "rotation": [
+            0.9489044547080994,
+            152.52316284179688,
+            -1.334204302594344e-08
+          ],
+          "valid": true
+        },
+        "time_ns": 46028396372700
+      }
+    },
+    {
+      "label": "4/9/944",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 4.175569534301758,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.0153963565826416,
+            152.5594940185547,
+            0.0
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 992.679931640625,
+        "lift": 124.42817687988281,
+        "predicted_z": 47.59136199951172,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46029412141900
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 4.178671360015869,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.0171107053756714,
+            152.5640869140625,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          -231.88250732421875,
+          115.26522827148438,
+          107.65191650390625
+        ],
+        "focus_cm": 4374.509765625,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46029411965800,
+        "native_frame": 4768
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 4.175569534301758,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.0171107053756714,
+            152.56411743164062,
+            5.336925923415947e-08
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2771.068603515625,
+            -1443.706787109375,
+            172.02960205078125
+          ],
+          "rotation": [
+            1.0171107053756714,
+            152.56411743164062,
+            5.336925923415947e-08
+          ],
+          "valid": true
+        },
+        "time_ns": 46029418495700
+      }
+    },
+    {
+      "label": "4/10/951",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 10.139435768127441,
+          "location": [
+            -3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.234993815422058,
+            28.330461502075195,
+            0.0
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 946.0064697265625,
+        "lift": 121.6389389038086,
+        "predicted_z": 50.389312744140625,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46030252306900
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 10.133563041687012,
+          "location": [
+            -3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.2344595193862915,
+            28.329748153686523,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          -85.45530700683594,
+          21.697473526000977,
+          117.26272583007812
+        ],
+        "focus_cm": 4050.49560546875,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46030252154500,
+        "native_frame": 4786
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 10.139435768127441,
+          "location": [
+            -3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.2344473600387573,
+            28.329729080200195,
+            0.0
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            -2819.79541015625,
+            -1452.4251708984375,
+            171.9910888671875
+          ],
+          "rotation": [
+            1.2344473600387573,
+            28.329729080200195,
+            0.0
+          ],
+          "valid": true
+        },
+        "time_ns": 46030258265500
+      }
+    },
+    {
+      "label": "4/10/958",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 9.238576889038086,
+          "location": [
+            -3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.1605993509292603,
+            28.151460647583008,
+            0.0
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 954.217041015625,
+        "lift": 122.69760131835938,
+        "predicted_z": 49.32756805419922,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46031252825300
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 9.189177513122559,
+          "location": [
+            -3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.1586158275604248,
+            28.139970779418945,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          -86.70545959472656,
+          5.817928314208984,
+          111.7256851196289
+        ],
+        "focus_cm": 4041.767822265625,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46031252677000,
+        "native_frame": 4809
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 9.238576889038086,
+          "location": [
+            -3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.1586185693740845,
+            28.139944076538086,
+            0.0
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            -2810.932861328125,
+            -1451.227783203125,
+            171.96707153320312
+          ],
+          "rotation": [
+            1.1586185693740845,
+            28.139944076538086,
+            0.0
+          ],
+          "valid": true
+        },
+        "time_ns": 46031258933200
+      }
+    },
+    {
+      "label": "4/10/965",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 7.986288070678711,
+          "location": [
+            -3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.0918740034103394,
+            28.0188045501709,
+            -2.668526910554192e-08
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 965.6134643554688,
+        "lift": 123.62205505371094,
+        "predicted_z": 48.400386810302734,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46032286901500
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 7.925736904144287,
+          "location": [
+            -3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.0841280221939087,
+            28.024736404418945,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          -47.849124908447266,
+          17.292884826660156,
+          107.22118377685547
+        ],
+        "focus_cm": 4081.35595703125,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46032286692700,
+        "native_frame": 4832
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 7.986288070678711,
+          "location": [
+            -3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.0841217041015625,
+            28.024709701538086,
+            0.0
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            -2799.826904296875,
+            -1447.4844970703125,
+            171.86968994140625
+          ],
+          "rotation": [
+            1.0841217041015625,
+            28.024709701538086,
+            0.0
+          ],
+          "valid": true
+        },
+        "time_ns": 46032294188200
+      }
+    },
+    {
+      "label": "4/10/972",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 6.68716287612915,
+          "location": [
+            -3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.9277172088623047,
+            27.987215042114258,
+            -1.3341962201707247e-08
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 977.4179077148438,
+        "lift": 126.19115447998047,
+        "predicted_z": 45.82538604736328,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46033297966700
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 6.632245063781738,
+          "location": [
+            -3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.9200349450111389,
+            27.979427337646484,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          -39.42829895019531,
+          18.112531661987305,
+          95.65641784667969
+        ],
+        "focus_cm": 4088.972412109375,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46033297746500,
+        "native_frame": 4855
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 6.68716287612915,
+          "location": [
+            -3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.9200400710105896,
+            27.97939109802246,
+            0.0
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            -2788.726806640625,
+            -1442.4503173828125,
+            171.86935424804688
+          ],
+          "rotation": [
+            0.9200400710105896,
+            27.97939109802246,
+            0.0
+          ],
+          "valid": true
+        },
+        "time_ns": 46033304536800
+      }
+    },
+    {
+      "label": "4/10/979",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 5.4610371589660645,
+          "location": [
+            -3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.8583976626396179,
+            27.979595184326172,
+            0.0
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 988.5445556640625,
+        "lift": 127.20458221435547,
+        "predicted_z": 44.809688568115234,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46034299895900
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 5.415207386016846,
+          "location": [
+            -3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.8649702072143555,
+            27.98483657836914,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          -51.07567596435547,
+          12.36040210723877,
+          91.53018188476562
+        ],
+        "focus_cm": 4075.9248046875,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46034299720500,
+        "native_frame": 4881
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 5.4610371589660645,
+          "location": [
+            -3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.8649682998657227,
+            27.984804153442383,
+            1.3341733051674964e-08
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            -2778.83935546875,
+            -1437.091796875,
+            172.11312866210938
+          ],
+          "rotation": [
+            0.8649682998657227,
+            27.984804153442383,
+            1.3341733051674964e-08
+          ],
+          "valid": true
+        },
+        "time_ns": 46034306774600
+      }
+    },
+    {
+      "label": "4/22/1594",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 7.108577728271484,
+          "location": [
+            -3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.7431928515434265,
+            18.008525848388672,
+            0.0
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 973.590576171875,
+        "lift": 129.38262939453125,
+        "predicted_z": 42.62824630737305,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46114479439400
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 7.109108924865723,
+          "location": [
+            -3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.7431728839874268,
+            18.008384704589844,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          2035.067138671875,
+          -51.88987350463867,
+          107.54280853271484
+        ],
+        "focus_cm": 5978.4208984375,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46114479228500,
+        "native_frame": 7168
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 7.108577728271484,
+          "location": [
+            -3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.7431723475456238,
+            18.00840950012207,
+            -1.3341335147742939e-08
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            -2725.7783203125,
+            -1599.552001953125,
+            171.99966430664062
+          ],
+          "rotation": [
+            0.7431723475456238,
+            18.00840950012207,
+            -1.3341335147742939e-08
+          ],
+          "valid": true
+        },
+        "time_ns": 46114486592300
+      }
+    },
+    {
+      "label": "4/22/1601",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 7.191378593444824,
+          "location": [
+            -3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.7388010025024414,
+            17.97719955444336,
+            0.0
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 972.83837890625,
+        "lift": 129.46682739257812,
+        "predicted_z": 42.54392623901367,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46115480116800
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 7.195602893829346,
+          "location": [
+            -3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.7390841841697693,
+            17.97367286682129,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          1936.367919921875,
+          -87.71659851074219,
+          105.76241302490234
+        ],
+        "focus_cm": 5873.46728515625,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46115479973500,
+        "native_frame": 7195
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 7.191378593444824,
+          "location": [
+            -3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.7390742301940918,
+            17.97369384765625,
+            0.0
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            -2726.30322265625,
+            -1600.341552734375,
+            172.00469970703125
+          ],
+          "rotation": [
+            0.7390742301940918,
+            17.97369384765625,
+            0.0
+          ],
+          "valid": true
+        },
+        "time_ns": 46115485679700
+      }
+    },
+    {
+      "label": "4/22/1608",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 7.329842567443848,
+          "location": [
+            -3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.7458770871162415,
+            17.87525749206543,
+            -1.3341343141348716e-08
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 971.5803833007812,
+        "lift": 129.36328125,
+        "predicted_z": 42.64768600463867,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46116481469300
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 7.334757328033447,
+          "location": [
+            -3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.7461846470832825,
+            17.871389389038086,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          1821.5919189453125,
+          -135.74072265625,
+          104.87555694580078
+        ],
+        "focus_cm": 5749.48095703125,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46116481235500,
+        "native_frame": 7225
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 7.329842567443848,
+          "location": [
+            -3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.7461844682693481,
+            17.871417999267578,
+            1.3341344917705555e-08
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            -2726.982666015625,
+            -1602.3819580078125,
+            172.00514221191406
+          ],
+          "rotation": [
+            0.7461844682693481,
+            17.871417999267578,
+            1.3341344917705555e-08
+          ],
+          "valid": true
+        },
+        "time_ns": 46116488916000
+      }
+    },
+    {
+      "label": "4/22/1615",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 7.488004207611084,
+          "location": [
+            -3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.7609581351280212,
+            17.764467239379883,
+            -1.334138932662654e-08
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 970.1431274414062,
+        "lift": 129.12709045410156,
+        "predicted_z": 42.88431167602539,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46117510325900
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 7.493503093719482,
+          "location": [
+            -3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.7610591650009155,
+            17.75975799560547,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          1697.005615234375,
+          -187.406005859375,
+          104.58271789550781
+        ],
+        "focus_cm": 5615.0703125,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46117510165200,
+        "native_frame": 7256
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 7.488004207611084,
+          "location": [
+            -3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.7610469460487366,
+            17.759790420532227,
+            1.334138932662654e-08
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            -2727.80517578125,
+            -1604.62939453125,
+            172.00149536132812
+          ],
+          "rotation": [
+            0.7610469460487366,
+            17.759790420532227,
+            1.334138932662654e-08
+          ],
+          "valid": true
+        },
+        "time_ns": 46117516822400
+      }
+    },
+    {
+      "label": "4/22/1622",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 7.658073425292969,
+          "location": [
+            -3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.7786142230033875,
+            17.638151168823242,
+            1.3341445281866982e-08
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 968.5973510742188,
+        "lift": 128.84967041015625,
+        "predicted_z": 43.162235260009766,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46118510511800
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 7.664099216461182,
+          "location": [
+            -3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.7789207100868225,
+            17.63404655456543,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          1569.5655517578125,
+          -240.8419952392578,
+          104.46186065673828
+        ],
+        "focus_cm": 5477.427734375,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46118510355200,
+        "native_frame": 7286
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 7.658073425292969,
+          "location": [
+            -3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.7789215445518494,
+            17.63408088684082,
+            -1.3341445281866982e-08
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            -2728.671142578125,
+            -1607.134033203125,
+            172.00518798828125
+          ],
+          "rotation": [
+            0.7789215445518494,
+            17.63408088684082,
+            -1.3341445281866982e-08
+          ],
+          "valid": true
+        },
+        "time_ns": 46118516766900
+      }
+    },
+    {
+      "label": "4/22/1629",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 4.98500394821167,
+          "location": [
+            -3550.0,
+            -1500.0,
+            200.0
+          ],
+          "rotation": [
+            -1.3497682809829712,
+            24.66533851623535,
+            -2.6687828835747496e-08
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 992.679931640625,
+        "lift": 0.0,
+        "predicted_z": 0.0,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46119658716500
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 4.989037036895752,
+          "location": [
+            -3550.0,
+            -1500.0,
+            200.0
+          ],
+          "rotation": [
+            -1.3498486280441284,
+            24.664291381835938,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          618.020263671875,
+          413.928955078125,
+          91.92645263671875
+        ],
+        "focus_cm": 4587.72265625,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46119658513500,
+        "native_frame": 7306
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 4.98500394821167,
+          "location": [
+            -3550.0,
+            -1500.0,
+            200.0
+          ],
+          "rotation": [
+            -1.3498570919036865,
+            24.664228439331055,
+            0.0
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            -2648.1337890625,
+            -1085.869873046875,
+            176.61517333984375
+          ],
+          "rotation": [
+            -1.3498570919036865,
+            24.664228439331055,
+            0.0
+          ],
+          "valid": true
+        },
+        "time_ns": 46119665607400
+      }
+    },
+    {
+      "label": "4/22/1636",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 5.437219142913818,
+          "location": [
+            -3550.0,
+            -1500.0,
+            200.0
+          ],
+          "rotation": [
+            -1.3481426239013672,
+            24.45600128173828,
+            0.0
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 988.7606201171875,
+        "lift": 0.0,
+        "predicted_z": 0.0,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46120659867900
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 5.473526477813721,
+          "location": [
+            -3550.0,
+            -1500.0,
+            200.0
+          ],
+          "rotation": [
+            -1.349493145942688,
+            24.4412841796875,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          526.313232421875,
+          352.640380859375,
+          94.5199203491211
+        ],
+        "focus_cm": 4478.80908203125,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46120659610200,
+        "native_frame": 7330
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 5.437219142913818,
+          "location": [
+            -3550.0,
+            -1500.0,
+            200.0
+          ],
+          "rotation": [
+            -1.3494882583618164,
+            24.44122314453125,
+            0.0
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            -2650.095703125,
+            -1091.004150390625,
+            176.71392822265625
+          ],
+          "rotation": [
+            -1.3494882583618164,
+            24.44122314453125,
+            0.0
+          ],
+          "valid": true
+        },
+        "time_ns": 46120670147400
+      }
+    },
+    {
+      "label": "4/22/1643",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 6.0721940994262695,
+          "location": [
+            -3550.0,
+            -1500.0,
+            200.0
+          ],
+          "rotation": [
+            -1.3521041870117188,
+            24.152042388916016,
+            -2.6687855481100087e-08
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 983.0001220703125,
+        "lift": 0.0,
+        "predicted_z": 0.0,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46121666678000
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 6.111072063446045,
+          "location": [
+            -3550.0,
+            -1500.0,
+            200.0
+          ],
+          "rotation": [
+            -1.3524280786514282,
+            24.130661010742188,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          437.8321533203125,
+          286.4051513671875,
+          96.83765411376953
+        ],
+        "focus_cm": 4370.89111328125,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46121666507100,
+        "native_frame": 7347
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 6.0721940994262695,
+          "location": [
+            -3550.0,
+            -1500.0,
+            200.0
+          ],
+          "rotation": [
+            -1.352418303489685,
+            24.130596160888672,
+            2.6687860810170605e-08
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            -2653.148193359375,
+            -1098.243896484375,
+            176.79931640625
+          ],
+          "rotation": [
+            -1.352418303489685,
+            24.130596160888672,
+            2.6687860810170605e-08
+          ],
+          "valid": true
+        },
+        "time_ns": 46121675368400
+      }
+    },
+    {
+      "label": "4/22/1650",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 6.767531394958496,
+          "location": [
+            -3550.0,
+            -1500.0,
+            200.0
+          ],
+          "rotation": [
+            -1.3551914691925049,
+            23.728971481323242,
+            0.0
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 976.6880493164062,
+        "lift": 0.0,
+        "predicted_z": 0.0,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46122680856300
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 6.790767669677734,
+          "location": [
+            -3550.0,
+            -1500.0,
+            200.0
+          ],
+          "rotation": [
+            -1.3556009531021118,
+            23.71306800842285,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          342.85626220703125,
+          209.9034881591797,
+          99.38408660888672
+        ],
+        "focus_cm": 4253.02490234375,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46122680712600,
+        "native_frame": 7376
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 6.767531394958496,
+          "location": [
+            -3550.0,
+            -1500.0,
+            200.0
+          ],
+          "rotation": [
+            -1.3555876016616821,
+            23.713008880615234,
+            0.0
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            -2656.022705078125,
+            -1107.329345703125,
+            176.894287109375
+          ],
+          "rotation": [
+            -1.3555876016616821,
+            23.713008880615234,
+            0.0
+          ],
+          "valid": true
+        },
+        "time_ns": 46122687136800
+      }
+    },
+    {
+      "label": "4/27/1894",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 2.6096291542053223,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            2.160921573638916,
+            139.9252166748047,
+            1.067976498347889e-07
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 1195.423828125,
+        "lift": 96.99402618408203,
+        "predicted_z": 75.074951171875,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46153150255700
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 2.608773708343506,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            2.160818576812744,
+            139.9250946044922,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          1628.0760498046875,
+          -198.89407348632812,
+          129.69873046875
+        ],
+        "focus_cm": 2644.216064453125,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46153150095500,
+        "native_frame": 8266
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 2.6096291542053223,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            2.1608190536499023,
+            139.9251251220703,
+            5.339881781196709e-08
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2738.705810546875,
+            -1133.302001953125,
+            171.9979248046875
+          ],
+          "rotation": [
+            2.1608190536499023,
+            139.9251251220703,
+            5.339881781196709e-08
+          ],
+          "valid": true
+        },
+        "time_ns": 46153157010900
+      }
+    },
+    {
+      "label": "4/27/1901",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 2.6002962589263916,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            2.151721239089966,
+            139.91156005859375,
+            0.0
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 1195.423828125,
+        "lift": 97.18537902832031,
+        "predicted_z": 74.88314056396484,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46154252543400
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 2.5985848903656006,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            2.148404121398926,
+            139.90562438964844,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          1627.4716796875,
+          -197.2120819091797,
+          129.18336486816406
+        ],
+        "focus_cm": 2645.740966796875,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46154252391400,
+        "native_frame": 8273
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 2.6002962589263916,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            2.1484017372131348,
+            139.9056396484375,
+            1.0679677586722391e-07
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2738.94873046875,
+            -1132.9765625,
+            171.9310302734375
+          ],
+          "rotation": [
+            2.1484017372131348,
+            139.9056396484375,
+            1.0679677586722391e-07
+          ],
+          "valid": true
+        },
+        "time_ns": 46154259979300
+      }
+    },
+    {
+      "label": "4/27/1908",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 2.5866057872772217,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            2.110856294631958,
+            139.84521484375,
+            -5.339708408769184e-08
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 1195.423828125,
+        "lift": 98.03540802001953,
+        "predicted_z": 74.03111267089844,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46155307709900
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 2.5848944187164307,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            2.105272054672241,
+            139.83349609375,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          1629.97998046875,
+          -194.97372436523438,
+          127.17285919189453
+        ],
+        "focus_cm": 2645.19140625,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46155307578200,
+        "native_frame": 8281
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 2.5866057872772217,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            2.105269193649292,
+            139.83351135253906,
+            0.0
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2739.857421875,
+            -1131.781982421875,
+            171.8839111328125
+          ],
+          "rotation": [
+            2.105269193649292,
+            139.83351135253906,
+            0.0
+          ],
+          "valid": true
+        },
+        "time_ns": 46155314266100
+      }
+    },
+    {
+      "label": "4/27/1915",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 2.5712039470672607,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            2.125800609588623,
+            139.61439514160156,
+            -5.3397599231175263e-08
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 1195.423828125,
+        "lift": 97.72455596923828,
+        "predicted_z": 74.34269714355469,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46156442676400
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 2.5694925785064697,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            2.1376264095306396,
+            139.6001434326172,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          1644.9122314453125,
+          -193.54534912109375,
+          128.27688598632812
+        ],
+        "focus_cm": 2634.771728515625,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46156442481200,
+        "native_frame": 8290
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 2.5712039470672607,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            2.1376237869262695,
+            139.60015869140625,
+            5.3398011345962004e-08
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2743.045654296875,
+            -1128.1260986328125,
+            172.24578857421875
+          ],
+          "rotation": [
+            2.1376237869262695,
+            139.60015869140625,
+            5.3398011345962004e-08
+          ],
+          "valid": true
+        },
+        "time_ns": 46156449845800
+      }
+    },
+    {
+      "label": "4/28/1922",
+      "expected_before": "cut",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 2.5583691596984863,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            2.2129948139190674,
+            139.64019775390625,
+            5.3400675881221105e-08
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 1195.423828125,
+        "lift": 95.9109115600586,
+        "predicted_z": 76.1606216430664,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46157533929900
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 6.581259250640869,
+          "location": [
+            3300.0,
+            -1300.0,
+            200.0
+          ],
+          "rotation": [
+            -6.094964981079102,
+            111.4063491821289,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          2830.502685546875,
+          -102.37464141845703,
+          62.64159393310547
+        ],
+        "focus_cm": 1293.6776123046875,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46157533784400,
+        "native_frame": 8298
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 2.5583691596984863,
+          "location": [
+            3300.0,
+            -1300.0,
+            200.0
+          ],
+          "rotation": [
+            -6.094973564147949,
+            111.40631103515625,
+            2.1465679367338453e-07
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            3300.0,
+            -1300.0,
+            200.0
+          ],
+          "rotation": [
+            -6.094973564147949,
+            111.40631103515625,
+            2.1465679367338453e-07
+          ],
+          "valid": true
+        },
+        "time_ns": 46157594885700
+      }
+    },
+    {
+      "label": "4/28/1929",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 6.587953567504883,
+          "location": [
+            3300.0,
+            -1300.0,
+            200.0
+          ],
+          "rotation": [
+            -6.073028087615967,
+            111.54747009277344,
+            4.292960795737599e-07
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 978.3186645507812,
+        "lift": 75.92830657958984,
+        "predicted_z": 96.49781036376953,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46158557884400
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 6.588566780090332,
+          "location": [
+            3300.0,
+            -1300.0,
+            200.0
+          ],
+          "rotation": [
+            -6.0718255043029785,
+            111.56466674804688,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          2822.397705078125,
+          -91.537353515625,
+          61.77855682373047
+        ],
+        "focus_cm": 1306.748291015625,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46158557725400,
+        "native_frame": 8311
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 6.587953567504883,
+          "location": [
+            3300.0,
+            -1300.0,
+            200.0
+          ],
+          "rotation": [
+            -6.071839809417725,
+            111.56462860107422,
+            0.0
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2939.48388671875,
+            -387.7950439453125,
+            172.02035522460938
+          ],
+          "rotation": [
+            -6.071839809417725,
+            111.56462860107422,
+            0.0
+          ],
+          "valid": true
+        },
+        "time_ns": 46158565205700
+      }
+    },
+    {
+      "label": "4/28/1935",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 6.595920562744141,
+          "location": [
+            3300.0,
+            -1300.0,
+            200.0
+          ],
+          "rotation": [
+            -6.087132453918457,
+            111.53372955322266,
+            -2.1465366728534718e-07
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 978.246337890625,
+        "lift": 76.16341400146484,
+        "predicted_z": 96.2660140991211,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46159617500600
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 6.596534252166748,
+          "location": [
+            3300.0,
+            -1300.0,
+            200.0
+          ],
+          "rotation": [
+            -6.089902400970459,
+            111.5196762084961,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          2829.382568359375,
+          -106.47010803222656,
+          63.11947250366211
+        ],
+        "focus_cm": 1290.244384765625,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46159617275000,
+        "native_frame": 8324
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 6.595920562744141,
+          "location": [
+            3300.0,
+            -1300.0,
+            200.0
+          ],
+          "rotation": [
+            -6.089898586273193,
+            111.51963806152344,
+            0.0
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2940.220458984375,
+            -387.56427001953125,
+            171.95266723632812
+          ],
+          "rotation": [
+            -6.089898586273193,
+            111.51963806152344,
+            0.0
+          ],
+          "valid": true
+        },
+        "time_ns": 46159625110800
+      }
+    },
+    {
+      "label": "4/33/2119",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 3.2842178344726562,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.384861707687378,
+            152.62648010253906,
+            0.0
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 992.679931640625,
+        "lift": 118.04334259033203,
+        "predicted_z": 53.99113464355469,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46180870549100
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 3.2836740016937256,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.3850232362747192,
+            152.6273651123047,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          -61.730560302734375,
+          21.730167388916016,
+          131.0567626953125
+        ],
+        "focus_cm": 4180.93310546875,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46180870344200,
+        "native_frame": 8879
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 3.2842178344726562,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.3850188255310059,
+            152.6273956298828,
+            -2.6688223186965843e-08
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2771.25634765625,
+            -1445.035400390625,
+            172.002685546875
+          ],
+          "rotation": [
+            1.3850188255310059,
+            152.6273956298828,
+            -2.6688223186965843e-08
+          ],
+          "valid": true
+        },
+        "time_ns": 46180877014800
+      }
+    },
+    {
+      "label": "4/33/2126",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 3.2148265838623047,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.4213759899139404,
+            152.73121643066406,
+            0.0
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 992.679931640625,
+        "lift": 117.41255187988281,
+        "predicted_z": 54.623573303222656,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46181876258800
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 3.2113540172576904,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.4238625764846802,
+            152.7382354736328,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          -67.00173950195312,
+          15.347537994384766,
+          133.9353790283203
+        ],
+        "focus_cm": 4182.75732421875,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46181876018800,
+        "native_frame": 8895
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 3.2148265838623047,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.4238553047180176,
+            152.73826599121094,
+            0.0
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2770.44970703125,
+            -1446.773681640625,
+            172.0428009033203
+          ],
+          "rotation": [
+            1.4238553047180176,
+            152.73826599121094,
+            0.0
+          ],
+          "valid": true
+        },
+        "time_ns": 46181885288800
+      }
+    },
+    {
+      "label": "4/33/2133",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 3.1973743438720703,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.4465656280517578,
+            152.79185485839844,
+            5.337786035397585e-08
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 992.679931640625,
+        "lift": 116.97742462158203,
+        "predicted_z": 55.05986022949219,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46182908823000
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 3.1973745822906494,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.4469785690307617,
+            152.7921600341797,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          -66.41393280029297,
+          10.620945930480957,
+          135.5556182861328
+        ],
+        "focus_cm": 4180.11328125,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46182908661400,
+        "native_frame": 8914
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 3.1973743438720703,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.4469754695892334,
+            152.79220581054688,
+            5.3377871012116884e-08
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2770.064453125,
+            -1447.623291015625,
+            172.007080078125
+          ],
+          "rotation": [
+            1.4469754695892334,
+            152.79220581054688,
+            5.3377871012116884e-08
+          ],
+          "valid": true
+        },
+        "time_ns": 46182915953200
+      }
+    },
+    {
+      "label": "4/38/2427",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 5.796259880065918,
+          "location": [
+            3300.0,
+            -1300.0,
+            200.0
+          ],
+          "rotation": [
+            -6.167359828948975,
+            111.11965942382812,
+            0.0
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 985.5037841796875,
+        "lift": 78.32896423339844,
+        "predicted_z": 94.12437438964844,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46219276294600
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 5.795718669891357,
+          "location": [
+            3300.0,
+            -1300.0,
+            200.0
+          ],
+          "rotation": [
+            -6.1671905517578125,
+            111.11988067626953,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          2836.85205078125,
+          -100.9626693725586,
+          61.10795593261719
+        ],
+        "focus_cm": 1292.8602294921875,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46219276087500,
+        "native_frame": 9949
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 5.796259880065918,
+          "location": [
+            3300.0,
+            -1300.0,
+            200.0
+          ],
+          "rotation": [
+            -6.167202949523926,
+            111.1198501586914,
+            0.0
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2943.92626953125,
+            -378.16448974609375,
+            172.00271606445312
+          ],
+          "rotation": [
+            -6.167202949523926,
+            111.1198501586914,
+            0.0
+          ],
+          "valid": true
+        },
+        "time_ns": 46219282619400
+      }
+    },
+    {
+      "label": "4/38/2434",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 5.783725261688232,
+          "location": [
+            3300.0,
+            -1300.0,
+            200.0
+          ],
+          "rotation": [
+            -6.155850887298584,
+            111.08966827392578,
+            -2.146812647652041e-07
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 985.6175537109375,
+        "lift": 78.1415786743164,
+        "predicted_z": 94.30899047851562,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46220342125600
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 5.782641887664795,
+          "location": [
+            3300.0,
+            -1300.0,
+            200.0
+          ],
+          "rotation": [
+            -6.155023574829102,
+            111.08133697509766,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          2837.06640625,
+          -99.11502075195312,
+          61.20650863647461
+        ],
+        "focus_cm": 1294.4866943359375,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46220341938100,
+        "native_frame": 9962
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 5.783725261688232,
+          "location": [
+            3300.0,
+            -1300.0,
+            200.0
+          ],
+          "rotation": [
+            -6.155024528503418,
+            111.08131408691406,
+            -2.1468093791554566e-07
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2944.510498046875,
+            -377.8326416015625,
+            172.01419067382812
+          ],
+          "rotation": [
+            -6.155024528503418,
+            111.08131408691406,
+            -2.1468093791554566e-07
+          ],
+          "valid": true
+        },
+        "time_ns": 46220349342100
+      }
+    },
+    {
+      "label": "4/38/2441",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 5.768068313598633,
+          "location": [
+            3300.0,
+            -1300.0,
+            200.0
+          ],
+          "rotation": [
+            -6.164094924926758,
+            111.01556396484375,
+            0.0
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 985.759521484375,
+        "lift": 78.29993438720703,
+        "predicted_z": 94.15275573730469,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46221362503900
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 5.767135143280029,
+          "location": [
+            3300.0,
+            -1300.0,
+            200.0
+          ],
+          "rotation": [
+            -6.164575576782227,
+            111.01226043701172,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          2839.020751953125,
+          -99.87542724609375,
+          61.141929626464844
+        ],
+        "focus_cm": 1293.0902099609375,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46221362373400,
+        "native_frame": 9977
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 5.768068313598633,
+          "location": [
+            3300.0,
+            -1300.0,
+            200.0
+          ],
+          "rotation": [
+            -6.16457986831665,
+            111.01223754882812,
+            0.0
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2945.5673828125,
+            -377.261474609375,
+            171.9915771484375
+          ],
+          "rotation": [
+            -6.16457986831665,
+            111.01223754882812,
+            0.0
+          ],
+          "valid": true
+        },
+        "time_ns": 46221369374600
+      }
+    },
+    {
+      "label": "4/42/2625",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 11.744847297668457,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.4252077341079712,
+            142.9595184326172,
+            2.6688681487030408e-08
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 1121.5626220703125,
+        "lift": 114.13980102539062,
+        "predicted_z": 57.8955078125,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46246630402400
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 11.741670608520508,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.4245332479476929,
+            142.96205139160156,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          603.9429321289062,
+          398.5338134765625,
+          124.89554595947266
+        ],
+        "focus_cm": 3817.162109375,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46246630261300,
+        "native_frame": 10666
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 11.744847297668457,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.4245314598083496,
+            142.9620819091797,
+            -2.668867260524621e-08
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2757.26904296875,
+            -1226.3519287109375,
+            171.98672485351562
+          ],
+          "rotation": [
+            1.4245314598083496,
+            142.9620819091797,
+            -2.668867260524621e-08
+          ],
+          "valid": true
+        },
+        "time_ns": 46246636062500
+      }
+    },
+    {
+      "label": "4/42/2632",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 11.3892240524292,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.381842851638794,
+            143.1658477783203,
+            0.0
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 1125.4776611328125,
+        "lift": 114.89209747314453,
+        "predicted_z": 57.14131164550781,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46247719848400
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 11.31751537322998,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.3717693090438843,
+            143.2071075439453,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          571.7900390625,
+          402.2000427246094,
+          122.04761505126953
+        ],
+        "focus_cm": 3844.993408203125,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46247719599700,
+        "native_frame": 10675
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 11.3892240524292,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.3717682361602783,
+            143.20713806152344,
+            -2.6688073972991333e-08
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2751.17138671875,
+            -1227.76513671875,
+            171.80264282226562
+          ],
+          "rotation": [
+            1.3717682361602783,
+            143.20713806152344,
+            -2.6688073972991333e-08
+          ],
+          "valid": true
+        },
+        "time_ns": 46247728475400
+      }
+    },
+    {
+      "label": "4/42/2639",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 10.1072998046875,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.231073260307312,
+            144.45838928222656,
+            0.0
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 1139.57080078125,
+        "lift": 117.54388427734375,
+        "predicted_z": 54.483253479003906,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46248731554800
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 10.042848587036133,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.22682785987854,
+            144.50509643554688,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          519.1197509765625,
+          332.81488037109375,
+          112.3531494140625
+        ],
+        "focus_cm": 3846.382080078125,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46248731219800,
+        "native_frame": 10693
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 10.1072998046875,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.2268248796463013,
+            144.50509643554688,
+            5.337308195407786e-08
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2724.460693359375,
+            -1239.943359375,
+            171.91574096679688
+          ],
+          "rotation": [
+            1.2268248796463013,
+            144.50509643554688,
+            5.337308195407786e-08
+          ],
+          "valid": true
+        },
+        "time_ns": 46248738884900
+      }
+    },
+    {
+      "label": "4/42/2646",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 8.805998802185059,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.1906863451004028,
+            145.42318725585938,
+            0.0
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 1153.8485107421875,
+        "lift": 118.04862976074219,
+        "predicted_z": 53.97686004638672,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46249751570300
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 8.760475158691406,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.1895084381103516,
+            145.44992065429688,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          448.1816101074219,
+          304.672607421875,
+          110.71819305419922
+        ],
+        "focus_cm": 3888.281982421875,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46249751420600,
+        "native_frame": 10715
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 8.805998802185059,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.1895047426223755,
+            145.44985961914062,
+            5.337235009506003e-08
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2701.878173828125,
+            -1247.15185546875,
+            171.9761962890625
+          ],
+          "rotation": [
+            1.1895047426223755,
+            145.44985961914062,
+            5.337235009506003e-08
+          ],
+          "valid": true
+        },
+        "time_ns": 46249757530500
+      }
+    },
+    {
+      "label": "4/42/2653",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 7.621681213378906,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.0917646884918213,
+            146.525146484375,
+            0.0
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 1166.821044921875,
+        "lift": 119.7894515991211,
+        "predicted_z": 52.2322998046875,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46250775419900
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 7.557704925537109,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.0819060802459717,
+            146.62020874023438,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          389.39923095703125,
+          248.32080078125,
+          103.74081420898438
+        ],
+        "focus_cm": 3905.411376953125,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46250775127800,
+        "native_frame": 10736
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 7.621681213378906,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.081895112991333,
+            146.62013244628906,
+            0.0
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2677.718994140625,
+            -1259.388671875,
+            171.79946899414062
+          ],
+          "rotation": [
+            1.081895112991333,
+            146.62013244628906,
+            0.0
+          ],
+          "valid": true
+        },
+        "time_ns": 46250783370100
+      }
+    },
+    {
+      "label": "4/42/2660",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 6.2925028800964355,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.9803506731987,
+            147.46893310546875,
+            0.0
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 1181.3592529296875,
+        "lift": 121.80535125732422,
+        "predicted_z": 50.21248245239258,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46251809059200
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 6.233632564544678,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.9795076251029968,
+            147.5474853515625,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          355.85260009765625,
+          194.76718139648438,
+          96.74400329589844
+        ],
+        "focus_cm": 3904.34521484375,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46251808821700,
+        "native_frame": 10756
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 6.2925028800964355,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            0.9795105457305908,
+            147.5474395751953,
+            0.0
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2655.029052734375,
+            -1267.291259765625,
+            171.9827423095703
+          ],
+          "rotation": [
+            0.9795105457305908,
+            147.5474395751953,
+            0.0
+          ],
+          "valid": true
+        },
+        "time_ns": 46251817474500
+      }
+    },
+    {
+      "label": "4/42/2667",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 5.014606475830078,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.069102168083191,
+            148.6668243408203,
+            -2.6685071929932747e-08
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 1195.3189697265625,
+        "lift": 119.71826171875,
+        "predicted_z": 52.30258560180664,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46252855131000
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 4.948551177978516,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.078568458557129,
+            148.7169952392578,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          272.0117492675781,
+          152.4764862060547,
+          104.41577911376953
+        ],
+        "focus_cm": 3953.353271484375,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46252854959900,
+        "native_frame": 10776
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 5.014606475830078,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.0785688161849976,
+            148.71694946289062,
+            5.337030728469472e-08
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2630.57177734375,
+            -1280.591064453125,
+            172.19705200195312
+          ],
+          "rotation": [
+            1.0785688161849976,
+            148.71694946289062,
+            5.337030728469472e-08
+          ],
+          "valid": true
+        },
+        "time_ns": 46252864109600
+      }
+    },
+    {
+      "label": "4/42/2674",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 3.7465553283691406,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.2721021175384521,
+            149.99099731445312,
+            -2.6687002829817175e-08
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 1195.423828125,
+        "lift": 115.4894027709961,
+        "predicted_z": 56.5390625,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46253866579800
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 3.681583881378174,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.2836421728134155,
+            150.02517700195312,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          212.3521270751953,
+          82.71366882324219,
+          118.9231185913086
+        ],
+        "focus_cm": 3969.443603515625,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46253866346000,
+        "native_frame": 10795
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 3.7465553283691406,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            1.28363835811615,
+            150.025146484375,
+            0.0
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2616.971435546875,
+            -1304.1849365234375,
+            172.24008178710938
+          ],
+          "rotation": [
+            1.28363835811615,
+            150.025146484375,
+            0.0
+          ],
+          "valid": true
+        },
+        "time_ns": 46253875272800
+      }
+    },
+    {
+      "label": "4/62/3750",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 17.030515670776367,
+          "location": [
+            1780.0,
+            400.0,
+            310.0
+          ],
+          "rotation": [
+            4.12159538269043,
+            -73.00164794921875,
+            0.0
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 882.7449951171875,
+        "lift": 0.0,
+        "predicted_z": 0.0,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46384083038400
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 16.729440689086914,
+          "location": [
+            1780.0,
+            400.0,
+            310.0
+          ],
+          "rotation": [
+            3.9609134197235107,
+            -72.85074615478516,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          4637.50048828125,
+          -8860.1171875,
+          981.0161743164062
+        ],
+        "focus_cm": 9714.1826171875,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46384082893900,
+        "native_frame": 14312
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 17.030515670776367,
+          "location": [
+            1780.0,
+            400.0,
+            310.0
+          ],
+          "rotation": [
+            3.9609153270721436,
+            -72.8507080078125,
+            4.279089012015902e-07
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2039.66650390625,
+            -441.483154296875,
+            370.9764404296875
+          ],
+          "rotation": [
+            3.9609153270721436,
+            -72.8507080078125,
+            4.279089012015902e-07
+          ],
+          "valid": true
+        },
+        "time_ns": 46384088313700
+      }
+    },
+    {
+      "label": "4/62/3757",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 9.777856826782227,
+          "location": [
+            1780.0,
+            400.0,
+            310.0
+          ],
+          "rotation": [
+            1.2182871103286743,
+            -70.11447143554688,
+            5.3372918529248636e-08
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 949.3032836914062,
+        "lift": 0.0,
+        "predicted_z": 0.0,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46385083158700
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 8.865265846252441,
+          "location": [
+            1780.0,
+            400.0,
+            310.0
+          ],
+          "rotation": [
+            1.2182905673980713,
+            -70.11448669433594,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          5537.7294921875,
+          -9988.8193359375,
+          544.9412231445312
+        ],
+        "focus_cm": 11050.0361328125,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46385082996000,
+        "native_frame": 14342
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 9.777856826782227,
+          "location": [
+            1780.0,
+            400.0,
+            310.0
+          ],
+          "rotation": [
+            1.2182871103286743,
+            -70.11447143554688,
+            5.3372918529248636e-08
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2102.824951171875,
+            -492.4984130859375,
+            330.18365478515625
+          ],
+          "rotation": [
+            1.2182871103286743,
+            -70.11447143554688,
+            5.3372918529248636e-08
+          ],
+          "valid": true
+        },
+        "time_ns": 46385089283100
+      }
+    },
+    {
+      "label": "4/64/3789",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 16.052934646606445,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            2.093951463699341,
+            178.8177947998047,
+            -1.6686407811050685e-09
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 1073.9136962890625,
+        "lift": 102.82977294921875,
+        "predicted_z": 69.2388916015625,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46387626294400
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 16.052902221679688,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            2.0934720039367676,
+            178.81919860839844,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          82.21134948730469,
+          -1826.461669921875,
+          160.44552612304688
+        ],
+        "focus_cm": 3570.9296875,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46387626141800,
+        "native_frame": 14389
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 16.052934646606445,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            2.093473434448242,
+            178.81919860839844,
+            1.6686403370158587e-09
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2580.786865234375,
+            -1877.961669921875,
+            171.99111938476562
+          ],
+          "rotation": [
+            2.093473434448242,
+            178.81919860839844,
+            1.6686403370158587e-09
+          ],
+          "valid": true
+        },
+        "time_ns": 46387633396700
+      }
+    },
+    {
+      "label": "4/64/3796",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 16.051944732666016,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            2.084949254989624,
+            179.2954864501953,
+            1.6686312331870568e-09
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 1073.9246826171875,
+        "lift": 102.99752044677734,
+        "predicted_z": 69.07066345214844,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46388673492000
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 16.051904678344727,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            2.0838382244110107,
+            179.32618713378906,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          66.84500122070312,
+          -1857.8590087890625,
+          160.38526916503906
+        ],
+        "focus_cm": 3585.774169921875,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46388673348000,
+        "native_frame": 14410
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 16.051944732666016,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            2.083836078643799,
+            179.32620239257812,
+            8.343150059708648e-10
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2580.604736328125,
+            -1887.4234619140625,
+            171.97921752929688
+          ],
+          "rotation": [
+            2.083836078643799,
+            179.32620239257812,
+            8.343150059708648e-10
+          ],
+          "valid": true
+        },
+        "time_ns": 46388680119700
+      }
+    },
+    {
+      "label": "4/64/3803",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 16.050979614257812,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            2.0721426010131836,
+            -179.96978759765625,
+            -5.2144302764567385e-11
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 1073.9354248046875,
+        "lift": 103.236328125,
+        "predicted_z": 68.8311767578125,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46389695365700
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 16.050931930541992,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            2.0721986293792725,
+            -179.94679260253906,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          41.750770568847656,
+          -1903.350830078125,
+          160.55540466308594
+        ],
+        "focus_cm": 3610.612060546875,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46389695221800,
+        "native_frame": 14432
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 16.050979614257812,
+          "location": [
+            3650.0,
+            -1900.0,
+            30.0
+          ],
+          "rotation": [
+            2.072197437286377,
+            -179.94679260253906,
+            0.0
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            2580.500244140625,
+            -1900.9931640625,
+            172.0010986328125
+          ],
+          "rotation": [
+            2.072197437286377,
+            -179.94679260253906,
+            0.0
+          ],
+          "valid": true
+        },
+        "time_ns": 46389702716300
+      }
+    },
+    {
+      "label": "4/67/3873",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 10.646045684814453,
+          "location": [
+            -3389.64794921875,
+            -1155.4876708984375,
+            127.0
+          ],
+          "rotation": [
+            0.5149825811386108,
+            43.97541427612305,
+            0.0
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 844.274658203125,
+        "lift": 39.887428283691406,
+        "predicted_z": 134.58836364746094,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46399146640000
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 10.64885139465332,
+          "location": [
+            -3389.64794921875,
+            -1155.4876708984375,
+            127.0
+          ],
+          "rotation": [
+            0.5297372937202454,
+            43.9787483215332,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          -2680.727783203125,
+          -471.3993835449219,
+          136.10873413085938
+        ],
+        "focus_cm": 985.204345703125,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46399146485300,
+        "native_frame": 14656
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 10.646045684814453,
+          "location": [
+            -3389.64794921875,
+            -1155.4876708984375,
+            127.0
+          ],
+          "rotation": [
+            0.529735803604126,
+            43.97871017456055,
+            1.3340783588944305e-08
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            -2782.401123046875,
+            -569.511962890625,
+            174.6914520263672
+          ],
+          "rotation": [
+            0.529735803604126,
+            43.97871017456055,
+            1.3340783588944305e-08
+          ],
+          "valid": true
+        },
+        "time_ns": 46399153687300
+      }
+    },
+    {
+      "label": "4/67/3880",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 11.71541690826416,
+          "location": [
+            -3389.64794921875,
+            -1155.4876708984375,
+            127.0
+          ],
+          "rotation": [
+            0.8398604989051819,
+            44.0870475769043,
+            0.0
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 707.4974365234375,
+        "lift": 36.869300842285156,
+        "predicted_z": 137.370361328125,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46400162225600
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 11.803507804870605,
+          "location": [
+            -3389.64794921875,
+            -1155.4876708984375,
+            127.0
+          ],
+          "rotation": [
+            0.8546811938285828,
+            44.093257904052734,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          -2787.98046875,
+          -572.568603515625,
+          139.49740600585938
+        ],
+        "focus_cm": 837.8272705078125,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46400162046700,
+        "native_frame": 14679
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 11.71541690826416,
+          "location": [
+            -3389.64794921875,
+            -1155.4876708984375,
+            127.0
+          ],
+          "rotation": [
+            0.8546820282936096,
+            44.09320068359375,
+            0.0
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            -2881.96875,
+            -663.62890625,
+            174.41854858398438
+          ],
+          "rotation": [
+            0.8546820282936096,
+            44.09320068359375,
+            0.0
+          ],
+          "valid": true
+        },
+        "time_ns": 46400169137500
+      }
+    },
+    {
+      "label": "4/67/3887",
+      "expected_before": "overshoot",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 14.552297592163086,
+          "location": [
+            -3389.64794921875,
+            -1155.4876708984375,
+            127.0
+          ],
+          "rotation": [
+            1.0770046710968018,
+            44.1184196472168,
+            -2.6685139431492644e-08
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 905.602294921875,
+        "lift": 27.98309326171875,
+        "predicted_z": 144.0218505859375,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46401172361300
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 14.663320541381836,
+          "location": [
+            -3389.64794921875,
+            -1155.4876708984375,
+            127.0
+          ],
+          "rotation": [
+            1.0813744068145752,
+            44.11259078979492,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          -2881.60009765625,
+          -662.9385375976562,
+          140.3567657470703
+        ],
+        "focus_cm": 707.7398681640625,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46401172201000,
+        "native_frame": 14707
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 14.552297592163086,
+          "location": [
+            -3389.64794921875,
+            -1155.4876708984375,
+            127.0
+          ],
+          "rotation": [
+            1.0813759565353394,
+            44.112545013427734,
+            0.0
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            -2739.944091796875,
+            -525.6050415039062,
+            172.0690460205078
+          ],
+          "rotation": [
+            1.0813759565353394,
+            44.112545013427734,
+            0.0
+          ],
+          "valid": true
+        },
+        "time_ns": 46401178634700
+      }
+    },
+    {
+      "label": "4/67/3894",
+      "expected_before": "overshoot",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 18.043834686279297,
+          "location": [
+            -3389.64794921875,
+            -1155.4876708984375,
+            127.0
+          ],
+          "rotation": [
+            1.3537229299545288,
+            43.41438674926758,
+            5.337574648933696e-08
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 873.357421875,
+        "lift": 24.37397575378418,
+        "predicted_z": 147.63282775878906,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46402173009400
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 18.15981674194336,
+          "location": [
+            -3389.64794921875,
+            -1155.4876708984375,
+            127.0
+          ],
+          "rotation": [
+            1.3736732006072998,
+            43.35365676879883,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          -2963.9638671875,
+          -753.5899658203125,
+          141.0384521484375
+        ],
+        "focus_cm": 585.5986328125,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46402172849600,
+        "native_frame": 14737
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 18.043834686279297,
+          "location": [
+            -3389.64794921875,
+            -1155.4876708984375,
+            127.0
+          ],
+          "rotation": [
+            1.3736602067947388,
+            43.35367965698242,
+            0.0
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            -2755.2109375,
+            -556.5012817382812,
+            172.30368041992188
+          ],
+          "rotation": [
+            1.3736602067947388,
+            43.35367965698242,
+            0.0
+          ],
+          "valid": true
+        },
+        "time_ns": 46402178870000
+      }
+    },
+    {
+      "label": "4/68/3901",
+      "expected_before": "cut",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 21.16756248474121,
+          "location": [
+            -3389.64794921875,
+            -1155.4876708984375,
+            127.0
+          ],
+          "rotation": [
+            1.6016793251037598,
+            38.81026840209961,
+            5.338170794288999e-08
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 844.24609375,
+        "lift": 21.410892486572266,
+        "predicted_z": 150.59747314453125,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46403273206000
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 15.263031005859375,
+          "location": [
+            -3038.05224609375,
+            -1553.370361328125,
+            145.58265686035156
+          ],
+          "rotation": [
+            0.9764752388000488,
+            116.33158874511719,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          -3216.849365234375,
+          -1192.103515625,
+          152.4530792236328
+        ],
+        "focus_cm": 403.1492919921875,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46403273062800,
+        "native_frame": 14766
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 21.16756248474121,
+          "location": [
+            -3038.05224609375,
+            -1553.370361328125,
+            145.58265686035156
+          ],
+          "rotation": [
+            0.9764711260795593,
+            116.33150482177734,
+            0.0
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            -3038.05224609375,
+            -1553.370361328125,
+            145.58265686035156
+          ],
+          "rotation": [
+            0.9764711260795593,
+            116.33150482177734,
+            0.0
+          ],
+          "valid": true
+        },
+        "time_ns": 46403293521700
+      }
+    },
+    {
+      "label": "4/69/3908",
+      "expected_before": "overshoot",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 15.263030052185059,
+          "location": [
+            -3038.05224609375,
+            -1553.370361328125,
+            145.58265686035156
+          ],
+          "rotation": [
+            0.9764711260795593,
+            116.33150482177734,
+            0.0
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 899.060791015625,
+        "lift": 11.097330093383789,
+        "predicted_z": 160.90428161621094,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46403302448700
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 15.263031005859375,
+          "location": [
+            -3041.46875,
+            -1556.646728515625,
+            145.58265686035156
+          ],
+          "rotation": [
+            0.9765628576278687,
+            116.23188781738281,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          -3219.625244140625,
+          -1195.0928955078125,
+          152.4532470703125
+        ],
+        "focus_cm": 403.1229553222656,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46403302306000,
+        "native_frame": 14767
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 15.263030052185059,
+          "location": [
+            -3041.46875,
+            -1556.646728515625,
+            145.58265686035156
+          ],
+          "rotation": [
+            0.976566731929779,
+            116.2318115234375,
+            2.6684302767421286e-08
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            -3438.7158203125,
+            -750.46435546875,
+            172.00149536132812
+          ],
+          "rotation": [
+            0.976566731929779,
+            116.2318115234375,
+            2.6684302767421286e-08
+          ],
+          "valid": true
+        },
+        "time_ns": 46403309706200
+      }
+    },
+    {
+      "label": "4/69/3915",
+      "expected_before": "overshoot",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 15.263030052185059,
+          "location": [
+            -3120.801025390625,
+            -1633.607177734375,
+            145.58265686035156
+          ],
+          "rotation": [
+            0.97734534740448,
+            114.3408432006836,
+            -2.6684308096491804e-08
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 899.060791015625,
+        "lift": 11.083613395690918,
+        "predicted_z": 160.91799926757812,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46404328170000
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 15.263031005859375,
+          "location": [
+            -3126.100830078125,
+            -1638.758544921875,
+            145.58265686035156
+          ],
+          "rotation": [
+            0.9773558974266052,
+            114.21955871582031,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          -3291.4404296875,
+          -1271.1968994140625,
+          152.45835876464844
+        ],
+        "focus_cm": 403.0955505371094,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46404327996700,
+        "native_frame": 14782
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 15.263030052185059,
+          "location": [
+            -3126.100830078125,
+            -1638.758544921875,
+            145.58265686035156
+          ],
+          "rotation": [
+            0.97734534740448,
+            114.21949768066406,
+            0.0
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            -3494.79443359375,
+            -819.1242065429688,
+            171.99998474121094
+          ],
+          "rotation": [
+            0.97734534740448,
+            114.21949768066406,
+            0.0
+          ],
+          "valid": true
+        },
+        "time_ns": 46404335037000
+      }
+    },
+    {
+      "label": "4/69/3922",
+      "expected_before": "overshoot",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 15.263030052185059,
+          "location": [
+            -3227.226318359375,
+            -1734.982421875,
+            145.58265686035156
+          ],
+          "rotation": [
+            0.9768399596214294,
+            110.90264892578125,
+            1.0673721106968515e-07
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 899.060791015625,
+        "lift": 11.091547012329102,
+        "predicted_z": 160.91006469726562,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46405406043400
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 15.263031005859375,
+          "location": [
+            -3234.2138671875,
+            -1741.43115234375,
+            145.58265686035156
+          ],
+          "rotation": [
+            0.9766771197319031,
+            110.57682037353516,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          -3376.0498046875,
+          -1363.6187744140625,
+          152.4624786376953
+        ],
+        "focus_cm": 403.6173400878906,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46405405907900,
+        "native_frame": 14800
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 15.263030052185059,
+          "location": [
+            -3234.2138671875,
+            -1741.43115234375,
+            145.58265686035156
+          ],
+          "rotation": [
+            0.9766759872436523,
+            110.57679748535156,
+            0.0
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            -3550.087890625,
+            -900.0279541015625,
+            171.99742126464844
+          ],
+          "rotation": [
+            0.9766759872436523,
+            110.57679748535156,
+            0.0
+          ],
+          "valid": true
+        },
+        "time_ns": 46405413598400
+      }
+    },
+    {
+      "label": "4/69/3929",
+      "expected_before": "overshoot",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 15.263030052185059,
+          "location": [
+            -3381.63330078125,
+            -1871.97607421875,
+            145.09942626953125
+          ],
+          "rotation": [
+            0.9044604301452637,
+            100.3454818725586,
+            -2.6683748544087393e-08
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 899.060791015625,
+        "lift": 12.710338592529297,
+        "predicted_z": 159.29124450683594,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46406417185700
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 15.263031005859375,
+          "location": [
+            -3387.0234375,
+            -1876.5406494140625,
+            145.0440673828125
+          ],
+          "rotation": [
+            0.9065952301025391,
+            99.94038391113281,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          -3458.404296875,
+          -1469.2418212890625,
+          151.58755493164062
+        ],
+        "focus_cm": 413.5581970214844,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46406417032200,
+        "native_frame": 14822
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 15.263030052185059,
+          "location": [
+            -3387.0234375,
+            -1876.5406494140625,
+            145.0440673828125
+          ],
+          "rotation": [
+            0.9065982699394226,
+            99.9404296875,
+            8.005129359389684e-08
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            -3542.1689453125,
+            -991.28564453125,
+            171.97816467285156
+          ],
+          "rotation": [
+            0.9065982699394226,
+            99.9404296875,
+            8.005129359389684e-08
+          ],
+          "valid": true
+        },
+        "time_ns": 46406425370300
+      }
+    },
+    {
+      "label": "4/69/3936",
+      "expected_before": "overshoot",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 15.263030052185059,
+          "location": [
+            -3526.34912109375,
+            -1973.760986328125,
+            130.7567901611328
+          ],
+          "rotation": [
+            3.553412437438965,
+            89.91224670410156,
+            0.0
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 899.060791015625,
+        "lift": 0.0,
+        "predicted_z": 0.0,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46407417366500
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 15.263031005859375,
+          "location": [
+            -3530.56640625,
+            -1975.7977294921875,
+            129.82080078125
+          ],
+          "rotation": [
+            3.7652251720428467,
+            89.47037506103516,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          -3526.699462890625,
+          -1557.47607421875,
+          157.35186767578125
+        ],
+        "focus_cm": 419.24444580078125,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46407417209100,
+        "native_frame": 14852
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 15.263030052185059,
+          "location": [
+            -3530.56640625,
+            -1975.7977294921875,
+            129.82080078125
+          ],
+          "rotation": [
+            3.765216588973999,
+            89.47037506103516,
+            2.1390511051322392e-07
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            -3522.27392578125,
+            -1078.7158203125,
+            188.8604736328125
+          ],
+          "rotation": [
+            3.765216588973999,
+            89.47037506103516,
+            2.1390511051322392e-07
+          ],
+          "valid": true
+        },
+        "time_ns": 46407424687800
+      }
+    },
+    {
+      "label": "4/69/3943",
+      "expected_before": "overshoot",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 15.263030052185059,
+          "location": [
+            -3631.978759765625,
+            -2028.4759521484375,
+            103.76107025146484
+          ],
+          "rotation": [
+            9.614603996276855,
+            79.04227447509766,
+            0.0
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 899.060791015625,
+        "lift": 0.0,
+        "predicted_z": 0.0,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46408417820800
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 15.263031005859375,
+          "location": [
+            -3634.5458984375,
+            -2030.2398681640625,
+            103.08219909667969
+          ],
+          "rotation": [
+            9.723167419433594,
+            78.80017852783203,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          -3544.530029296875,
+          -1575.6190185546875,
+          182.49349975585938
+        ],
+        "focus_cm": 470.2011413574219,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46408417658800,
+        "native_frame": 14882
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 15.263030052185059,
+          "location": [
+            -3634.5458984375,
+            -2030.2398681640625,
+            103.08219909667969
+          ],
+          "rotation": [
+            9.723176956176758,
+            78.80010986328125,
+            -4.3310831188136945e-07
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            -3462.427734375,
+            -1160.969970703125,
+            254.9228973388672
+          ],
+          "rotation": [
+            9.723176956176758,
+            78.80010986328125,
+            -4.3310831188136945e-07
+          ],
+          "valid": true
+        },
+        "time_ns": 46408425814300
+      }
+    },
+    {
+      "label": "4/69/3950",
+      "expected_before": "overshoot",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 15.263030052185059,
+          "location": [
+            -3667.8427734375,
+            -2052.8916015625,
+            102.08111572265625
+          ],
+          "rotation": [
+            9.337920188903809,
+            75.444091796875,
+            -4.326196290094231e-07
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 899.060791015625,
+        "lift": 0.0,
+        "predicted_z": 0.0,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46409422237000
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 15.263031005859375,
+          "location": [
+            -3668.4521484375,
+            -2053.328369140625,
+            103.02940368652344
+          ],
+          "rotation": [
+            9.180526733398438,
+            75.3553466796875,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          -3543.5146484375,
+          -1575.2137451171875,
+          182.89495849609375
+        ],
+        "focus_cm": 500.5811462402344,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46409422072400,
+        "native_frame": 14907
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 15.263030052185059,
+          "location": [
+            -3668.4521484375,
+            -2053.328369140625,
+            103.02940368652344
+          ],
+          "rotation": [
+            9.18053913116455,
+            75.35530090332031,
+            -4.324259634813643e-07
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            -3444.059326171875,
+            -1194.618408203125,
+            246.47084045410156
+          ],
+          "rotation": [
+            9.18053913116455,
+            75.35530090332031,
+            -4.324259634813643e-07
+          ],
+          "valid": true
+        },
+        "time_ns": 46409431252000
+      }
+    },
+    {
+      "label": "4/69/3957",
+      "expected_before": "overshoot",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 15.263030052185059,
+          "location": [
+            -3669.6630859375,
+            -2054.208984375,
+            136.5113067626953
+          ],
+          "rotation": [
+            2.6749136447906494,
+            73.34080505371094,
+            0.0
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 899.060791015625,
+        "lift": 0.0,
+        "predicted_z": 0.0,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46410440132900
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 15.263031005859375,
+          "location": [
+            -3669.6630859375,
+            -2054.208984375,
+            137.197265625
+          ],
+          "rotation": [
+            2.502178907394409,
+            73.2503662109375,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          -3521.2734375,
+          -1561.15283203125,
+          159.69798278808594
+        ],
+        "focus_cm": 515.3931884765625,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46410439975800,
+        "native_frame": 14937
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 15.263030052185059,
+          "location": [
+            -3669.6630859375,
+            -2054.208984375,
+            137.197265625
+          ],
+          "rotation": [
+            2.502178192138672,
+            73.25032806396484,
+            -1.0682355622293471e-07
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            -3410.80908203125,
+            -1194.1134033203125,
+            176.4478759765625
+          ],
+          "rotation": [
+            2.502178192138672,
+            73.25032806396484,
+            -1.0682355622293471e-07
+          ],
+          "valid": true
+        },
+        "time_ns": 46410448893400
+      }
+    },
+    {
+      "label": "4/69/3964",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 14.912976264953613,
+          "location": [
+            -3669.6630859375,
+            -2054.208984375,
+            141.1559600830078
+          ],
+          "rotation": [
+            1.0133745670318604,
+            70.91362762451172,
+            0.0
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 509.5782165527344,
+        "lift": 23.72547721862793,
+        "predicted_z": 150.1682586669922,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46411475099900
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 14.850680351257324,
+          "location": [
+            -3669.6630859375,
+            -2054.208984375,
+            141.1559600830078
+          ],
+          "rotation": [
+            0.9981747269630432,
+            70.83455657958984,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          -3474.51806640625,
+          -1492.73876953125,
+          151.51258850097656
+        ],
+        "focus_cm": 594.5062255859375,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46411474937700,
+        "native_frame": 14960
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 14.912976264953613,
+          "location": [
+            -3669.6630859375,
+            -2054.208984375,
+            141.1559600830078
+          ],
+          "rotation": [
+            0.9981706142425537,
+            70.83454132080078,
+            -5.336894659535574e-08
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            -3502.531005859375,
+            -1573.337890625,
+            173.75491333007812
+          ],
+          "rotation": [
+            0.9981706142425537,
+            70.83454132080078,
+            -5.336894659535574e-08
+          ],
+          "valid": true
+        },
+        "time_ns": 46411484877100
+      }
+    },
+    {
+      "label": "4/69/3970",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 13.107048034667969,
+          "location": [
+            -3669.6630859375,
+            -2054.208984375,
+            141.1559600830078
+          ],
+          "rotation": [
+            0.8704938888549805,
+            70.26753234863281,
+            -5.336700681368711e-08
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 608.7898559570312,
+        "lift": 23.660884857177734,
+        "predicted_z": 150.40493774414062,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46412518824500
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 13.030020713806152,
+          "location": [
+            -3669.6630859375,
+            -2054.208984375,
+            141.1559600830078
+          ],
+          "rotation": [
+            0.8663449287414551,
+            70.2879638671875,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          -3435.91015625,
+          -1401.7943115234375,
+          151.63571166992188
+        ],
+        "focus_cm": 693.10546875,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46412518599900,
+        "native_frame": 14984
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 13.107048034667969,
+          "location": [
+            -3669.6630859375,
+            -2054.208984375,
+            141.1559600830078
+          ],
+          "rotation": [
+            0.8663479685783386,
+            70.28794860839844,
+            0.0
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            -3464.46630859375,
+            -1481.4967041015625,
+            174.0190887451172
+          ],
+          "rotation": [
+            0.8663479685783386,
+            70.28794860839844,
+            0.0
+          ],
+          "valid": true
+        },
+        "time_ns": 46412528574300
+      }
+    },
+    {
+      "label": "4/69/3977",
+      "expected_before": "forward",
+      "request": {
+        "camera": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 11.476880073547363,
+          "location": [
+            -3669.6630859375,
+            -2054.208984375,
+            141.1559600830078
+          ],
+          "rotation": [
+            0.8049445748329163,
+            72.2345962524414,
+            2.6683059317633706e-08
+          ],
+          "valid": true
+        },
+        "camera_manager": 1048576,
+        "mode": 3,
+        "zone": 1,
+        "enabled": true,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "automatic_source": true,
+        "protected_camera": false,
+        "close_camera": true,
+        "baseline_camera": true,
+        "dolly": 663.8765869140625,
+        "lift": 23.67912483215332,
+        "predicted_z": 150.48240661621094,
+        "floor": 170.0,
+        "max_lift": 400.0,
+        "base_fov": 90.0,
+        "base_offsets": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "time_ns": 46413529520200
+      },
+      "native_source": {
+        "status": "accepted",
+        "valid": true,
+        "pose": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 11.416716575622559,
+          "location": [
+            -3669.6630859375,
+            -2054.208984375,
+            141.15597534179688
+          ],
+          "rotation": [
+            0.8025553822517395,
+            72.33011627197266,
+            0.0
+          ],
+          "valid": true
+        },
+        "look_at": [
+          -3442.58544921875,
+          -1341.38720703125,
+          151.63571166992188
+        ],
+        "focus_cm": 748.1904296875,
+        "pcm": 1048576,
+        "object": 2097152,
+        "camera_actor": 3145728,
+        "time_ns": 46413529306700,
+        "native_frame": 15007
+      },
+      "view": {
+        "input": {
+          "aspect": null,
+          "cache_timestamp": null,
+          "fov": 11.476880073547363,
+          "location": [
+            -3669.6630859375,
+            -2054.208984375,
+            141.1559600830078
+          ],
+          "rotation": [
+            0.8025608658790588,
+            72.330078125,
+            -2.668304333042215e-08
+          ],
+          "valid": true
+        },
+        "neutral": {
+          "aspect": 1.7777780294418335,
+          "cache_timestamp": null,
+          "fov": 90.0,
+          "location": [
+            -3468.275146484375,
+            -1422.0313720703125,
+            174.131591796875
+          ],
+          "rotation": [
+            0.8025608658790588,
+            72.330078125,
+            -2.668304333042215e-08
+          ],
+          "valid": true
+        },
+        "time_ns": 46413539313300
+      }
+    }
+  ]
+}

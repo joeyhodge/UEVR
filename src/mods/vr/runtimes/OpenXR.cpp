@@ -23,13 +23,18 @@
 #include "../../GameSpecific.hpp"
 #include "../../VR.hpp"
 #include "../../../utility/Logging.hpp"
+#include "../../../utility/PacingRecorder.hpp"
 #include "OpenXR.hpp"
+#include "../NativeOpenXRArrayPolicy.hpp"
 #include "../UIComposition.hpp"
+#include "../SteamFrameBindings.hpp"
+#include "../DispatchMovie.hpp"
+#include "../DispatchMovieOpenXR.hpp"
 
 using namespace nlohmann;
 
 namespace runtimes {
-static std::optional<uevr::mono::Geometry> mono_geometry(const std::vector<XrView>& views);
+static std::optional<uevr::mono::Geometry> mono_geometry(std::span<const XrView> views);
 namespace {
 constexpr auto FRAME_BEGIN_STUCK_RECOVERY_THRESHOLD = 180u;
 constexpr auto FRAME_BEGIN_SKIP_SUMMARY_INTERVAL = std::chrono::minutes(1);
@@ -737,6 +742,8 @@ void OpenXR::trace_begin_frame_request(const char* caller) {
 }
 
 void OpenXR::clear_frame_synced(const char* reason) {
+    dune_mono_ui_frame.reset();
+    dune_mono_ui_views_valid = false;
     this->frame_synced = false;
     this->last_frame_synced_clear_reason = reason != nullptr ? reason : "unknown";
     this->last_frame_synced_clear_time = std::chrono::steady_clock::now();
@@ -1039,6 +1046,7 @@ bool OpenXR::recover_focused_stale_frame_loop(const char* caller) {
 }
 
 XrResult OpenXR::recover_wedged_frame(const char* reason) {
+    if (native_wait_only_handoff.faulted()) { return XR_ERROR_SESSION_NOT_READY; }
     if (!this->frame_began || this->session == XR_NULL_HANDLE) {
         return XR_SUCCESS;
     }
@@ -1068,6 +1076,7 @@ XrResult OpenXR::recover_wedged_frame(const char* reason) {
 
 bool OpenXR::close_synced_frame_without_layers(const char* reason) {
     std::scoped_lock _{sync_mtx};
+    if (native_wait_only_handoff.faulted()) { return false; }
 
     if (this->session == XR_NULL_HANDLE || !this->session_ready || !this->frame_synced) {
         return false;
@@ -1165,6 +1174,9 @@ bool OpenXR::discard_synced_frame_without_layers(const char* reason) {
 }
 
 void OpenXR::prepare_resolution_scale_reconfigure(const char* reason) {
+    std::scoped_lock frame_lock{sync_mtx};
+    if (native_wait_only_handoff.faulted()) { return; }
+    native_wait_only_handoff.reset();
     const auto safe_reason = reason != nullptr ? reason : "resolution_scale_reconfigure";
     const auto had_synced = this->frame_synced;
     const auto had_began = this->frame_began;
@@ -1206,8 +1218,112 @@ void OpenXR::prepare_resolution_scale_reconfigure(const char* reason) {
         this->session_ready);
 }
 
+std::optional<uevr::native_array::FrameKey> OpenXR::native_async_wait_request() {
+    std::unique_lock lock{sync_mtx, std::try_to_lock};
+    if (!lock.owns_lock() || wants_reinitialize || !ever_submitted) { return std::nullopt; }
+    const uevr::native_array::FrameKey key{reinterpret_cast<uintptr_t>(session), native_async_session_generation,
+        last_wait_trace_sequence, frame_state.predictedDisplayTime};
+    if (!uevr::native_array::can_async_wait(key, key, can_run_frame_loop(), frame_synced, frame_began)) { return std::nullopt; }
+    return key;
+}
+
+std::optional<uevr::native_array::FrameKey> OpenXR::synchronize_native_async_frame(uevr::native_array::FrameKey request) {
+    utility::pacing::ScopedOwner trace_owner{utility::pacing::Owner::array_worker};
+    std::scoped_lock lock{sync_mtx};
+    const uevr::native_array::FrameKey current{reinterpret_cast<uintptr_t>(session), native_async_session_generation,
+        last_wait_trace_sequence, frame_state.predictedDisplayTime};
+    if (wants_reinitialize || !uevr::native_array::can_async_wait(request, current, can_run_frame_loop(), frame_synced, frame_began)) {
+        return std::nullopt;
+    }
+    // Retain the normal frame-loop serialization and publish its actual display time.
+    const auto result = synchronize_frame(std::nullopt, SyncFrameCallsite::VRVeryLatePostPresent);
+    if (result != Error::SUCCESS || !frame_synced || frame_began) { return std::nullopt; }
+    return uevr::native_array::FrameKey{reinterpret_cast<uintptr_t>(session), native_async_session_generation,
+        last_wait_trace_sequence, frame_state.predictedDisplayTime};
+}
+
+bool OpenXR::native_async_pre_acquire_allowed(uevr::native_array::FrameKey frame) {
+    std::scoped_lock lock{sync_mtx};
+    const uevr::native_array::FrameKey current{reinterpret_cast<uintptr_t>(session), native_async_session_generation,
+        last_wait_trace_sequence, frame_state.predictedDisplayTime};
+    return !wants_reinitialize && uevr::native_array::can_pre_acquire(frame, current, can_run_frame_loop(),
+        frame_synced, frame_began, frame_state.shouldRender == XR_TRUE);
+}
+
+std::optional<uevr::openxr_wait::Reservation> OpenXR::native_wait_only_request() {
+    namespace pacing = utility::pacing;
+    std::unique_lock lock{sync_mtx, std::try_to_lock};
+    if (!lock.owns_lock()) { pacing::decision(pacing::Reason::frame_lock_busy, {.runtime_id = diagnostic_id}); return std::nullopt; }
+    std::unique_lock assignment{sync_assignment_mtx, std::try_to_lock};
+    if (!assignment.owns_lock()) { pacing::decision(pacing::Reason::assignment_busy, {.runtime_id = diagnostic_id}); return std::nullopt; }
+    if (wants_reinitialize || !ever_submitted || !got_first_valid_poses || !last_submit_state.frame_count) {
+        native_wait_only_handoff.waiting_frame();
+        pacing::decision(wants_reinitialize ? pacing::Reason::reinitializing : !ever_submitted ? pacing::Reason::first_frame :
+            !got_first_valid_poses ? pacing::Reason::valid_poses_required : pacing::Reason::submit_frame_required,
+            {.runtime_id = diagnostic_id});
+        return std::nullopt;
+    }
+    const uevr::native_array::FrameKey key{reinterpret_cast<uintptr_t>(session), native_async_session_generation,
+        last_wait_trace_sequence, frame_state.predictedDisplayTime};
+    if (!uevr::native_array::can_async_wait(key, key, can_run_frame_loop(), frame_synced, frame_began)) {
+        native_wait_only_handoff.normal_pacing();
+        pacing::decision(frame_began ? pacing::Reason::frame_already_began : frame_synced ? pacing::Reason::frame_already_synced :
+            pacing::Reason::normal_pacing, {.runtime_id = diagnostic_id, .session_generation = native_async_session_generation,
+                .wait_sequence = last_wait_trace_sequence, .display_time = frame_state.predictedDisplayTime});
+        return std::nullopt;
+    }
+    const auto next = last_submit_state.frame_count + 1;
+    const auto& pose = pipeline_states[next % QUEUE_SIZE];
+    // The game thread may already be further ahead than this ring slot. Do not
+    // advance the clock under ANY next/future pose, including a skipped frame.
+    const bool posed =
+        uevr::openxr_wait::frame_at_or_after(last_pose_update_frame_count, next) ||
+        (pose.frame_count == next && !pose.stage_views.empty());
+    const auto request = native_wait_only_handoff.reserve(key, next, posed);
+    pacing::decision(request ? pacing::Reason::reserved : native_wait_only_handoff.progress() == uevr::openxr_wait::Progress::pose_ahead
+        ? pacing::Reason::pose_ahead : pacing::Reason::reservation_busy,
+        {.runtime_id = diagnostic_id, .session_generation = native_async_session_generation,
+            .wait_sequence = last_wait_trace_sequence, .display_time = frame_state.predictedDisplayTime, .next_frame = next});
+    return request;
+}
+
+bool OpenXR::synchronize_native_wait_only(uevr::openxr_wait::Reservation request) {
+    utility::pacing::ScopedOwner trace_owner{utility::pacing::Owner::wait_only_worker};
+    std::scoped_lock lock{sync_mtx};
+    if (!native_wait_only_handoff.owns(request)) { return false; }
+    {
+        std::scoped_lock assignment{sync_assignment_mtx};
+        const uevr::native_array::FrameKey current{reinterpret_cast<uintptr_t>(session), native_async_session_generation,
+            last_wait_trace_sequence, frame_state.predictedDisplayTime};
+        if (wants_reinitialize || !uevr::native_array::can_async_wait(request.before, current, can_run_frame_loop(), frame_synced, frame_began)) {
+            native_wait_only_handoff.fail(request);
+            return false;
+        }
+    }
+    if (!native_wait_only_handoff.begin_worker(request)) { return false; }
+    const auto result = synchronize_frame(std::nullopt, SyncFrameCallsite::VRVeryLatePostPresent);
+    if (result != Error::SUCCESS || native_wait_only_handoff.pending()) {
+        native_wait_only_handoff.fail(request);
+        return false;
+    }
+    return true;
+}
+
+void OpenXR::fail_native_wait_only(uevr::openxr_wait::Reservation request) {
+    std::scoped_lock lock{sync_mtx};
+    if (reinterpret_cast<uintptr_t>(session) == request.before.session) { native_wait_only_handoff.fault(); }
+}
+
 VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, SyncFrameCallsite callsite) {
     std::scoped_lock _{sync_mtx};
+    // A menu can run the game thread very far ahead without a world renderer.
+    // Its pose requests must not trigger stuck-frame recovery inside the
+    // Present owner's acquired/copied UI image interval.
+    if (dune_mono_ui_frame && frame_synced && frame_began && can_run_frame_loop() && !wants_reinitialize) {
+        return VRRuntime::Error::UNSPECIFIED;
+    }
+    if (native_wait_only_handoff.faulted()) { return VRRuntime::Error::UNSPECIFIED; }
+    return uevr::openxr_wait::guarded_wait(native_wait_only_handoff, [&]() -> VRRuntime::Error {
 
     if (this->recover_focused_stale_frame_loop(sync_frame_callsite_name(callsite))) {
         return VRRuntime::Error::UNSPECIFIED;
@@ -1283,10 +1399,25 @@ VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, 
 
     XrFrameWaitInfo frame_wait_info{XR_TYPE_FRAME_WAIT_INFO};
     XrFrameState local_frame_state{XR_TYPE_FRAME_STATE};
+    utility::pacing::ScopedEvent pacing_wait{utility::pacing::Stage::wait_frame,
+        frame_count ? utility::pacing::Domain::engine : utility::pacing::Domain::xr_internal,
+        frame_count.value_or(this->internal_frame_count)};
+    pacing_wait.data().owner = utility::pacing::wait_owner() == utility::pacing::Owner::normal && native_wait_only_handoff.pending()
+        ? utility::pacing::Owner::normal_consumer : utility::pacing::wait_owner();
+    pacing_wait.data().session_generation = native_async_session_generation;
+    pacing_wait.data().runtime_id = diagnostic_id;
+    pacing_wait.data().callsite = static_cast<uint32_t>(callsite);
     const auto wait_frame_start = std::chrono::steady_clock::now();
     auto result = xrWaitFrame(this->session, &frame_wait_info, &local_frame_state);
     const auto wait_frame_end = std::chrono::steady_clock::now();
     const auto wait_frame_duration = wait_frame_end - wait_frame_start;
+    pacing_wait.data().start_ns = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        wait_frame_start.time_since_epoch()).count());
+    pacing_wait.data().display_time = local_frame_state.predictedDisplayTime;
+    const auto pacing_wait_end = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        wait_frame_end.time_since_epoch()).count());
+    pacing_wait.complete_cpu_interval(pacing_wait_end, static_cast<int32_t>(result));
+    pacing_wait.data().wait_sequence = last_wait_trace_sequence;
     if (collect_openxr_frame_timing()) {
         this->wait_frame_timing.add(wait_frame_duration);
 
@@ -1334,7 +1465,10 @@ VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, 
 
     this->end_profile("xrWaitFrame");
 
-    if (result != XR_SUCCESS) {
+    if (result != XR_SUCCESS && result != XR_SESSION_LOSS_PENDING) {
+        pacing_wait.data().wait_sequence = last_wait_trace_sequence;
+        pacing_wait.finish_at(pacing_wait_end, static_cast<int32_t>(result));
+        if (native_wait_only_handoff.pending()) { native_wait_only_handoff.fail(native_wait_only_handoff.reservation()); }
         spdlog::error("[VR] xrWaitFrame failed: {}", this->get_result_string(result));
         return (VRRuntime::Error)result;
     } else {
@@ -1348,6 +1482,7 @@ VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, 
         }
 
         this->frame_state = local_frame_state;
+        dune_mono_last_wait = local_frame_state;
 
         // Initialize all the existing frame states if they aren't already so we don't get some random error when calling xrEndFrame
         for (auto& pipeline_state : this->pipeline_states) {
@@ -1380,18 +1515,48 @@ VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, 
         this->frame_synced = true;
         this->should_update_eye_matrices = true;
         this->trace_wait_frame_success(frame_count, callsite);
+        pacing_wait.data().wait_sequence = last_wait_trace_sequence;
+        pacing_wait.finish_at(pacing_wait_end, static_cast<int32_t>(result));
+        native_wait_only_handoff.observe({reinterpret_cast<uintptr_t>(session), native_async_session_generation,
+            last_wait_trace_sequence, frame_state.predictedDisplayTime});
     }
     return VRRuntime::Error::SUCCESS;
+    });
 }
 
 VRRuntime::Error OpenXR::update_poses(bool from_view_extensions, uint32_t frame_count) {
-    //std::scoped_lock ___{sync_mtx};
+    if (native_wait_only_handoff.faulted()) { return VRRuntime::Error::UNSPECIFIED; }
+    // A delayed/cancelled queued worker must not let the next pose use the old
+    // clock. A normal consumer may complete its reserved wait under the SAME
+    // runtime lock; the late worker then sees a changed frame key and does no wait.
+    std::unique_lock<std::recursive_mutex> wait_only_clock{sync_mtx, std::defer_lock};
     std::unique_lock<std::mutex> everspace2_pose_lock{this->everspace2_pose_capture_mtx, std::defer_lock};
-    if (this->is_everspace2_coherent_submit_active()) {
-        everspace2_pose_lock.lock();
-    }
-
-    std::scoped_lock _{ this->sync_assignment_mtx };
+    std::unique_lock<std::recursive_mutex> assignment{sync_assignment_mtx, std::defer_lock};
+    VRRuntime::Error clock_result{VRRuntime::Error::SUCCESS};
+    const auto service_wait = [&] {
+        if (native_wait_only_handoff.applies_to(frame_count)) {
+            const auto reserved = native_wait_only_handoff.reservation();
+            native_wait_only_handoff.observe({reinterpret_cast<uintptr_t>(session), native_async_session_generation,
+                last_wait_trace_sequence, frame_state.predictedDisplayTime});
+            if (native_wait_only_handoff.pending()) {
+                if (wants_reinitialize || !can_run_frame_loop()) {
+                    native_wait_only_handoff.fail(reserved);
+                    clock_result = VRRuntime::Error::UNSPECIFIED;
+                    return false;
+                }
+                const auto result = synchronize_frame(std::nullopt, SyncFrameCallsite::RuntimeFixFrame);
+                if (result != VRRuntime::Error::SUCCESS || native_wait_only_handoff.pending()) {
+                    native_wait_only_handoff.fail(reserved);
+                    clock_result = result == VRRuntime::Error::SUCCESS ? VRRuntime::Error::UNSPECIFIED : result;
+                    return false;
+                }
+            }
+        }
+        return true;
+    };
+    if (!uevr::openxr_wait::lock_pose_clock(native_wait_only_handoff, wait_only_clock, assignment,
+        everspace2_pose_lock, this->is_everspace2_coherent_submit_active(), service_wait)) { return clock_result; }
+    if (native_wait_only_handoff.faulted()) { return VRRuntime::Error::UNSPECIFIED; }
 
     if (!this->session_ready) {
         return VRRuntime::Error::SUCCESS;
@@ -1781,8 +1946,15 @@ VRRuntime::Error OpenXR::consume_events(std::function<void(void*)> callback) {
             callback(&edb);
         }
 
+        if (bh->type == XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED) {
+            this->frame_controller_profiles.invalidate();
+        }
+
         if (bh->type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED) {
+            std::scoped_lock frame_lock{sync_mtx};
             const auto ev = (XrEventDataSessionStateChanged*)&edb;
+            ++native_async_session_generation;
+            native_wait_only_handoff.reset();
             this->session_state = ev->state;
 
             spdlog::info("VR: XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED {} ({})", (uint32_t)ev->state, this->get_session_state_string(ev->state));
@@ -1890,7 +2062,7 @@ VRRuntime::Error OpenXR::consume_events(std::function<void(void*)> callback) {
     return VRRuntime::Error::SUCCESS;
 }
 
-static std::optional<uevr::mono::Geometry> mono_geometry(const std::vector<XrView>& views) {
+static std::optional<uevr::mono::Geometry> mono_geometry(std::span<const XrView> views) {
     if (views.size() != 2) { return {}; }
     std::array<uevr::mono::Eye, 2> eyes{};
     for (size_t i = 0; i != 2; ++i) {
@@ -1907,6 +2079,7 @@ void OpenXR::reset_mono_projection_history() {
     std::scoped_lock lock{this->sync_assignment_mtx, this->pose_mtx};
     mono_frames = {};
     mono_copied_frame.reset();
+    dune_mono_ui_cutoff.reset();
     this->should_recalculate_eye_projections = true;
     this->should_update_eye_matrices = true;
 }
@@ -1939,6 +2112,7 @@ bool OpenXR::has_mono_frame(uint32_t frame) {
     const auto& entry = mono_frames[frame % QUEUE_SIZE];
     return entry.pose_valid && uevr::mono::frame_matches(VR::get()->mono_generation(), entry.generation,
         frame, entry.pose_frame, entry.projection_frame, entry.main_family) &&
+        dune_mono_ui_cutoff.allows(pipeline_states[frame % QUEUE_SIZE].frame_state.predictedDisplayTime) &&
         (!VR::get()->is_using_mono() || entry.geometry.has_value());
 }
 
@@ -1969,6 +2143,131 @@ void OpenXR::end_mono_transition_frame() {
     }
     this->frame_began = false;
     this->clear_frame_synced("mono_transition");
+}
+
+std::optional<uevr::dune_menu::Frame> OpenXR::begin_dune_mono_ui_frame(const uevr::dune_menu::Observation& owner) {
+    std::scoped_lock lock{sync_mtx};
+    const auto vr = VR::get();
+    const auto current = vr->get_fake_stereo_hook()->get_dune_mono_menu_observation();
+    if (!owner.world_disabled || !current || !current->world_disabled || !uevr::dune_menu::same_owner(owner, *current) ||
+        !vr->is_using_mono() || vr->is_mono_transition_pending() || wants_reinitialize || !ready() || !can_run_frame_loop() ||
+        dune_mono_ui_frame || dune_mono_ui_serial == std::numeric_limits<uint64_t>::max()) { return {}; }
+    if ((!frame_began && synchronize_frame(std::nullopt, SyncFrameCallsite::RuntimeFixFrame) != VRRuntime::Error::SUCCESS) ||
+        !frame_synced || !got_first_poses) { return {}; }
+    if (!frame_began) { begin_frame("dune_mono_ui_only"); }
+    if (!frame_began || !last_wait_trace_sequence || dune_mono_last_wait.predictedDisplayTime <= 0) { return {}; }
+    // GT poses can legitimately extrapolate frame_state while a menu has no
+    // renderer. The UI owns the immutable xrWaitFrame result, not that clock
+    // or any pipeline slot. It never publishes a world pose/projection.
+    dune_mono_ui_frame = uevr::dune_menu::Frame{owner, native_async_session_generation,
+        dune_mono_last_wait.predictedDisplayTime, ++dune_mono_ui_serial, last_wait_trace_sequence,
+        dune_mono_last_wait.shouldRender == XR_TRUE};
+    {
+        std::scoped_lock assignment{sync_assignment_mtx};
+        dune_mono_ui_cutoff.observe(dune_mono_ui_frame->display_time);
+        mono_frames = {};
+        mono_copied_frame.reset();
+        has_render_frame_count = false;
+    }
+    dune_mono_ui_views_valid = false;
+    if (push_dummy_projection && dune_mono_ui_frame->should_render) {
+        for (auto& view : dune_mono_ui_views) { view = {XR_TYPE_VIEW}; }
+        XrViewLocateInfo locate{XR_TYPE_VIEW_LOCATE_INFO};
+        locate.viewConfigurationType = view_config;
+        locate.displayTime = dune_mono_ui_frame->display_time;
+        locate.space = stage_space;
+        XrViewState state{XR_TYPE_VIEW_STATE};
+        uint32_t count{};
+        constexpr auto flags = XR_VIEW_STATE_POSITION_VALID_BIT | XR_VIEW_STATE_ORIENTATION_VALID_BIT;
+        dune_mono_ui_views_valid = XR_SUCCEEDED(xrLocateViews(session, &locate, &state,
+            static_cast<uint32_t>(dune_mono_ui_views.size()), &count, dune_mono_ui_views.data())) &&
+            count == 2 && (state.viewStateFlags & flags) == flags && mono_geometry(dune_mono_ui_views).has_value();
+    }
+    return dune_mono_ui_frame;
+}
+
+XrResult OpenXR::end_dune_mono_ui_frame(const uevr::dune_menu::Frame& frame,
+    std::span<const XrCompositionLayerBaseHeader* const> requested_layers) {
+    std::scoped_lock lock{sync_mtx};
+    if (!dune_mono_ui_frame || !uevr::dune_menu::same_lease(*dune_mono_ui_frame, frame) ||
+        !uevr::dune_menu::same_frame(frame, native_async_session_generation, last_wait_trace_sequence)) {
+        return XR_ERROR_CALL_ORDER_INVALID;
+    }
+    if (!can_run_frame_loop() || !frame_synced || !frame_began) {
+        dune_mono_ui_frame.reset();
+        return XR_ERROR_SESSION_NOT_READY;
+    }
+    const auto vr = VR::get();
+    const auto current = vr->get_fake_stereo_hook()->get_dune_mono_menu_observation();
+    bool valid = vr->is_using_mono() && !vr->is_mono_transition_pending() && current && current->world_disabled &&
+        uevr::dune_menu::same_owner(frame.owner, *current) && frame.should_render && requested_layers.size() <= 2;
+    bool game_ui_present{};
+    if (valid) {
+        for (const auto* layer : requested_layers) {
+            XrSwapchain image{};
+            if (!layer || (layer->space != stage_space && layer->space != view_space)) { valid = false; break; }
+            if (layer->type == XR_TYPE_COMPOSITION_LAYER_QUAD) {
+                image = reinterpret_cast<const XrCompositionLayerQuad*>(layer)->subImage.swapchain;
+            } else if (layer->type == XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR && is_cylinder_layer_allowed()) {
+                image = reinterpret_cast<const XrCompositionLayerCylinderKHR*>(layer)->subImage.swapchain;
+            } else { valid = false; break; }
+            const auto ui = swapchains.find(static_cast<uint32_t>(SwapchainIndex::UI));
+            const auto framework = swapchains.find(static_cast<uint32_t>(SwapchainIndex::FRAMEWORK_UI));
+            if (image == XR_NULL_HANDLE || ((ui == swapchains.end() || image != ui->second.handle) &&
+                (framework == swapchains.end() || image != framework->second.handle))) { valid = false; break; }
+            game_ui_present |= ui != swapchains.end() && image == ui->second.handle;
+        }
+    }
+    std::array<const XrCompositionLayerBaseHeader*, 3> layers{};
+    uint32_t layer_count{};
+    XrCompositionLayerProjection dummy{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+    std::array<XrCompositionLayerProjectionView, 2> dummy_views{};
+    if (valid && !requested_layers.empty()) {
+        // Honor the existing VD composition workaround using this wait's fresh
+        // poses and its transparent dummy image, never a retained world image.
+        const auto image = swapchains.find(static_cast<uint32_t>(SwapchainIndex::DUMMY_VIRTUAL_DESKTOP));
+        if (push_dummy_projection && dune_mono_ui_views_valid && image != swapchains.end()) {
+            for (size_t i = 0; i < dummy_views.size(); ++i) {
+                dummy_views[i] = {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW};
+                dummy_views[i].pose = dune_mono_ui_views[i].pose;
+                dummy_views[i].fov = dune_mono_ui_views[i].fov;
+                dummy_views[i].subImage = {image->second.handle,
+                    {{static_cast<int32_t>(i * (image->second.width / 2)), 0}, {image->second.width / 2, image->second.height}}, 0};
+            }
+            dummy.space = stage_space;
+            dummy.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+            dummy.viewCount = static_cast<uint32_t>(dummy_views.size());
+            dummy.views = dummy_views.data();
+            layers[layer_count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&dummy);
+        }
+        for (auto* layer : requested_layers) { layers[layer_count++] = layer; }
+    }
+    XrFrameEndInfo info{XR_TYPE_FRAME_END_INFO};
+    info.displayTime = frame.display_time;
+    info.environmentBlendMode = blend_mode;
+    info.layerCount = layer_count;
+    info.layers = layers.data();
+    utility::pacing::ScopedEvent timing{utility::pacing::Stage::end_frame};
+    timing.data().runtime_id = diagnostic_id;
+    timing.data().session_generation = native_async_session_generation;
+    timing.data().wait_sequence = last_wait_trace_sequence;
+    timing.data().display_time = info.displayTime;
+    const auto result = xrEndFrame(session, &info);
+    timing.finish(static_cast<int32_t>(result));
+    frame_began = false;
+    clear_frame_synced("dune_mono_ui_only");
+    needs_pose_update = true;
+    if (XR_SUCCEEDED(result)) {
+        ever_submitted = true;
+        last_successful_end_frame = std::chrono::steady_clock::now();
+        vr->set_mono_status(valid && game_ui_present
+            ? "Active: Dune UI-only menu; world rendering remains disabled"
+            : "Waiting: Dune UI-only menu image or owner is not current");
+    } else {
+        SPDLOG_WARNING_EVERY_N_SEC(2, "[Dune][MonoMenu] UI-only xrEndFrame failed: {} serial={} displayTime={}",
+            get_result_string(result), frame.serial, frame.display_time);
+    }
+    return result;
 }
 
 VRRuntime::Error OpenXR::update_matrices(float nearz, float farz) {
@@ -2154,6 +2453,7 @@ VRRuntime::Error OpenXR::update_input() {
     std::scoped_lock _{this->event_mtx};
 
     if (!this->ready() || this->session_state != XR_SESSION_STATE_FOCUSED) {
+        this->frame_controller_profiles.invalidate();
         return (VRRuntime::Error)XR_ERROR_SESSION_NOT_READY;
     }
 
@@ -2166,15 +2466,20 @@ VRRuntime::Error OpenXR::update_input() {
 
     if (result != XR_SUCCESS) {
         spdlog::error("[VR] Failed to sync actions: {}", this->get_result_string(result));
+        this->frame_controller_profiles.invalidate();
 
         return (VRRuntime::Error)result;
     }
 
+    refresh_frame_controller_types();
     const auto current_interaction_profile = this->get_current_interaction_profile();
 
     for (auto i = 0; i < 2; ++i) {
         auto& hand = this->hands[i];
         hand.forced_actions.clear();
+        const auto hand_interaction_profile = this->get_frame_controller_mask() != 0
+            ? this->get_current_interaction_profile(static_cast<VRRuntime::Hand>(i))
+            : current_interaction_profile;
 
         // Update controller pose state
         {
@@ -2212,9 +2517,9 @@ VRRuntime::Error OpenXR::update_input() {
         }
 
         // Handle vector activator stuff
-        for (auto& it : hand.profiles[current_interaction_profile].vector_activators) {
+        for (auto& it : hand.profiles[hand_interaction_profile].vector_activators) {
             const auto activator = it.first;
-            const auto modifier = hand.profiles[current_interaction_profile].action_vector_associations[activator];
+            const auto modifier = hand.profiles[hand_interaction_profile].action_vector_associations[activator];
 
             if (this->is_action_active(activator, (VRRuntime::Hand)i)) {
                 const auto axis = this->get_action_axis(modifier, (VRRuntime::Hand)i);
@@ -2235,11 +2540,15 @@ VRRuntime::Error OpenXR::update_input() {
 }
 
 void OpenXR::destroy() {
+    this->frame_controller_profiles.invalidate();
+    this->frame_interaction_profile_path = XR_NULL_PATH;
     if (!this->loaded) {
         return;
     }
 
     std::scoped_lock _{sync_mtx};
+    ++native_async_session_generation;
+    native_wait_only_handoff.reset();
     if (VR::get()->mono_generation() != 0) { reset_mono_projection_history(); }
     if (m_stalker2_pair_pending.load(std::memory_order_acquire)) { set_stalker2_pair_submit(std::nullopt); }
 
@@ -2751,26 +3060,53 @@ XrPath OpenXR::get_path(const std::string& path) const {
     return path_handle;
 }
 
-std::string OpenXR::get_current_interaction_profile() const {
-    XrInteractionProfileState state{XR_TYPE_INTERACTION_PROFILE_STATE};
-    if (xrGetCurrentInteractionProfile(this->session, this->hands[0].path, &state) != XR_SUCCESS) {
-        return "";
-    }
-
-    return this->get_path_string(state.interactionProfile);
+std::string OpenXR::get_current_interaction_profile(VRRuntime::Hand hand) const {
+    const auto path = get_current_interaction_profile_path(hand);
+    return path != XR_NULL_PATH ? this->get_path_string(path) : "";
 }
 
-XrPath OpenXR::get_current_interaction_profile_path() const {
+XrPath OpenXR::get_current_interaction_profile_path(VRRuntime::Hand hand) const {
+    if (hand > VRRuntime::Hand::RIGHT || this->session == XR_NULL_HANDLE) { return XR_NULL_PATH; }
     XrInteractionProfileState state{XR_TYPE_INTERACTION_PROFILE_STATE};
-    if (xrGetCurrentInteractionProfile(this->session, this->hands[0].path, &state) != XR_SUCCESS) {
+    if (xrGetCurrentInteractionProfile(this->session, this->hands[hand].path, &state) != XR_SUCCESS) {
         return XR_NULL_PATH;
     }
 
     return state.interactionProfile;
 }
 
+void OpenXR::refresh_frame_controller_types() {
+    const auto snapshot = this->frame_controller_profiles.begin_refresh();
+    if (this->session == XR_NULL_HANDLE || !snapshot) { return; }
+    const auto now = std::chrono::steady_clock::now();
+    if (now - this->last_frame_controller_refresh < std::chrono::milliseconds{250}) { return; }
+    this->last_frame_controller_refresh = now;
+    uint8_t mask{};
+    bool retry{};
+    std::array<std::string, 2> profiles;
+    for (unsigned hand = 0; hand < 2; ++hand) {
+        const auto path = get_current_interaction_profile_path(static_cast<VRRuntime::Hand>(hand));
+        if (path == XR_NULL_PATH) { retry = true; continue; }
+        if (path == this->frame_interaction_profile_path) {
+            mask |= static_cast<uint8_t>(1u << hand);
+            profiles[hand] = uevr::steam_frame::interaction_profile;
+        } else {
+            std::array<char, XR_MAX_PATH_LENGTH> text{};
+            uint32_t length{};
+            if (xrPathToString(this->instance, path, static_cast<uint32_t>(text.size()), &length, text.data()) == XR_SUCCESS &&
+                length > 0 && length <= text.size() && text[length - 1] == '\0') {
+                profiles[hand].assign(text.data(), length - 1);
+            } else { retry = true; }
+        }
+    }
+    this->frame_controller_profiles.publish(*snapshot, mask, retry, std::move(profiles));
+}
+
 std::optional<std::string> OpenXR::initialize_actions(const std::string& json_string) {
     spdlog::info("[VR] Initializing actions");
+    this->frame_interaction_profile_path = XR_NULL_PATH;
+    this->frame_controller_profiles.invalidate();
+    this->last_frame_controller_refresh = {};
 
     if (auto result = xrStringToPath(this->instance, "/user/hand/left", &this->hands[VRRuntime::Hand::LEFT].path); result != XR_SUCCESS) {
         return "xrStringToPath failed (left): " + this->get_result_string(result);
@@ -2818,7 +3154,9 @@ std::optional<std::string> OpenXR::initialize_actions(const std::string& json_st
 
     std::unordered_map<std::string, std::vector<XrActionSuggestedBinding>> profile_bindings{};
 
-    for (const auto& controller : s_supported_controllers) {
+    auto supported_controllers = uevr::steam_frame::supported_profiles(s_supported_controllers,
+        this->enabled_extensions.contains(uevr::steam_frame::extension));
+    for (const auto& controller : supported_controllers) {
         profile_bindings[controller] = {};
     }
 
@@ -2971,7 +3309,8 @@ std::optional<std::string> OpenXR::initialize_actions(const std::string& json_st
                 }
 
                 if (this->action_set.action_map.contains(map_it.action_name)) {
-                    for (const auto& controller : s_supported_controllers) {
+                    for (const auto& controller : supported_controllers) {
+                        if (controller == uevr::steam_frame::interaction_profile) { continue; }
                         if (attempt_add_binding(controller, { this->action_set.action_map[map_it.action_name], p })) {
                             this->hands[index].profiles[controller].path_map[map_it.action_name] = p;
                         }
@@ -2989,10 +3328,50 @@ std::optional<std::string> OpenXR::initialize_actions(const std::string& json_st
         return "json missing pose action";
     }
 
+    // Native Frame paths are submitted as one transaction. A rejected profile
+    // leaves all existing Touch/Index/Vive suggestions available for fallback.
+    if (this->enabled_extensions.contains(uevr::steam_frame::extension)) {
+        std::array<HandData::InteractionProfile, 2> profiles;
+        XrPath profile_path{XR_NULL_PATH};
+        const bool profile_valid = xrStringToPath(this->instance, uevr::steam_frame::interaction_profile, &profile_path) == XR_SUCCESS &&
+            profile_path != XR_NULL_PATH;
+        const auto resolve = [&](const uevr::steam_frame::Binding& binding) -> std::optional<XrActionSuggestedBinding> {
+            const auto action = this->action_set.action_map.find(std::string{binding.action});
+            XrPath path{XR_NULL_PATH};
+            if (action == this->action_set.action_map.end() ||
+                xrStringToPath(this->instance, binding.path.data(), &path) != XR_SUCCESS || path == XR_NULL_PATH) {
+                return std::nullopt;
+            }
+            const auto hand = binding.path.starts_with("/user/hand/left/") ? VRRuntime::Hand::LEFT : VRRuntime::Hand::RIGHT;
+            profiles[hand].path_map[std::string{binding.action}] = path;
+            return XrActionSuggestedBinding{action->second, path};
+        };
+        const auto submit = [&](const std::vector<XrActionSuggestedBinding>& bindings) {
+            XrInteractionProfileSuggestedBinding suggested{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+            suggested.interactionProfile = profile_path;
+            suggested.countSuggestedBindings = static_cast<uint32_t>(bindings.size());
+            suggested.suggestedBindings = bindings.data();
+            if (xrSuggestInteractionProfileBindings(this->instance, &suggested) != XR_SUCCESS) { return false; }
+            profile_bindings[uevr::steam_frame::interaction_profile] = bindings;
+            return true;
+        };
+        if (uevr::steam_frame::suggest_native_bindings<XrActionSuggestedBinding>(profile_valid, resolve, submit)) {
+            this->frame_interaction_profile_path = profile_path;
+            for (unsigned hand = 0; hand < 2; ++hand) {
+                this->hands[hand].profiles[uevr::steam_frame::interaction_profile] = std::move(profiles[hand]);
+            }
+            spdlog::info("[VR] Native Steam Frame interaction profile registered");
+        } else {
+            spdlog::warn("[VR] Native Steam Frame bindings unavailable; preserving controller compatibility fallback");
+            std::erase(supported_controllers, std::string{uevr::steam_frame::interaction_profile});
+        }
+    }
+
     // Check for json files that will override the default suggested bindings
-    for (const auto& controller : s_supported_controllers) {
+    for (const auto& controller : supported_controllers) {
         // Create default action vector associations
         for (const auto& association : s_action_vector_associations) {
+            if (controller == uevr::steam_frame::interaction_profile) { break; }
             auto& hand = this->hands[association.hand];
             auto& hand_profile = hand.profiles[controller];
             auto& action_map = this->action_set.action_map;
@@ -3019,6 +3398,61 @@ std::optional<std::string> OpenXR::initialize_actions(const std::string& json_st
         if (!std::filesystem::exists(filename)) {
             filename = (Framework::get_persistent_dir() / ".." / "UEVR" / "Profiles" / profile_file).string();
             spdlog::info("[VR] Setting bindings file to {}", filename);
+        }
+
+        if (controller == uevr::steam_frame::interaction_profile) {
+            if (!std::filesystem::exists(filename)) { continue; }
+            try {
+                std::ifstream file{filename, std::ios::binary};
+                std::string text(uevr::steam_frame::max_custom_binding_bytes + 1, '\0');
+                file.read(text.data(), static_cast<std::streamsize>(text.size()));
+                text.resize(static_cast<size_t>(file.gcount()));
+                if (text.size() > uevr::steam_frame::max_custom_binding_bytes) {
+                    throw std::runtime_error{"Steam Frame binding file exceeds the size limit"};
+                }
+                const auto action_kind = [&](const std::string& name) -> std::optional<uevr::steam_frame::ActionType> {
+                    using uevr::steam_frame::ActionType;
+                    const auto it = this->action_set.action_map.find(name);
+                    if (it == this->action_set.action_map.end()) { return std::nullopt; }
+                    if (this->action_set.bool_actions.contains(it->second)) { return ActionType::Boolean; }
+                    if (this->action_set.float_actions.contains(it->second)) { return ActionType::Float; }
+                    if (this->action_set.vector2_actions.contains(it->second)) { return ActionType::Vector2; }
+                    if (this->action_set.pose_actions.contains(it->second)) { return ActionType::Pose; }
+                    if (this->action_set.vibration_actions.contains(it->second)) { return ActionType::Haptic; }
+                    return std::nullopt;
+                };
+                const auto custom = uevr::steam_frame::parse_custom_bindings(nlohmann::json::parse(text), action_kind);
+                std::vector<XrActionSuggestedBinding> bindings;
+                std::array<HandData::InteractionProfile, 2> profiles;
+                for (const auto& item : custom.bindings) {
+                    XrPath path{XR_NULL_PATH};
+                    if (xrStringToPath(this->instance, item.path.c_str(), &path) != XR_SUCCESS || path == XR_NULL_PATH) {
+                        throw std::runtime_error{"Invalid Steam Frame component path"};
+                    }
+                    bindings.push_back({this->action_set.action_map.at(item.action), path});
+                    profiles[item.path.starts_with("/user/hand/left/") ? 0 : 1].path_map[item.action] = path;
+                }
+                for (const auto& item : custom.associations) {
+                    const auto activator = this->action_set.action_map.at(item.activator);
+                    auto& profile = profiles[item.hand];
+                    profile.action_vector_associations[activator] = this->action_set.action_map.at(item.modifier);
+                    for (const auto& output : item.outputs) {
+                        profile.vector_activators[activator].push_back({{output.x, output.y}, this->action_set.action_map.at(output.action)});
+                    }
+                }
+                XrInteractionProfileSuggestedBinding suggested{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+                suggested.interactionProfile = this->frame_interaction_profile_path;
+                suggested.countSuggestedBindings = static_cast<uint32_t>(bindings.size());
+                suggested.suggestedBindings = bindings.data();
+                const auto result = xrSuggestInteractionProfileBindings(this->instance, &suggested);
+                if (result != XR_SUCCESS) { throw std::runtime_error{this->get_result_string(result)}; }
+                profile_bindings[controller] = std::move(bindings);
+                for (unsigned hand = 0; hand < 2; ++hand) { this->hands[hand].profiles[controller] = std::move(profiles[hand]); }
+                spdlog::info("[VR] Loaded customized Steam Frame bindings from {}", filename);
+            } catch (const std::exception& error) {
+                spdlog::warn("[VR] Keeping native Steam Frame defaults; rejected {}: {}", filename, error.what());
+            }
+            continue;
         }
 
         // check if the file exists
@@ -3267,7 +3701,8 @@ Vector2f OpenXR::get_stick_axis(VRRuntime::Hand hand_idx) const {
 
     const auto& hand = this->hands[hand_idx];
 
-    auto profile_it = hand.profiles.find(this->get_current_interaction_profile());
+    auto profile_it = hand.profiles.find(this->get_current_interaction_profile(
+        this->get_frame_controller_mask() != 0 ? hand_idx : VRRuntime::Hand::LEFT));
 
     if (profile_it == hand.profiles.end()) {
         return Vector2f{};
@@ -3342,8 +3777,19 @@ void OpenXR::trigger_haptic_vibration(float duration, float frequency, float amp
 }
 
 void OpenXR::display_bindings_editor() {
-    const auto current_interaction_profile = this->get_current_interaction_profile();
+    auto current_interaction_profile = this->get_current_interaction_profile();
+    if (this->get_frame_controller_mask() != 0) {
+        const auto right_profile = this->get_current_interaction_profile(VRRuntime::Hand::RIGHT);
+        if (current_interaction_profile != right_profile) {
+            if (current_interaction_profile.empty()) { this->frame_binding_editor_hand = 1; }
+            ImGui::Combo("Profile to edit", &this->frame_binding_editor_hand, "Left controller\0Right controller\0");
+            if (this->frame_binding_editor_hand == 1) { current_interaction_profile = right_profile; }
+        }
+    }
     ImGui::Text("Interaction Profile: %s", current_interaction_profile.c_str());
+    if (current_interaction_profile == uevr::steam_frame::interaction_profile) {
+        ImGui::TextWrapped("Frame: right ABXY and left D-pad; bumpers send LB/RB, Menu/View send Start/Back. Grips retain VR grab actions.");
+    }
 
     if (ImGui::Button("Restore Default Bindings")) {
         auto filename = current_interaction_profile + ".json";
@@ -3361,7 +3807,7 @@ void OpenXR::display_bindings_editor() {
     }
 
     if (ImGui::Button("Save Bindings")) {
-        this->save_bindings();
+        this->save_bindings(current_interaction_profile);
     }
 
     auto display_hand = [&](const std::string& name, uint32_t index) {
@@ -3428,7 +3874,7 @@ void OpenXR::display_bindings_editor() {
                 if (ImGui::Button("X")) {
                     path_map.erase(it.first);
 
-                    this->save_bindings();
+                    this->save_bindings(current_interaction_profile);
                     ImGui::PopID();
                     break;
                 }
@@ -3440,7 +3886,7 @@ void OpenXR::display_bindings_editor() {
                     path_map.erase(it.first);
                     path_map[known_actions[current_combo_index]] = it.second;
 
-                    this->save_bindings();
+                    this->save_bindings(current_interaction_profile);
                     ImGui::PopID();
 
                     break;
@@ -3460,7 +3906,7 @@ void OpenXR::display_bindings_editor() {
                     spdlog::error("[VR] Failed to convert path: {}", hand.ui.new_path_name);
                 } else {
                     path_map[known_actions[hand.ui.action_combo_index]] = p;
-                    this->save_bindings();
+                    this->save_bindings(current_interaction_profile);
                 }
             }
 
@@ -3567,8 +4013,8 @@ void OpenXR::display_bindings_editor() {
     display_hand("Right", 1);
 }
 
-void OpenXR::save_bindings() {
-    const auto current_interaction_profile = this->get_current_interaction_profile();
+void OpenXR::save_bindings(const std::string& interaction_profile) {
+    const auto current_interaction_profile = interaction_profile.empty() ? this->get_current_interaction_profile() : interaction_profile;
     nlohmann::json j;
 
     for (auto& hand : this->hands) {
@@ -3642,7 +4088,13 @@ XrResult OpenXR::begin_frame(const char* caller) {
     const auto begin_frame_start = collect_frame_timing
         ? std::chrono::steady_clock::now()
         : std::chrono::steady_clock::time_point{};
+    utility::pacing::ScopedEvent pacing_begin{utility::pacing::Stage::begin_frame};
+    pacing_begin.data().session_generation = native_async_session_generation;
+    pacing_begin.data().runtime_id = diagnostic_id;
+    pacing_begin.data().wait_sequence = last_wait_trace_sequence;
+    pacing_begin.data().display_time = frame_state.predictedDisplayTime;
     auto result = xrBeginFrame(this->session, &frame_begin_info);
+    pacing_begin.finish(static_cast<int32_t>(result));
     if (collect_frame_timing) {
         this->begin_frame_timing.add(std::chrono::steady_clock::now() - begin_frame_start);
     }
@@ -3718,9 +4170,17 @@ XrResult OpenXR::begin_frame(const char* caller) {
     return result;
 }
 
+void OpenXR::note_native_array_copy(bool success) {
+    std::scoped_lock lock{sync_mtx};
+    native_array_copy_time.store(success && frame_began && frame_synced ? frame_state.predictedDisplayTime : 0,
+        std::memory_order_release);
+}
+
 XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& quad_layers, bool has_depth,
-    uevr::ui_composition::Compositor* ui_composition) {
+    uevr::ui_composition::Compositor* ui_composition, PackedStereoSubmission* packed_stereo, uint64_t dispatch_movie_epoch) {
     std::scoped_lock _{sync_mtx};
+    if (packed_stereo) { packed_stereo->submitted = false; }
+    if (native_wait_only_handoff.faulted()) { return XR_ERROR_SESSION_NOT_READY; }
 
     emit_openxr_state_probes(this, "end_frame");
 
@@ -3742,18 +4202,30 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
     auto vr = VR::get();
     const auto is_afr = vr->is_using_afr();
     const bool mono = vr->is_using_mono();
+    bool movie_override=false;
+    if (dispatch_movie_epoch && !is_afr && !mono && !vr->is_dibr_rendering_method_selected() &&
+        !vr->is_stereo_emulation_enabled() && !vr->is_mono_transition_pending() &&
+        vr->is_using_native_stereo() && !vr->is_using_2d_screen()) {
+        const auto image=swapchains.find(static_cast<uint32_t>(SwapchainIndex::DISPATCH_MOVIE));
+        const auto movie=uevr::dispatch_movie::read();
+        movie_override=movie && movie->epoch == dispatch_movie_epoch && image != swapchains.end() &&
+            image->second.width == movie->width && image->second.height == movie->height &&
+            uevr::dispatch_movie::opaque_layer(quad_layers,stage_space,image->second.handle,image->second.width,image->second.height);
+    }
     if (!uevr::ui_composition::eligible(true, mono, vr->is_dibr_rendering_method_selected(),
             vr->is_mono_transition_pending(), vr->is_using_2d_screen()) ||
         !(vr->get_overlay_component().get_ui_composition_request() & 1)) { ui_composition = nullptr; }
     if (mono) { has_depth = false; }
+    if (dispatch_movie_epoch) { ui_composition=nullptr; }
+    if (movie_override) { has_depth=false; }
     if (is_afr && is_dead_island_2_ue425_executable()) {
         has_depth = false;
         SPDLOG_INFO_ONCE("[DeadIsland2][UE4.25][OpenXR] Submitting the AFR projection layer without depth");
     }
 
     const auto has_native_stereo_array =
-        !is_afr &&
-        vr->is_native_stereo_fix_texture_array_submit_enabled() &&
+        uevr::native_array::current_copy(vr->is_native_stereo_array_ready(), is_afr, mono,
+            native_array_copy_time.load(std::memory_order_acquire), frame_state.predictedDisplayTime) &&
         this->swapchains.contains((uint32_t)OpenXR::SwapchainIndex::NATIVE_STEREO_ARRAY);
 
     if (is_afr || has_native_stereo_array) {
@@ -3861,7 +4333,14 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
 
     // we CANT push the layers every time, it cause some layer error
     // in xrEndFrame, so we must only do it when shouldRender is true
-    if (!debug_submit_empty && (!stalker_pair || stalker_pair->scene_available) && pipelined_frame_state.shouldRender == XR_TRUE && !pipelined_stage_views.empty() &&
+    const auto packed_scene_matches = [&] {
+        if (!packed_stereo) { return true; }
+        if (packed_stereo->color_swapchain == XR_NULL_HANDLE || is_afr || mono || has_native_stereo_array ||
+            pipelined_stage_views.size() != 2) { return false; }
+        const auto scene = swapchains.find((uint32_t)SwapchainIndex::DOUBLE_WIDE);
+        return scene != swapchains.end() && scene->second.handle == packed_stereo->color_swapchain;
+    };
+    if (packed_scene_matches() && !debug_submit_empty && (!stalker_pair || stalker_pair->scene_available) && pipelined_frame_state.shouldRender == XR_TRUE && !pipelined_stage_views.empty() &&
         (!mono || (mono_projection && mono_crops[0] && mono_crops[1]))) {
         projection_layer_views.resize(pipelined_stage_views.size(), {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW});
         depth_layers.resize(projection_layer_views.size(), {XR_TYPE_COMPOSITION_LAYER_DEPTH_INFO_KHR});
@@ -3962,12 +4441,14 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
         layer.views = projection_layer_views.data();
         layer.layerFlags = 0;
 
-        if (should_push_dummy) {
+        if (should_push_dummy && !movie_override) {
             layers.push_back((XrCompositionLayerBaseHeader*)&dummy_projection_layer);
         }
 
-        for (auto& l : projection_layer_cache) {
-            layers.push_back((XrCompositionLayerBaseHeader*)&l);
+        if (!movie_override) {
+            for (auto& l : projection_layer_cache) {
+                layers.push_back((XrCompositionLayerBaseHeader*)&l);
+            }
         }
 
         if (ui_composition && pipelined_stage_views.size() == 2) {
@@ -3990,7 +4471,12 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
         if (composed_ui && composed_ui.count == quad_layers.size()) {
             for (uint32_t i = 0; i < composed_ui.count; ++i) { layers.push_back(composed_ui.layers[i]); }
         } else {
-            for (auto* l : quad_layers) { layers.push_back(l); }
+            for (auto* l : quad_layers) {
+                const auto movie=dispatch_movie_epoch ? swapchains.find(static_cast<uint32_t>(SwapchainIndex::DISPATCH_MOVIE)) : swapchains.end();
+                if (!movie_override && movie != swapchains.end() && l && l->type == XR_TYPE_COMPOSITION_LAYER_QUAD &&
+                    reinterpret_cast<XrCompositionLayerQuad*>(l)->subImage.swapchain == movie->second.handle) { continue; }
+                layers.push_back(l);
+            }
         }
     } else if (debug_submit_empty) {
         SPDLOG_INFO_EVERY_N_SEC(
@@ -4022,7 +4508,20 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
     const auto end_frame_start = collect_frame_timing
         ? std::chrono::steady_clock::now()
         : std::chrono::steady_clock::time_point{};
+    utility::pacing::ScopedEvent pacing_end{utility::pacing::Stage::end_frame};
+    pacing_end.data().session_generation = native_async_session_generation;
+    pacing_end.data().runtime_id = diagnostic_id;
+    pacing_end.data().wait_sequence = last_wait_trace_sequence;
+    pacing_end.data().display_time = frame_end_info.displayTime;
     auto result = xrEndFrame(this->session, &frame_end_info);
+    pacing_end.finish(static_cast<int32_t>(result));
+    uevr::dispatch_movie::note_submission(movie_override,result == XR_SUCCESS && !debug_submit_empty && !layers.empty());
+    if (packed_stereo) {
+        packed_stereo->submitted = result == XR_SUCCESS && !projection_layer_cache.empty() &&
+            projection_layer_views.size() == 2 &&
+            projection_layer_views[0].subImage.swapchain == packed_stereo->color_swapchain &&
+            projection_layer_views[1].subImage.swapchain == packed_stereo->color_swapchain;
+    }
     if (composed_ui && result != XR_SUCCESS && ui_composition) {
         ui_composition->reject_submission();
         vr->get_overlay_component().set_ui_composition_status(uevr::ui_composition::Status::failed);

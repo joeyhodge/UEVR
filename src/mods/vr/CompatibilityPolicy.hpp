@@ -1,4 +1,5 @@
 #pragma once
+#include <sdk/UE59Compatibility.hpp>
 
 #include <array>
 #include <cstdint>
@@ -31,7 +32,7 @@ constexpr bool is_valid_farfarwest_view_extension_mapping(
         pre_render_index == 6 && frame_offset == 0xA0;
 }
 
-// UE5.8 keeps the same high-level Slate source contract across 5.8.0-5.8.3,
+// UE5.8 keeps the same high-level Slate source contract across 5.8.0-5.8.4,
 // but optimized games expose either the raw-texture helper or its pooled
 // RegisterExternalTexture transaction.
 enum class UE58SlateRouteABI : uint8_t {
@@ -148,7 +149,11 @@ constexpr bool is_validated_ue58_slate_source_version(
     const auto minor = static_cast<uint16_t>(file_version_ms & 0xffffu);
     const auto patch = static_cast<uint16_t>(file_version_ls >> 16);
 
-    return major == 5 && minor == 8 && patch <= 3;
+    return major == 5 && minor == 8 && patch <= 4;
+}
+
+constexpr bool is_validated_modern_slate_source_version(uint32_t ms, uint32_t ls) noexcept {
+    return is_validated_ue58_slate_source_version(ms, ls) || sdk::ue59::reviewed_file(ms, ls);
 }
 
 constexpr bool should_enable_ue58_automatic_ui_route(

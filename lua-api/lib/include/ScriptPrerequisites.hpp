@@ -7,6 +7,16 @@
 
 #include <uevr/API.hpp>
 
+// Input sources are opaque tokens, not addresses to dereference. In particular,
+// OpenXR's zero-valued left-hand token is preserved as Lua light userdata.
+inline UEVR_InputSourceHandle sol_lua_get(sol::types<UEVR_InputSourceHandle>, lua_State* l, int index, sol::stack::record& tracking) {
+    if (lua_type(l, index) == LUA_TLIGHTUSERDATA) {
+        tracking.use(1);
+        return static_cast<UEVR_InputSourceHandle>(lua_touserdata(l, index));
+    }
+    return sol::stack::unqualified_getter<UEVR_InputSourceHandle>::get(l, index, tracking);
+}
+
 namespace detail {
 template<typename T>
 concept CacheablePointer = std::is_base_of_v<uevr::API::UObject, T> || std::is_base_of_v<uevr::API::UObjectHook::MotionControllerState, T>;
