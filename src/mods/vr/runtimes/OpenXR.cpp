@@ -4464,7 +4464,7 @@ void OpenXR::update_quad_view_gaze(XrTime display_time, PipelineState& state) {
     this->quad_gaze_tracking = mask == 3u;
 
     for (uint32_t eye = 0; eye < 2; ++eye) {
-        this->quad_focus_current[eye] = q::focus_window(full[eye], settings.focus_width, settings.focus_height,
+        this->quad_focus_current[eye] = q::focus_window_for(full[eye], settings,
             this->quad_gaze.cx[eye], this->quad_gaze.cy[eye]);
     }
 

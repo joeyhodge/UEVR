@@ -36,6 +36,8 @@ struct Settings {
     double focus_density{1.0};  // focus pixel density relative to the headset's native density
     double dead_zone{0.03};     // tangent units (~1.7 deg) the gaze must move before the window follows
     uint64_t gaze_return_ms{500}; // without gaze for this long, the window recentres
+    double offset_x{0.0};       // sharp window shift, share of the eye's tangent width (+ = right)
+    double offset_y{0.0};       // and height (+ = up), for trackers that sit slightly off
 };
 
 struct Tangents {
@@ -144,6 +146,15 @@ inline Tangents focus_window(const Tangents& full, double share_x, double share_
     cx = std::clamp(cx, full.left + half_w, full.right - half_w);
     cy = std::clamp(cy, full.down + half_h, full.up - half_h);
     return {cx - half_w, cx + half_w, cy + half_h, cy - half_h};
+}
+
+// The focus window for one eye: the gaze centre (tangents) moved by the
+// user's offset, then placed with focus_window.
+inline Tangents focus_window_for(const Tangents& full, const Settings& s, double cx, double cy) {
+    if (!std::isfinite(cx)) cx = 0;
+    if (!std::isfinite(cy)) cy = 0;
+    return focus_window(full, s.focus_width, s.focus_height,
+        cx + s.offset_x * full.width(), cy + s.offset_y * full.height());
 }
 
 // Keeps the focus windows still against eye-tracker noise: both eyes' centres
@@ -282,7 +293,7 @@ inline FrameViews make_frame_views(uint64_t pose_id, const Tangents eye_full[2],
     f.pose_id = pose_id;
     for (uint32_t eye = 0; eye < 2; ++eye) {
         f.tangents[eye] = eye_full[eye];
-        f.tangents[eye + 2] = focus_window(eye_full[eye], s.focus_width, s.focus_height, gaze.cx[eye], gaze.cy[eye]);
+        f.tangents[eye + 2] = focus_window_for(eye_full[eye], s, gaze.cx[eye], gaze.cy[eye]);
     }
     return f;
 }

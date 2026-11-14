@@ -10654,6 +10654,8 @@ void VR::draw_quad_view_ui() {
         m_quad_view_focus_width->draw("Width (share of view)");
         m_quad_view_focus_height->draw("Height (share of view)");
         m_quad_view_focus_density->draw("Pixel density");
+        m_quad_view_offset_x->draw("Offset left/right (+ = right)");
+        m_quad_view_offset_y->draw("Offset down/up (+ = up)");
         m_quad_view_follow_gaze->draw("Follow gaze (eye tracking)");
         if (m_quad_view_follow_gaze->value()) {
             m_quad_view_gaze_dead_zone->draw("Gaze dead zone");
@@ -10741,5 +10743,5 @@ uevr::quadview::Tangents VR::get_quad_view_focus_tangents(uint32_t eye) const {
         }
     }
     const auto s = get_quad_view_settings();
-    return uevr::quadview::focus_window(full, s.focus_width, s.focus_height, 0.0, 0.0);
+    return uevr::quadview::focus_window_for(full, s, 0.0, 0.0);
 }

@@ -196,6 +196,20 @@ static void compose_tests() {
     expect(near(q::edge_alpha(0.01, 0.5, 0.0), 1.0), "no blend gives a hard edge");
 }
 
+static void offset_tests() {
+    const q::Tangents full{-1.0, 1.0, 1.0, -1.0};
+    q::Settings s{};
+    s.focus_width = 0.3; s.focus_height = 0.3;
+    auto w = q::focus_window_for(full, s, 0.0, 0.0);
+    expect(near(w.left, -0.3) && near(w.right, 0.3), "no offset keeps the window centred");
+    s.offset_x = 0.1; s.offset_y = -0.05;
+    w = q::focus_window_for(full, s, 0.0, 0.0);
+    expect(near((w.left + w.right) / 2, 0.2) && near((w.up + w.down) / 2, -0.1), "offset moves the window right and down");
+    s.offset_x = 0.25;
+    w = q::focus_window_for(full, s, 0.9, 0.0);
+    expect(near(w.right, 1.0), "an offset window still stays inside the view");
+}
+
 static void shape_tests() {
     using S = q::FocusShape;
     for (double u : {0.05, 0.1, 0.3, 0.5}) {
@@ -234,6 +248,7 @@ int main() {
         lod_offset_tests();
         compose_tests();
         shape_tests();
+        offset_tests();
     } catch (const std::exception& e) {
         std::cerr << "FAILED: " << e.what() << '\n';
         return 1;

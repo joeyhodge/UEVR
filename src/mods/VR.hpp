@@ -526,6 +526,8 @@ public:
         s.focus_height = m_quad_view_focus_height->value();
         s.focus_density = m_quad_view_focus_density->value();
         s.dead_zone = m_quad_view_follow_gaze->value() ? m_quad_view_gaze_dead_zone->value() : 0.0;
+        s.offset_x = m_quad_view_offset_x->value();
+        s.offset_y = m_quad_view_offset_y->value();
         return s;
     }
 
@@ -1671,6 +1673,8 @@ private:
     const ModToggle::Ptr m_quad_view_debug_wide_only{ ModToggle::create(generate_name("QuadViewDebugWideOnly"), false) };
     const ModToggle::Ptr m_quad_view_disable_vignette{ ModToggle::create(generate_name("QuadViewDisableVignette"), true) };
     std::optional<int> m_quad_view_saved_tonemapper_quality{};
+    const ModSlider::Ptr m_quad_view_offset_x{ ModSlider::create(generate_name("QuadViewOffsetX"), -0.25f, 0.25f, 0.0f) };
+    const ModSlider::Ptr m_quad_view_offset_y{ ModSlider::create(generate_name("QuadViewOffsetY"), -0.25f, 0.25f, 0.0f) };
     const ModCombo::Ptr m_quad_view_focus_shape{ ModCombo::create(generate_name("QuadViewFocusShape"), s_quad_view_focus_shape_names, 0) };
     // 0 = off. Objects smaller than this many pixels in the wide views are culled
     // (foliage and instanced meshes, through foliage.MinimumScreenSize).
@@ -2017,6 +2021,8 @@ public:
             *m_quad_view_debug_wide_only,
             *m_quad_view_disable_vignette,
             *m_quad_view_focus_shape,
+            *m_quad_view_offset_x,
+            *m_quad_view_offset_y,
             *m_quad_view_wide_min_pixels,
             *m_quad_view_cpu_particles,
             *m_native_stereo_fix_preserve_secondary_pass,
