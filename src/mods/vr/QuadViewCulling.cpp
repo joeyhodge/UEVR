@@ -13,9 +13,6 @@
 #include <sdk/UFunction.hpp>
 #include <sdk/FProperty.hpp>
 #include <sdk/FMalloc.hpp>
-#include <sdk/UEngine.hpp>
-#include <sdk/UGameplayStatics.hpp>
-#include <sdk/APlayerController.hpp>
 
 #include "QuadView.hpp"
 #include "QuadViewCulling.hpp"
@@ -255,7 +252,7 @@ void ActorCulling::pick_hidden() {
     }
 }
 
-void ActorCulling::on_pre_engine_tick(bool enabled, double min_pixels, double px_per_tangent) {
+void ActorCulling::on_pre_engine_tick(bool enabled, double min_pixels, double px_per_tangent, sdk::UObject* controller) {
     restore(); // never carry a swapped list into game code
 
     m_enabled = enabled && min_pixels >= 0.5;
@@ -272,14 +269,7 @@ void ActorCulling::on_pre_engine_tick(bool enabled, double min_pixels, double px
         return;
     }
 
-    try {
-        const auto engine = sdk::UGameEngine::get();
-        const auto world = engine != nullptr ? engine->get_world() : nullptr;
-        const auto gameplay = sdk::UGameplayStatics::get();
-        m_controller = (world != nullptr && gameplay != nullptr) ? (sdk::UObject*)gameplay->get_player_controller(world, 0) : nullptr;
-    } catch (...) {
-        m_controller = nullptr;
-    }
+    m_controller = controller;
 
     scan_objects(SCAN_BUDGET);
     refresh_bounds(BOUNDS_BUDGET);

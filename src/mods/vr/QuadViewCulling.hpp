@@ -33,8 +33,9 @@ public:
 
     // Game thread, once per frame before the world ticks: finds actors,
     // refreshes their bounds, resolves the player controller, and picks the
-    // actors to hide for this frame.
-    void on_pre_engine_tick(bool enabled, double min_pixels, double px_per_tangent);
+    // actors to hide for this frame. `controller` is the local player's
+    // PlayerController (or null).
+    void on_pre_engine_tick(bool enabled, double min_pixels, double px_per_tangent, sdk::UObject* controller);
 
     // Game thread, from CalculateStereoViewOffset. slot 0/1 = wide views
     // (swap the hidden list in), anything else = put the game's list back.
