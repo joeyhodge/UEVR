@@ -1,6 +1,8 @@
 #include "mods/vr/QuadView.hpp"
 
 #include <cmath>
+#include <cstring>
+#include <vector>
 #include <iostream>
 #include <stdexcept>
 
@@ -134,6 +136,66 @@ static void projection_tests() {
     expect(near(std::tan(a.left), t.left, 1e-6) && near(std::tan(a.down), t.down, 1e-6), "angles round-trip");
 }
 
+static void gaze_direction_tests() {
+    double tx = 9, ty = 9;
+    expect(q::gaze_to_eye_tangent({}, {}, tx, ty) && near(tx, 0) && near(ty, 0), "straight gaze is the centre");
+    // Gaze turned 20 degrees right: rotation of -20 degrees about +Y (OpenXR: +Y up, -Z forward).
+    const double a = -20.0 * 3.14159265358979 / 180.0;
+    const q::Quat right{0, std::sin(a / 2), 0, std::cos(a / 2)};
+    expect(q::gaze_to_eye_tangent(right, {}, tx, ty) && near(tx, std::tan(20.0 * 3.14159265358979 / 180.0), 1e-9) && near(ty, 0),
+           "gaze 20 degrees right is tan(20) right");
+    // An eye canted 20 degrees right sees that same gaze straight ahead.
+    expect(q::gaze_to_eye_tangent(right, right, tx, ty) && near(tx, 0, 1e-9), "canted eye removes its own rotation");
+    // Gaze up 10 degrees: rotation of +10 degrees about +X.
+    const double b = 10.0 * 3.14159265358979 / 180.0;
+    const q::Quat up{std::sin(b / 2), 0, 0, std::cos(b / 2)};
+    expect(q::gaze_to_eye_tangent(up, {}, tx, ty) && near(ty, std::tan(b), 1e-9), "gaze up is positive y");
+    const q::Quat back{0, 1, 0, 0};
+    expect(!q::gaze_to_eye_tangent(back, {}, tx, ty), "gaze pointing backwards is rejected");
+}
+
+static void put_i(std::vector<uint8_t>& b, size_t o, int32_t v) { std::memcpy(b.data() + o, &v, 4); }
+static void put_f(std::vector<uint8_t>& b, size_t o, float v) { std::memcpy(b.data() + o, &v, 4); }
+
+static void lod_offset_tests() {
+    std::vector<uint8_t> b(0x400, 0);
+    put_i(b, 0x280, -1); put_i(b, 0x284, -1); put_f(b, 0x288, 1.0f); put_f(b, 0x28C, -1.0f);
+    auto o = q::find_lod_factor_offset(b.data(), b.size());
+    expect(o && *o == 0x288, "LODDistanceFactor found after the cursor and before the far-plane override");
+    put_i(b, 0x280, 812); put_i(b, 0x284, 455);
+    o = q::find_lod_factor_offset(b.data(), b.size());
+    expect(o && *o == 0x288, "a real mouse position still matches");
+    put_f(b, 0x30C, 1.0f); put_f(b, 0x310, -1.0f);
+    expect(!q::find_lod_factor_offset(b.data(), b.size()), "two matches are refused");
+    put_f(b, 0x310, 0.0f);
+    put_f(b, 0x28C, 5000.0f);
+    expect(!q::find_lod_factor_offset(b.data(), b.size()), "an overridden far plane gives no match");
+    put_f(b, 0x28C, -1.0f);
+
+    q::LodOffsetLatch latch{};
+    std::optional<size_t> got{};
+    for (uint32_t i = 0; i < q::LodOffsetLatch::NEEDED - 1; ++i) got = latch.observe(b.data(), b.size());
+    expect(!got, "not trusted before the streak completes");
+    got = latch.observe(b.data(), b.size());
+    expect(got && *got == 0x288, "trusted after a full streak");
+    put_f(b, 0x288, 2.0f);  // we scaled it on an earlier view: still the same field
+    expect(latch.observe(b.data(), b.size()).has_value(), "a scaled factor is still recognised");
+}
+
+static void compose_tests() {
+    const q::Tangents rendered{-1.0, 1.0, 1.0, -1.0};
+    const q::Tangents centre{-0.3, 0.3, 0.3, -0.3};
+    auto r = q::focus_dest_rect(rendered, centre, 0, 2000, 2000);
+    expect(near(r.x, 700) && near(r.y, 700) && near(r.w, 600) && near(r.h, 600), "centred window lands in the middle");
+    const q::Tangents upper_right{0.4, 1.0, 1.0, 0.4};
+    r = q::focus_dest_rect(rendered, upper_right, 2000, 2000, 2000);
+    expect(near(r.x, 3400) && near(r.y, 0), "up-right window lands top-right of the right eye image");
+    expect(near(q::edge_alpha(0.5, 0.5, 0.2), 1.0), "the middle is fully sharp");
+    expect(near(q::edge_alpha(0.0, 0.5, 0.2), 0.0), "the edge is fully wide");
+    expect(near(q::edge_alpha(0.1, 0.5, 0.2), 0.5), "half way through the blend band is half");
+    expect(near(q::edge_alpha(0.01, 0.5, 0.0), 1.0), "no blend gives a hard edge");
+}
+
 int main() {
     try {
         slot_tests();
@@ -143,6 +205,9 @@ int main() {
         frame_tests();
         fit_tests();
         projection_tests();
+        gaze_direction_tests();
+        lod_offset_tests();
+        compose_tests();
     } catch (const std::exception& e) {
         std::cerr << "FAILED: " << e.what() << '\n';
         return 1;

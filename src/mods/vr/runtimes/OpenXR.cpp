@@ -1682,6 +1682,7 @@ VRRuntime::Error OpenXR::update_poses(bool from_view_extensions, uint32_t frame_
     const auto used_dead_island_stage_pose = synthesize_dead_island_view_space_pose(this);
 
     pipeline_state.view_space_location = this->view_space_location;
+    update_quad_view_gaze(display_time, pipeline_state);
 
     if (this->is_everspace2_coherent_submit_active()) {
         pipeline_state.stage_views = this->stage_views;
@@ -2053,6 +2054,11 @@ VRRuntime::Error OpenXR::update_matrices(float nearz, float farz) {
         const auto right =  tan_half_fov[1];
         const auto top =    tan_half_fov[2];
         const auto bottom = tan_half_fov[3];
+
+        rendered_tangents[eye][0] = left;
+        rendered_tangents[eye][1] = right;
+        rendered_tangents[eye][2] = top;
+        rendered_tangents[eye][3] = bottom;
 
         // signs: at this point we expect left[0] and bottom[3] to be negative
         SPDLOG_INFO("Original FOV for {} eye: {}, {}, {}, {}", eye == 0 ? "left" : "right", this->raw_projections[eye][0], this->raw_projections[eye][1],
@@ -3206,6 +3212,45 @@ std::optional<std::string> OpenXR::initialize_actions(const std::string& json_st
         }
     }
 
+    // Quad View: eye gaze pose, bound through XR_EXT_eye_gaze_interaction.
+    // Must exist before the action set is attached (attach happens once).
+    if (this->eye_gaze_supported && this->eye_gaze_action == XR_NULL_HANDLE) {
+        XrActionCreateInfo gaze_info{XR_TYPE_ACTION_CREATE_INFO};
+        gaze_info.actionType = XR_ACTION_TYPE_POSE_INPUT;
+        strcpy(gaze_info.actionName, "quadview_eye_gaze");
+        strcpy(gaze_info.localizedActionName, "Eye gaze (Quad View)");
+
+        if (const auto r = xrCreateAction(this->action_set.handle, &gaze_info, &this->eye_gaze_action); r != XR_SUCCESS) {
+            spdlog::warn("[QuadView] Eye gaze action could not be created: {}", this->get_result_string(r));
+            this->eye_gaze_action = XR_NULL_HANDLE;
+        } else {
+            XrPath profile{}, binding_path{};
+            xrStringToPath(this->instance, "/interaction_profiles/ext/eye_gaze_interaction", &profile);
+            xrStringToPath(this->instance, "/user/eyes_ext/input/gaze_ext/pose", &binding_path);
+
+            XrActionSuggestedBinding binding{this->eye_gaze_action, binding_path};
+            XrInteractionProfileSuggestedBinding suggested{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+            suggested.interactionProfile = profile;
+            suggested.countSuggestedBindings = 1;
+            suggested.suggestedBindings = &binding;
+
+            if (const auto r = xrSuggestInteractionProfileBindings(this->instance, &suggested); r != XR_SUCCESS) {
+                spdlog::warn("[QuadView] Eye gaze binding was refused: {}", this->get_result_string(r));
+            } else {
+                XrActionSpaceCreateInfo space_info{XR_TYPE_ACTION_SPACE_CREATE_INFO};
+                space_info.action = this->eye_gaze_action;
+                space_info.poseInActionSpace.orientation.w = 1.0f;
+
+                if (const auto r = xrCreateActionSpace(this->session, &space_info, &this->eye_gaze_space); r != XR_SUCCESS) {
+                    spdlog::warn("[QuadView] Eye gaze space could not be created: {}", this->get_result_string(r));
+                    this->eye_gaze_space = XR_NULL_HANDLE;
+                } else {
+                    spdlog::info("[QuadView] Eye gaze action ready");
+                }
+            }
+        }
+    }
+
     // Attach the action set to the session
     spdlog::info("[VR] Attaching action set to session");
 
@@ -3922,6 +3967,9 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
         }
     }
     if (stalker_pair && stalker_pair->reused) { has_depth = false; }
+    // Quad View: the depth buffer has the atlas layout, not the stereo layout
+    // the runtime would reproject with. Leave depth out rather than mislead it.
+    if (FFakeStereoRenderingHook::is_quad_view_active()) { has_depth = false; }
     const auto debug_submit_empty = this->debug_submit_empty_frame->value();
 
     if (pipelined_stage_views.empty()) {
@@ -3984,8 +4032,11 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
         projection_layer_views.resize(pipelined_stage_views.size(), {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW});
         depth_layers.resize(projection_layer_views.size(), {XR_TYPE_COMPOSITION_LAYER_DEPTH_INFO_KHR});
 
+        // When the compositor ran, the swapchain already holds plain stereo and
+        // the ordinary submit below is right; otherwise submit the atlas rects.
         const bool quad_submit =
             FFakeStereoRenderingHook::is_quad_view_active() &&
+            !this->quad_composed.load(std::memory_order_acquire) &&
             !is_afr && !has_native_stereo_array && !stalker_pair &&
             projection_layer_views.size() == 2;
         const auto quad_layout = quad_submit ? VR::get()->get_quad_view_layout() : uevr::quadview::Layout{};
@@ -4092,7 +4143,7 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
         layer.views = projection_layer_views.data();
         layer.layerFlags = 0;
 
-        if (quad_submit && VR::get()->is_quad_view_overlay_enabled()) {
+        if (quad_submit) {
             const auto& sc = this->swapchains[(uint32_t)OpenXR::SwapchainIndex::DOUBLE_WIDE];
             const auto [sx, sy] = quad_scale(sc);
 
@@ -4102,7 +4153,9 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
                 view.next = nullptr; // no depth for the overlay
                 // Same pose as the wide view of this eye (one sample per frame);
                 // only the field of view narrows to the sharp window.
-                const auto a = uevr::quadview::to_angles(VR::get()->get_quad_view_focus_tangents(eye));
+                const auto a = uevr::quadview::to_angles(submit_state.quad_focus_set
+                    ? submit_state.quad_focus[eye]
+                    : VR::get()->get_quad_view_focus_tangents(eye));
                 view.fov = {a.left, a.right, a.up, a.down};
 
                 const auto& r = quad_layout.views[eye + 2];
@@ -4346,4 +4399,77 @@ void OpenXR::log_frame_timing_stats_if_needed() {
         timing.reset();
     }
 }
+}
+
+void OpenXR::update_quad_view_gaze(XrTime display_time, PipelineState& state) {
+    const auto& vr = VR::get();
+
+    if (!vr->is_using_quad_view() || this->views.size() < 2) {
+        state.quad_focus_set = false;
+        std::scoped_lock _{this->quad_mtx};
+        this->quad_focus_current_set = false;
+        this->quad_gaze_tracking = false;
+        return;
+    }
+
+    namespace q = uevr::quadview;
+    const auto settings = vr->get_quad_view_settings();
+    const bool follow = vr->is_quad_view_gaze_enabled();
+
+    // The eye's real field of view this frame (views[] is in head/view space).
+    q::Tangents full[2]{};
+    for (uint32_t eye = 0; eye < 2; ++eye) {
+        const auto& f = this->views[eye].fov;
+        full[eye] = q::from_angles(f.angleLeft, f.angleRight, f.angleUp, f.angleDown);
+        if (!(full[eye].width() > 0 && full[eye].height() > 0)) {
+            full[eye] = {};
+        }
+    }
+
+    double gx[2]{}, gy[2]{};
+    uint32_t mask = 0;
+
+    if (follow && this->eye_gaze_space != XR_NULL_HANDLE && this->view_space != XR_NULL_HANDLE) {
+        XrEyeGazeSampleTimeEXT sample_time{XR_TYPE_EYE_GAZE_SAMPLE_TIME_EXT};
+        XrSpaceLocation gaze{XR_TYPE_SPACE_LOCATION};
+        gaze.next = &sample_time;
+
+        constexpr XrSpaceLocationFlags wanted = XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT;
+
+        if (xrLocateSpace(this->eye_gaze_space, this->view_space, display_time, &gaze) == XR_SUCCESS &&
+            (gaze.locationFlags & wanted) == wanted)
+        {
+            const auto& o = gaze.pose.orientation;
+            const q::Quat g{o.x, o.y, o.z, o.w};
+
+            for (uint32_t eye = 0; eye < 2; ++eye) {
+                const auto& eo = this->views[eye].pose.orientation;
+                if (q::gaze_to_eye_tangent(g, {eo.x, eo.y, eo.z, eo.w}, gx[eye], gy[eye])) {
+                    mask |= 1u << eye;
+                }
+            }
+        }
+    }
+
+    const auto now_ms = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+
+    std::scoped_lock _{this->quad_mtx};
+
+    if (!follow) {
+        this->quad_gaze = {};
+    } else {
+        this->quad_gaze.update(gx, gy, mask, settings.dead_zone, now_ms, settings.gaze_return_ms);
+    }
+
+    this->quad_gaze_tracking = mask == 3u;
+
+    for (uint32_t eye = 0; eye < 2; ++eye) {
+        this->quad_focus_current[eye] = q::focus_window(full[eye], settings.focus_width, settings.focus_height,
+            this->quad_gaze.cx[eye], this->quad_gaze.cy[eye]);
+    }
+
+    this->quad_focus_current_set = true;
+    state.quad_focus = this->quad_focus_current;
+    state.quad_focus_set = true;
 }

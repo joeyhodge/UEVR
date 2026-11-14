@@ -3060,6 +3060,7 @@ std::optional<std::string> VR::initialize_openxr() {
                 const std::unordered_set<std::string> wanted_extensions {
                     XR_KHR_COMPOSITION_LAYER_DEPTH_EXTENSION_NAME,
                     XR_KHR_COMPOSITION_LAYER_CYLINDER_EXTENSION_NAME,
+                    XR_EXT_EYE_GAZE_INTERACTION_EXTENSION_NAME, // Quad View: sharp views follow the eyes
                     uevr::steam_frame::extension
                     // To be seen if we need more!
                 };
@@ -3226,7 +3227,13 @@ std::optional<std::string> VR::initialize_openxr() {
     spdlog::info("[VR] Getting OpenXR system properties");
 
     XrSystemProperties system_properties{XR_TYPE_SYSTEM_PROPERTIES};
+    XrSystemEyeGazeInteractionPropertiesEXT eye_gaze_properties{XR_TYPE_SYSTEM_EYE_GAZE_INTERACTION_PROPERTIES_EXT};
+    if (m_openxr->enabled_extensions.contains(XR_EXT_EYE_GAZE_INTERACTION_EXTENSION_NAME)) {
+        system_properties.next = &eye_gaze_properties;
+    }
     result = xrGetSystemProperties(m_openxr->instance, m_openxr->system, &system_properties);
+    m_openxr->eye_gaze_supported = result == XR_SUCCESS && eye_gaze_properties.supportsEyeGazeInteraction == XR_TRUE;
+    spdlog::info("[QuadView] Eye gaze interaction supported: {}", m_openxr->eye_gaze_supported);
 
     if (result != XR_SUCCESS) {
         m_openxr->error = "Could not get system properties: " + m_openxr->get_result_string(result);
@@ -10499,11 +10506,20 @@ void VR::update_statistics_overlay(sdk::UGameEngine* engine) {
 void VR::draw_quad_view_ui() {
     ImGui::Indent();
 
+    const ImVec4 warn{1.0f, 0.6f, 0.2f, 1.0f};
+    const ImVec4 good{0.4f, 0.9f, 0.4f, 1.0f};
+
     if (m_extreme_compat_mode->value()) {
-        ImGui::TextColored(ImVec4{1.0f, 0.6f, 0.2f, 1.0f}, "Quad View is off: Extreme Compatibility Mode renders one view at a time.");
+        ImGui::TextColored(warn, "Quad View is off: Extreme Compatibility Mode renders one view at a time.");
     }
     if (get_runtime() != nullptr && !get_runtime()->is_openxr()) {
-        ImGui::TextColored(ImVec4{1.0f, 0.6f, 0.2f, 1.0f}, "Quad View needs the OpenXR runtime; OpenVR only shows the wide views.");
+        ImGui::TextColored(warn, "Quad View needs the OpenXR runtime; OpenVR only shows the wide views.");
+    }
+    if (is_native_stereo_fix_enabled() || is_sceneview_compatibility_enabled() || is_splitscreen_compatibility_enabled()) {
+        ImGui::TextColored(warn, "Quad View is off while Native Stereo Fix, SceneView or Splitscreen compatibility is on.");
+    }
+    if (m_fake_stereo_hook != nullptr && !m_fake_stereo_hook->has_double_precision()) {
+        ImGui::TextColored(warn, "Quad View needs an Unreal Engine 5 game; this game renders plain stereo.");
     }
 
     if (ImGui::TreeNodeEx("Sharp views (where you look)", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -10513,30 +10529,44 @@ void VR::draw_quad_view_ui() {
         m_quad_view_follow_gaze->draw("Follow gaze (eye tracking)");
         if (m_quad_view_follow_gaze->value()) {
             m_quad_view_gaze_dead_zone->draw("Gaze dead zone");
+
+            if (!m_openxr->eye_gaze_supported) {
+                ImGui::TextColored(warn, "Eye tracking: not offered by this OpenXR runtime (sharp area stays centred)");
+            } else if (m_openxr->is_quad_gaze_tracking()) {
+                ImGui::TextColored(good, "Eye tracking: following your gaze");
+            } else {
+                ImGui::TextColored(warn, "Eye tracking: no gaze right now (eyes closed, or tracking not started)");
+            }
         }
-        m_quad_view_show_outline->draw("Show sharp area outline");
         ImGui::TreePop();
     }
 
     if (ImGui::TreeNodeEx("Wide views (periphery cost)", ImGuiTreeNodeFlags_DefaultOpen)) {
         m_quad_view_wide_scale->draw("Resolution (share of native)");
-        m_quad_view_wide_lod_scale->draw("LOD scale (lower = simpler meshes, fewer small objects)");
+        m_quad_view_wide_lod_scale->draw("LOD scale (lower = simpler meshes)");
+
+        switch (FFakeStereoRenderingHook::s_quad_lod_status.load()) {
+        case 0: ImGui::TextDisabled("LOD: learning this game's view layout..."); break;
+        case 1: ImGui::TextColored(good, "LOD: active on the wide views"); break;
+        case 2: ImGui::TextColored(warn, "LOD: not available in this game (view layout not recognised)"); break;
+        default: ImGui::TextDisabled("LOD: waiting for the first quad view frame"); break;
+        }
+        ImGui::TextDisabled("Nanite meshes ignore LOD; their detail already drops with the wide views' resolution.");
         ImGui::TreePop();
     }
 
-    if (ImGui::TreeNodeEx("Matching", ImGuiTreeNodeFlags_DefaultOpen)) {
-        m_quad_view_shared_exposure->draw("Shared exposure");
-        m_quad_view_edge_blend->draw("Edge blend");
+    if (ImGui::TreeNodeEx("Blending", ImGuiTreeNodeFlags_DefaultOpen)) {
+        m_quad_view_compose->draw("Compose into one image (D3D12, enables edge blend)");
+        if (m_quad_view_compose->value()) {
+            m_quad_view_edge_blend->draw("Edge blend");
+            m_quad_view_show_outline->draw("Show sharp area outline");
+        }
+        const bool composed = m_openxr->quad_composed.load();
+        ImGui::TextDisabled(composed ? "Output: composed by UEVR (wide + sharp, blended)"
+                                     : "Output: sharp views sent to the headset as an overlay layer (hard edge)");
+        ImGui::TextDisabled("Exposure is shared automatically: all views use the left wide view's exposure.");
         ImGui::TreePop();
     }
-
-    if (ImGui::TreeNodeEx("Output", ImGuiTreeNodeFlags_DefaultOpen)) {
-        m_quad_view_overlay_layer->draw("Show sharp views as an OpenXR overlay layer");
-        ImGui::TreePop();
-    }
-
-    ImGui::TextWrapped("Work in progress: gaze following, wide LOD scale, edge blend and the outline are not active yet. "
-                       "The sharp views stay centred.");
 
     const auto runtime = get_runtime();
     if (runtime != nullptr && runtime->ready()) {
@@ -10554,6 +10584,14 @@ void VR::draw_quad_view_ui() {
 
 uevr::quadview::Tangents VR::get_quad_view_focus_tangents(uint32_t eye) const {
     eye = std::min<uint32_t>(eye, 1);
+
+    // OpenXR places the window with each pose sample (gaze-following).
+    if (m_openxr != nullptr && get_runtime() != nullptr && get_runtime()->is_openxr()) {
+        if (const auto t = m_openxr->get_quad_focus_current(eye)) {
+            return *t;
+        }
+    }
+
     const auto runtime = get_runtime();
     // raw_projections holds the eye's real field of view as tangents: left, right, top, bottom.
     uevr::quadview::Tangents full{};
@@ -10564,5 +10602,5 @@ uevr::quadview::Tangents VR::get_quad_view_focus_tangents(uint32_t eye) const {
         }
     }
     const auto s = get_quad_view_settings();
-    return uevr::quadview::focus_window(full, s.focus_width, s.focus_height, m_quad_view_gaze.cx[eye], m_quad_view_gaze.cy[eye]);
+    return uevr::quadview::focus_window(full, s.focus_width, s.focus_height, 0.0, 0.0);
 }

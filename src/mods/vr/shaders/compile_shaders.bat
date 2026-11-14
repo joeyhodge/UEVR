@@ -36,6 +36,8 @@ if defined PCDXC (
 
 call :CompileShader alpha_luminance_sprite_ps ps SpritePixelShader
 call :CompileShader alpha_luminance_sprite_ps vs SpriteVertexShader
+call :CompileShader quad_view_compose ps SpritePixelShader
+call :CompileShader quad_view_compose vs SpriteVertexShader
 
 if %error% == 0 (
     echo Shaders compiled ok

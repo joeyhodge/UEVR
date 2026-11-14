@@ -30,6 +30,7 @@
 #include "../NativeOpenXRWaitOnly.hpp"
 
 #include "VRRuntime.hpp"
+#include "../QuadView.hpp"
 
 namespace runtimes{
 struct OpenXR final : public VRRuntime {
@@ -255,6 +256,31 @@ public:
     XrSpace stage_space{XR_NULL_HANDLE};
     XrSpace view_space{XR_NULL_HANDLE}; // for generating view matrices
     XrSystemId system{XR_NULL_SYSTEM_ID};
+
+    // Quad View eye tracking (XR_EXT_eye_gaze_interaction).
+    bool eye_gaze_supported{false};
+    XrAction eye_gaze_action{XR_NULL_HANDLE};
+    XrSpace eye_gaze_space{XR_NULL_HANDLE};
+    mutable std::mutex quad_mtx{};
+    uevr::quadview::GazeFilter quad_gaze{};
+    std::array<uevr::quadview::Tangents, 2> quad_focus_current{};
+    bool quad_focus_current_set{false};
+    bool quad_gaze_tracking{false};
+
+    std::optional<uevr::quadview::Tangents> get_quad_focus_current(uint32_t eye) const {
+        std::scoped_lock _{quad_mtx};
+        if (!quad_focus_current_set || eye > 1) return std::nullopt;
+        return quad_focus_current[eye];
+    }
+    bool is_quad_gaze_tracking() const {
+        std::scoped_lock _{quad_mtx};
+        return quad_gaze_tracking;
+    }
+
+    // Set by the D3D12 compositor each frame: true when this frame's atlas was
+    // composed into plain stereo (submit as ordinary stereo), false when the
+    // raw atlas was copied (submit wide rects plus the sharp overlay layer).
+    std::atomic<bool> quad_composed{false};
     XrFormFactor form_factor{XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY};
     XrViewConfigurationType view_config{XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO};
     XrEnvironmentBlendMode blend_mode{XR_ENVIRONMENT_BLEND_MODE_OPAQUE};
@@ -293,7 +319,15 @@ public:
         std::chrono::steady_clock::time_point coherent_capture_time{};
         bool coherent_complete{};
         bool coherent_matches_render{};
+        // Quad View: the sharp windows this frame was rendered with, so the
+        // submit uses exactly them even when gaze moved since.
+        std::array<uevr::quadview::Tangents, 2> quad_focus{};
+        bool quad_focus_set{};
     };
+
+    // Called with each new pose sample: reads the gaze, filters it and
+    // places this frame's sharp windows (render side and pipeline state).
+    void update_quad_view_gaze(XrTime display_time, PipelineState& state);
     /*std::array<std::vector<XrView>, 3> stage_view_queue{};
     std::array<XrSpaceLocation, 3> view_space_location_queue{};
     std::array<XrFrameState, 3> frame_state_queue{};*/
@@ -388,6 +422,19 @@ public:
 
     PipelineState last_submit_state{};
     PipelineState get_submit_state();
+
+    // The sharp windows of the frame that is about to be submitted, without
+    // the side effects of get_submit_state() (for the compositor).
+    std::optional<std::array<uevr::quadview::Tangents, 2>> peek_submit_quad_focus() {
+        std::scoped_lock _{this->sync_assignment_mtx};
+        if (this->has_render_frame_count) {
+            const auto& s = this->pipeline_states[this->internal_render_frame_count % QUEUE_SIZE];
+            if (s.quad_focus_set) return s.quad_focus;
+        }
+        std::scoped_lock __{this->quad_mtx};
+        if (this->quad_focus_current_set) return this->quad_focus_current;
+        return std::nullopt;
+    }
     struct Stalker2PairSubmit {
         std::array<XrView, 2> views{};
         uint64_t epoch{}, generation{};

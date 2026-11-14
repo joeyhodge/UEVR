@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <optional>
 
 namespace uevr::quadview {
@@ -172,6 +173,100 @@ struct GazeFilter {
     }
 };
 
+// --- Eye tracking ------------------------------------------------------------
+// XR_EXT_eye_gaze_interaction gives one gaze pose (in the head's view space)
+// whose -Z axis is the gaze direction. Each eye's view is rotated a little
+// against the head (canting), so the direction is turned into that eye's
+// frame before it becomes a tangent-space point in the eye's image.
+
+struct Quat {
+    double x{0}, y{0}, z{0}, w{1};
+};
+
+inline void rotate(const Quat& q, const double v[3], double out[3]) {
+    // v' = v + 2w(q x v) + 2 q x (q x v)
+    const double tx = 2 * (q.y * v[2] - q.z * v[1]);
+    const double ty = 2 * (q.z * v[0] - q.x * v[2]);
+    const double tz = 2 * (q.x * v[1] - q.y * v[0]);
+    out[0] = v[0] + q.w * tx + (q.y * tz - q.z * ty);
+    out[1] = v[1] + q.w * ty + (q.z * tx - q.x * tz);
+    out[2] = v[2] + q.w * tz + (q.x * ty - q.y * tx);
+}
+
+inline Quat conjugate(const Quat& q) { return {-q.x, -q.y, -q.z, q.w}; }
+
+// Gaze direction, seen from one eye, as a point in that eye's tangent space
+// (x right, y up, (0, 0) straight ahead). False when the gaze points sideways
+// or backwards relative to the eye (more than ~84 degrees off axis).
+inline bool gaze_to_eye_tangent(const Quat& gaze_in_head, const Quat& eye_in_head, double& tx, double& ty) {
+    const double fwd[3]{0, 0, -1};
+    double d_head[3], d_eye[3];
+    rotate(gaze_in_head, fwd, d_head);
+    rotate(conjugate(eye_in_head), d_head, d_eye);
+    const double depth = -d_eye[2];
+    if (!(depth > 0.1) || !std::isfinite(d_eye[0]) || !std::isfinite(d_eye[1])) return false;
+    tx = d_eye[0] / depth;
+    ty = d_eye[1] / depth;
+    return true;
+}
+
+// --- Wide-view LOD ------------------------------------------------------------
+// Unreal picks mesh LODs per view from FSceneViewInitOptions::LODDistanceFactor
+// (1.0 by default; larger = treated as farther = simpler meshes). Its offset
+// moves between engine versions, so it is found at runtime from the fields
+// around it, which have fixed defaults:
+//   FIntPoint CursorPos;                     // (-1, -1) or the mouse position
+//   float     LODDistanceFactor;             // ~1.0
+//   float     OverrideFarClippingPlaneDistance; // -1.0 unless a camera overrides it
+// The match must be unique in the scanned range, and the offset is only
+// trusted after it has been the same for many views in a row.
+
+inline bool lod_candidate_at(const uint8_t* p, size_t size, size_t o) {
+    if (o < 8 || o + 8 > size) return false;
+    int32_t cx, cy;
+    float lod, far_plane;
+    std::memcpy(&cx, p + o - 8, 4);
+    std::memcpy(&cy, p + o - 4, 4);
+    std::memcpy(&lod, p + o, 4);
+    std::memcpy(&far_plane, p + o + 4, 4);
+    const bool cursor_ok = cx >= -1 && cy >= -1 && cx <= 32768 && cy <= 32768;
+    return cursor_ok && std::isfinite(lod) && lod >= 0.01f && lod <= 100.0f && far_plane == -1.0f;
+}
+
+inline std::optional<size_t> find_lod_factor_offset(const uint8_t* p, size_t size, size_t begin = 0x40) {
+    std::optional<size_t> found{};
+    for (size_t o = (begin + 3) & ~size_t(3); o + 8 <= size; o += 4) {
+        if (!lod_candidate_at(p, size, o)) continue;
+        if (found) return std::nullopt;  // ambiguous: refuse rather than guess
+        found = o;
+    }
+    return found;
+}
+
+struct LodOffsetLatch {
+    static constexpr uint32_t NEEDED = 60;
+    std::optional<size_t> offset{};
+    size_t candidate{0};
+    uint32_t streak{0};
+    uint32_t misses{0};
+    bool failed{false};
+
+    // Feed one view's init options; returns the offset once it is trusted.
+    std::optional<size_t> observe(const uint8_t* p, size_t size) {
+        if (failed) return std::nullopt;
+        if (offset) {
+            if (lod_candidate_at(p, size, *offset)) return offset;
+            if (++misses > 30) { offset.reset(); failed = true; }  // layout changed under us
+            return std::nullopt;
+        }
+        const auto o = find_lod_factor_offset(p, size);
+        if (!o) { streak = 0; if (++misses > 600) failed = true; return std::nullopt; }
+        if (*o != candidate) { candidate = *o; streak = 0; }
+        if (++streak >= NEEDED) { offset = candidate; misses = 0; }
+        return offset;
+    }
+};
+
 // One frame's view set. Every view is filled from the SAME head-pose sample
 // (pose_id), and the compositor later uses exactly these tangents, so what was
 // rendered and what is composed/submitted can never disagree (the BeamNG drift).
@@ -215,6 +310,31 @@ struct Angles {
 };
 inline Angles to_angles(const Tangents& t) {
     return {float(std::atan(t.left)), float(std::atan(t.right)), float(std::atan(t.up)), float(std::atan(t.down))};
+}
+
+// --- Composition --------------------------------------------------------------
+// The compositor turns the atlas back into a plain stereo image: each eye's
+// wide view stretched over the whole eye image, its sharp view on top where the
+// focus window lies. Rows go down while tangents go up, hence the flip in y.
+struct RectF {
+    double x{0}, y{0}, w{0}, h{0};
+};
+
+inline RectF focus_dest_rect(const Tangents& rendered, const Tangents& focus, double eye_x0, double eye_w, double eye_h) {
+    const double sx = eye_w / rendered.width();
+    const double sy = eye_h / rendered.height();
+    return {eye_x0 + (focus.left - rendered.left) * sx, (rendered.up - focus.up) * sy, focus.width() * sx, focus.height() * sy};
+}
+
+// Alpha of the sharp view at a point of its own image (u, v in 0..1): 1 inside,
+// easing to 0 over the outer `blend` share of each side (smoothstep). This is
+// what the compose pixel shader computes; kept here so it is tested.
+inline double edge_alpha(double u, double v, double blend) {
+    const double d = std::min(std::min(u, 1.0 - u), std::min(v, 1.0 - v));
+    if (d <= 0) return 0.0;
+    if (blend <= 0) return 1.0;
+    const double t = std::clamp(d / blend, 0.0, 1.0);
+    return t * t * (3 - 2 * t);
 }
 
 // Share of the eye's pixels the four views cost, versus plain stereo at

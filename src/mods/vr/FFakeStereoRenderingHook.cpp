@@ -164,6 +164,13 @@
 //#define FFAKE_STEREO_RENDERING_LOG_ALL_CALLS
 
 FFakeStereoRenderingHook* g_hook = nullptr;
+
+// Quad View: the slot of the view whose offset was just calculated. Unreal's
+// LocalPlayer computes a view's offset/projection and then constructs its
+// FSceneView on the same thread, so the constructor hook can tell which of
+// the four views it is building.
+thread_local int32_t t_quad_view_next_slot = -1;
+
 uint32_t g_frame_count{};
 
 static_assert(static_cast<int32_t>(VR::NATIVE_STEREO) ==
@@ -16795,7 +16802,9 @@ void FFakeStereoRenderingHook::attempt_hook_fsceneview_constructor() {
 
     auto& vr = VR::get();
 
-    if (!vr->is_ghosting_fix_enabled() && !vr->is_splitscreen_compatibility_enabled() && !vr->is_sceneview_compatibility_enabled() && !vr->is_native_stereo_fix_enabled()) {
+    if (!vr->is_ghosting_fix_enabled() && !vr->is_splitscreen_compatibility_enabled() && !vr->is_sceneview_compatibility_enabled() && !vr->is_native_stereo_fix_enabled() &&
+        !vr->is_using_quad_view()) // Quad View sets the wide views' LOD factor here
+    {
         return;
     }
 
@@ -23555,6 +23564,39 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     };
 
     if (dune_awakening_is_current_game() && g_hook->is_dune_character_creation_active()) {
+        return g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
+    }
+
+    // Quad View: none of the compatibility paths below apply (they are
+    // excluded by is_quad_view_active), so only scale the wide views' LOD.
+    if (is_quad_view_active()) {
+        const auto slot = std::exchange(t_quad_view_next_slot, -1);
+        static uevr::quadview::LodOffsetLatch lod_latch{};
+        constexpr size_t scan_size = 0x600;
+
+        if (slot >= 0 && init_options != nullptr &&
+            is_readable_process_range(reinterpret_cast<uintptr_t>(init_options), scan_size))
+        {
+            auto* const bytes = reinterpret_cast<uint8_t*>(init_options);
+            const auto offset = lod_latch.observe(bytes, scan_size);
+            s_quad_lod_status = offset ? 1 : (lod_latch.failed ? 2 : 0);
+
+            if (offset) {
+                SPDLOG_INFO_ONCE("[QuadView] LODDistanceFactor found at init-options +0x{:x}", *offset);
+            } else if (lod_latch.failed) {
+                SPDLOG_WARN_ONCE("[QuadView] LODDistanceFactor not recognised; wide-view LOD scale is off for this game");
+            }
+
+            const auto scale = std::clamp(vr->get_quad_view_wide_lod_scale(), 0.1f, 1.0f);
+
+            if (offset && slot < 2 && scale < 0.999f) {
+                float factor{};
+                std::memcpy(&factor, bytes + *offset, sizeof(factor));
+                factor /= scale; // larger factor = treated as farther = simpler LODs
+                std::memcpy(bytes + *offset, &factor, sizeof(factor));
+            }
+        }
+
         return g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
     }
 
@@ -31032,6 +31074,9 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
     const bool quad_view = is_quad_view_active();
     const auto quad_slot = uevr::quadview::slot_for_view(view_index, false);
     const bool quad_focus = quad_view && quad_slot.focus;
+    if (quad_view) {
+        t_quad_view_next_slot = (int32_t)quad_slot.index();
+    }
 
     if (view_index == -1) {
         index_was_ever_negative = true;

@@ -821,6 +821,10 @@ public:
     // stereo path, and none of the compatibility modes that own the view list.
     static bool is_quad_view_active();
 
+    // Wide-view LOD: 0 = learning the init-options layout, 1 = active,
+    // 2 = unavailable in this game (layout not recognised), 3 = constructor not hooked.
+    static inline std::atomic<int> s_quad_lod_status{3};
+
     bool has_attempted_to_hook_engine() const {
         return m_attempted_hook_game_engine_tick;
     }
