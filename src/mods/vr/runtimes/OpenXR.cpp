@@ -4399,7 +4399,6 @@ void OpenXR::log_frame_timing_stats_if_needed() {
         timing.reset();
     }
 }
-}
 
 void OpenXR::update_quad_view_gaze(XrTime display_time, PipelineState& state) {
     const auto& vr = VR::get();
@@ -4472,4 +4471,5 @@ void OpenXR::update_quad_view_gaze(XrTime display_time, PipelineState& state) {
     this->quad_focus_current_set = true;
     state.quad_focus = this->quad_focus_current;
     state.quad_focus_set = true;
+}
 }
