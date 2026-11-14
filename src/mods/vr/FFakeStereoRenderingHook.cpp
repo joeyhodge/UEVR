@@ -30945,7 +30945,7 @@ bool FFakeStereoRenderingHook::is_stereo_enabled(FFakeStereoRendering* stereo) {
 // views in order, as GetViewPassForIndex below hands them out). This turns
 // either into the view index, -1 when it is not one of the four views.
 static int32_t quad_view_index_from(int32_t raw) {
-    if (g_hook == nullptr || g_hook->m_has_double_precision) {
+    if (g_hook == nullptr || g_hook->has_double_precision()) {
         return raw >= 0 ? raw : -1;
     }
     return raw >= 1 ? raw - 1 : -1;
