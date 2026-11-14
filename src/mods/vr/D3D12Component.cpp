@@ -42,6 +42,7 @@
 #include "MonoD3D12.hpp"
 #include "DuneMonoMenuD3D12.hpp"
 #include "PhantomBladeZeroNative.hpp"
+#include "UE58NativeFix.hpp"
 #include "DispatchMovie.hpp"
 #include "DispatchMovieD3D12.hpp"
 #include "DispatchMovieOpenXR.hpp"
@@ -493,6 +494,16 @@ bool is_pbz_ue574_dx12_current_game() {
         const auto path = utility::get_module_pathw(utility::get_executable());
         const auto version = sdk::get_file_version_info();
         return path && sdk::pbz::eligible(*path, version.dwFileVersionMS, version.dwFileVersionLS);
+    }();
+    return exact_game;
+}
+
+bool is_paradox_drive_ue58_dx12_current_game() {
+    if (g_framework == nullptr || !g_framework->is_dx12()) { return false; }
+    static const bool exact_game = [] {
+        const auto path = utility::get_module_pathw(utility::get_executable());
+        return path && uevr::ue58_native::needs_copy_extent_revalidation(*path,
+            sdk::get_file_version_info().dwFileVersionMS);
     }();
     return exact_game;
 }
@@ -3247,7 +3258,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     if (native_stereo_packet != nullptr &&
         vr->is_using_native_stereo() && vr->is_native_stereo_fix_enabled() &&
         runtime->is_openxr() && !vr->is_extreme_compatibility_mode_enabled() &&
-        is_pbz_ue574_dx12_current_game())
+        (is_pbz_ue574_dx12_current_game() || is_paradox_drive_ue58_dx12_current_game()))
     {
         const bool descriptor_valid =
             scene_source_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
@@ -3257,29 +3268,29 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             (scene_source_desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) == 0 &&
             (scene_source_desc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS ||
              scene_source_desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM);
-        const auto action = uevr::pbz_native::copy_extent_action({
+        const auto action = uevr::native_stereo_copy::copy_extent_action({
             true, backbuffer.Get() != real_backbuffer.Get(), descriptor_valid,
             scene_source_desc.Width, scene_source_desc.Height,
             m_backbuffer_size[0], m_backbuffer_size[1],
             static_cast<uint32_t>(vr->get_hmd_width()), static_cast<uint32_t>(vr->get_hmd_height())});
-        if (action != uevr::pbz_native::CopyExtentAction::unchanged) {
+        if (action != uevr::native_stereo_copy::CopyExtentAction::unchanged) {
             ComPtr<ID3D12Device4> source_device{};
-            const bool can_rebuild = action == uevr::pbz_native::CopyExtentAction::rebuild &&
+            const bool can_rebuild = action == uevr::native_stereo_copy::CopyExtentAction::rebuild &&
                 SUCCEEDED(backbuffer->GetDevice(IID_PPV_ARGS(&source_device))) &&
                 source_device.Get() == device;
             ffsr->reject_native_stereo_frame_packet(native_stereo_packet->serial, can_rebuild
-                ? "PBZ scene extent changed; rebuilding Native Fix copy resources"
-                : "PBZ Native Fix requires the current packed HMD scene target");
+                ? "Scene extent changed; rebuilding Native Fix copy resources"
+                : "Native Fix requires the current packed HMD scene target");
             if (can_rebuild) {
-                // Startup may cache Slate's desktop extent before the stereo RT
-                // arrives. Use normal setup/retirement, not a partial size edit.
+                // Startup/resizing can publish the stereo RT after setup cached
+                // the old extent. Rebuild with normal GPU retirement, not a size edit.
                 m_force_reset = true;
                 SPDLOG_INFO_EVERY_N_SEC(2,
-                    "[PBZ][NativeStereoFix][D3D12] Refreshing cached copy extent {}x{} -> {}x{} before eye submission",
+                    "[NativeStereoFix][D3D12] Refreshing cached copy extent {}x{} -> {}x{} before eye submission",
                     m_backbuffer_size[0], m_backbuffer_size[1], scene_source_desc.Width, scene_source_desc.Height);
             } else {
                 SPDLOG_INFO_EVERY_N_SEC(2,
-                    "[PBZ][NativeStereoFix][D3D12] Waiting for a packed HMD scene target; source={}x{} format={} expected={}x{}",
+                    "[NativeStereoFix][D3D12] Waiting for a packed HMD scene target; source={}x{} format={} expected={}x{}",
                     scene_source_desc.Width, scene_source_desc.Height, uint32_t(scene_source_desc.Format),
                     uint64_t{static_cast<uint32_t>(vr->get_hmd_width())} * 2, vr->get_hmd_height());
             }
