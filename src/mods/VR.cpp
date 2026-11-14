@@ -10701,6 +10701,9 @@ void VR::draw_quad_view_ui() {
     }
     if (m_fake_stereo_hook != nullptr && !m_fake_stereo_hook->has_double_precision()) {
         m_quad_view_allow_ue4->draw("Allow on Unreal Engine 4 (experimental, may crash)");
+        if (g_framework != nullptr && !g_framework->is_dx12()) {
+            ImGui::TextColored(warn, "UE4 with D3D11 is known to crash with four views (D3D11 query error); use Native Stereo.");
+        }
         if (!m_quad_view_allow_ue4->value()) {
             ImGui::TextColored(warn, "Unreal Engine 4 game: Quad View is off, this game renders plain stereo.");
         }
