@@ -1197,6 +1197,48 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	unset(CMKR_SOURCES)
 endif()
 
+# Target quad-view-tests
+if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
+	set(CMKR_TARGET quad-view-tests)
+	set(quad-view-tests_SOURCES "")
+
+	list(APPEND quad-view-tests_SOURCES
+		"tests/QuadViewTests.cpp"
+	)
+
+	list(APPEND quad-view-tests_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${quad-view-tests_SOURCES})
+	add_executable(quad-view-tests)
+
+	if(quad-view-tests_SOURCES)
+		target_sources(quad-view-tests PRIVATE ${quad-view-tests_SOURCES})
+	endif()
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT quad-view-tests)
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${quad-view-tests_SOURCES})
+
+	target_compile_features(quad-view-tests PRIVATE
+		cxx_std_23
+	)
+
+	target_include_directories(quad-view-tests PRIVATE
+		"src/"
+	)
+
+	add_test(NAME quad-view-tests COMMAND quad-view-tests)
+	set_tests_properties(quad-view-tests PROPERTIES TIMEOUT 30)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
 # Target stalker2-native-policy-tests
 if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	set(CMKR_TARGET stalker2-native-policy-tests)
