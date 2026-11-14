@@ -3057,13 +3057,21 @@ std::optional<std::string> VR::initialize_openxr() {
                     spdlog::info("[VR] Found OpenXR extension: {}", extension_property.extensionName);
                 }
 
-                const std::unordered_set<std::string> wanted_extensions {
+                std::unordered_set<std::string> wanted_extensions {
                     XR_KHR_COMPOSITION_LAYER_DEPTH_EXTENSION_NAME,
                     XR_KHR_COMPOSITION_LAYER_CYLINDER_EXTENSION_NAME,
-                    XR_EXT_EYE_GAZE_INTERACTION_EXTENSION_NAME, // Quad View: sharp views follow the eyes
                     uevr::steam_frame::extension
                     // To be seen if we need more!
                 };
+
+                // Quad View: ask for eye tracking only when it will be used, so
+                // every other mode starts OpenXR exactly as before. (Settings are
+                // loaded before this runs; switching to Quad View needs a restart.)
+                if (m_rendering_method->value() == RenderingMethod::QUAD_VIEW && m_quad_view_follow_gaze->value()) {
+                    wanted_extensions.insert(XR_EXT_EYE_GAZE_INTERACTION_EXTENSION_NAME);
+                } else {
+                    spdlog::info("[QuadView] Eye gaze extension not requested (Quad View with gaze is off)");
+                }
 
                 for (const auto& extension_property : extension_properties) {
                     if (wanted_extensions.contains(extension_property.extensionName)) {
