@@ -75,9 +75,16 @@ static void gaze_tests() {
     const double a3[2]{0.10, 0.20};
     g.update(a3, b, 3u, 0.03, 1020, 500);
     expect(near(g.cx[0], 0.10) && near(g.cx[1], 0.20), "either eye leaving the dead zone moves both");
+    const double a4[2]{0.115, 0.215};   // a small settle inside the dead zone
+    g.update(a4, b, 3u, 0.03, 1030, 500);
+    expect(near(g.cx[0], 0.10), "a small offset does not move the window at once");
+    g.update(a4, b, 3u, 0.03, 1100, 500);
+    expect(near(g.cx[0], 0.10), "nor before it has settled");
+    g.update(a4, b, 3u, 0.03, 1160, 500);
+    expect(near(g.cx[0], 0.115), "a settled offset re-centres the window");
     g.update(a3, b, 1u, 0.03, 1400, 500);
     expect(g.seeded, "a short gaze dropout keeps the window");
-    g.update(a3, b, 0u, 0.03, 1600, 500);
+    g.update(a3, b, 0u, 0.03, 1700, 500);
     expect(!g.seeded && near(g.cx[0], 0.0) && near(g.cy[1], 0.0), "a long dropout recentres");
 }
 

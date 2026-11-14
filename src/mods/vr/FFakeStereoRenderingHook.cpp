@@ -30941,7 +30941,10 @@ bool FFakeStereoRenderingHook::is_stereo_enabled(FFakeStereoRendering* stereo) {
 }
 
 bool FFakeStereoRenderingHook::is_quad_view_active() {
-    if (g_hook == nullptr || !g_hook->m_has_double_precision || uevr::nascar::is_target()) {
+    // UE4 works through the same hooks with float vectors and matrices; the
+    // view passes it gets back (1 primary, 2 for the others) mean left/right
+    // eye there, so every extra view shares the left view's eye adaptation.
+    if (g_hook == nullptr || uevr::nascar::is_target()) {
         return false;
     }
 

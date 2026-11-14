@@ -162,21 +162,38 @@ inline Tangents focus_window_for(const Tangents& full, const Settings& s, double
 // zone (saccades hide the jump). Without gaze for return_ms, they recentre.
 // Centres are in each eye's tangent space; (0, 0) is straight ahead.
 struct GazeFilter {
+    // A fixation that settles away from the window centre (slow drift or a
+    // small saccade inside the dead zone) re-centres the window after this long,
+    // so the window never trails the eyes for more than a moment.
+    static constexpr uint64_t SETTLE_MS = 120;
+    static constexpr double SETTLE_SHARE = 0.35; // of the dead zone
+
     double cx[2]{0, 0}, cy[2]{0, 0};
     bool seeded{false};
     uint64_t last_valid_ms{0};
+    uint64_t drift_since_ms{0};
 
     void update(const double gx[2], const double gy[2], uint32_t valid_mask, double dead_zone, uint64_t now_ms,
                 uint64_t return_ms) {
         if ((valid_mask & 3u) == 3u) {
             last_valid_ms = now_ms;
             bool move = !seeded;
+            bool drifting = false;
             for (int i = 0; i < 2; ++i) {
-                if (std::hypot(gx[i] - cx[i], gy[i] - cy[i]) > dead_zone) move = true;
+                const double d = std::hypot(gx[i] - cx[i], gy[i] - cy[i]);
+                if (d > dead_zone) move = true;
+                if (d > dead_zone * SETTLE_SHARE) drifting = true;
+            }
+            if (!move && drifting && dead_zone > 0) {
+                if (drift_since_ms == 0) drift_since_ms = now_ms;
+                if (now_ms - drift_since_ms >= SETTLE_MS) move = true;
+            } else if (!drifting) {
+                drift_since_ms = 0;
             }
             if (move) {
                 for (int i = 0; i < 2; ++i) { cx[i] = gx[i]; cy[i] = gy[i]; }
                 seeded = true;
+                drift_since_ms = 0;
             }
         } else if (seeded && now_ms - last_valid_ms > return_ms) {
             for (int i = 0; i < 2; ++i) { cx[i] = 0; cy[i] = 0; }

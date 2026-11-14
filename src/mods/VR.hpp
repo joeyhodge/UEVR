@@ -1659,9 +1659,9 @@ private:
     const ModToggle::Ptr m_native_stereo_fix_same_pass{ ModToggle::create(generate_name("NativeStereoFixSamePass"), true) };
 
     // Quad View (RenderingMethod::QUAD_VIEW). Shown under the Rendering Method combo when selected.
-    const ModSlider::Ptr m_quad_view_wide_scale{ ModSlider::create(generate_name("QuadViewWideScale"), 0.1f, 1.0f, 0.5f) };
-    const ModSlider::Ptr m_quad_view_focus_width{ ModSlider::create(generate_name("QuadViewFocusWidth"), 0.1f, 0.8f, 0.3f) };
-    const ModSlider::Ptr m_quad_view_focus_height{ ModSlider::create(generate_name("QuadViewFocusHeight"), 0.1f, 0.8f, 0.3f) };
+    const ModSlider::Ptr m_quad_view_wide_scale{ ModSlider::create(generate_name("QuadViewWideScale"), 0.1f, 1.0f, 0.2f) };
+    const ModSlider::Ptr m_quad_view_focus_width{ ModSlider::create(generate_name("QuadViewFocusWidth"), 0.1f, 0.8f, 0.25f) };
+    const ModSlider::Ptr m_quad_view_focus_height{ ModSlider::create(generate_name("QuadViewFocusHeight"), 0.1f, 0.8f, 0.25f) };
     const ModSlider::Ptr m_quad_view_focus_density{ ModSlider::create(generate_name("QuadViewFocusDensity"), 0.5f, 2.0f, 1.0f) };
     const ModToggle::Ptr m_quad_view_follow_gaze{ ModToggle::create(generate_name("QuadViewFollowGaze"), true) };
     const ModSlider::Ptr m_quad_view_gaze_dead_zone{ ModSlider::create(generate_name("QuadViewGazeDeadZone"), 0.0f, 0.15f, 0.03f) };
@@ -1675,7 +1675,7 @@ private:
     std::optional<int> m_quad_view_saved_tonemapper_quality{};
     const ModSlider::Ptr m_quad_view_offset_x{ ModSlider::create(generate_name("QuadViewOffsetX"), -0.25f, 0.25f, 0.0f) };
     const ModSlider::Ptr m_quad_view_offset_y{ ModSlider::create(generate_name("QuadViewOffsetY"), -0.25f, 0.25f, 0.0f) };
-    const ModCombo::Ptr m_quad_view_focus_shape{ ModCombo::create(generate_name("QuadViewFocusShape"), s_quad_view_focus_shape_names, 0) };
+    const ModCombo::Ptr m_quad_view_focus_shape{ ModCombo::create(generate_name("QuadViewFocusShape"), s_quad_view_focus_shape_names, 1) };
     // 0 = off. Objects smaller than this many pixels in the wide views are culled
     // (foliage and instanced meshes, through foliage.MinimumScreenSize).
     const ModSlider::Ptr m_quad_view_wide_min_pixels{ ModSlider::create(generate_name("QuadViewWideMinPixels"), 0.0f, 8.0f, 0.0f) };

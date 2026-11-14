@@ -10672,7 +10672,11 @@ void VR::draw_quad_view_ui() {
         ImGui::TextColored(warn, "Quad View is off while Native Stereo Fix, SceneView or Splitscreen compatibility is on.");
     }
     if (m_fake_stereo_hook != nullptr && !m_fake_stereo_hook->has_double_precision()) {
-        ImGui::TextColored(warn, "Quad View needs an Unreal Engine 5 game; this game renders plain stereo.");
+        ImGui::TextColored(warn, "Unreal Engine 4 game: Quad View is experimental here (tested on UE5).");
+    }
+
+    if (g_framework != nullptr && !g_framework->is_dx12()) {
+        ImGui::TextColored(warn, "D3D11 game: no blending or shapes yet; the sharp views are sent to the headset as an overlay (hard edge).");
     }
 
     if (ImGui::TreeNodeEx("Sharp views (where you look)", ImGuiTreeNodeFlags_DefaultOpen)) {
