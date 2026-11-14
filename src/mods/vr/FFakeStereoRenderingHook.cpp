@@ -149,6 +149,7 @@
 #include "FFakeStereoRenderingHook.hpp"
 #include "UECompatibility.hpp"
 #include "UE60Slate.hpp"
+#include "UE60ViewExtension.hpp"
 #include "CompatibilityPolicy.hpp"
 #include "BodycamTextureLayout.hpp"
 #include "HellraiserCaptureLayout.hpp"
@@ -5556,7 +5557,11 @@ bool uses_ue58_render_pipeline() {
     return disk_version.dwFileVersionMS == 0x50008;
 }
 
-// Shared contracts are reviewed separately for 5.9.0, not selected by a >= gate.
+bool is_ue_5_8() {
+    return sdk::get_engine_version().major != 6 && uses_ue58_render_pipeline();
+}
+
+// Shared contracts are reviewed separately, not selected by a >= version gate.
 bool uses_reviewed_modern_stereo_contract() {
     return uses_ue58_render_pipeline() || sdk::ue59::reviewed_runtime();
 }
@@ -6259,6 +6264,9 @@ bool sinking_city_2_native_view_layout() {
 }
 
 bool ue58_native_view_layout() {
+    // UE6 renderer creation now runs on the render thread and carries extra
+    // family owners. A UE5.8 byte fixture cannot authorize its copy/destructor.
+    if (sdk::get_engine_version().major == 6) { return false; }
     if (!uevr::ue59_native::dx11::admits_linked_view_proof(is_ue58_dx12_backend(),
             sdk::ue59::reviewed_runtime(), g_framework != nullptr && g_framework->is_dx11()) ||
         !g_hook || sinking_city_2_native_runtime()) { return false; }
@@ -6298,6 +6306,7 @@ bool ue58_native_view_layout() {
 }
 
 bool ue58_native_linked_runtime() {
+    if (sdk::get_engine_version().major == 6) { return true; }
     // Unknown UE5.9 layouts must never enter the legacy second-render path.
     if (sdk::ue59::is_runtime()) { return true; }
     if (!is_ue58_dx12_backend() || sinking_city_2_native_runtime()) { return false; }
@@ -22624,6 +22633,17 @@ struct SceneViewExtensionAnalyzer {
         return true;
     }
 
+    static bool validate_ue6_family(uintptr_t family, uint32_t frame_offset) {
+        return uevr::ue60::valid_family(family, frame_offset,
+            [](uintptr_t p, void* out, size_t bytes) { return sdk::discovery::read_process(nullptr, p, out, bytes); },
+            [](uintptr_t p) {
+                uintptr_t table{}, function{};
+                return safe_read_value(p, table) && safe_read_value(table, function) &&
+                    utility::get_module_within(table).has_value() &&
+                    utility::get_module_within(function).has_value() && is_executable_process_range(function, 1);
+            });
+    }
+
     template<int N>
     static bool analysis_dummy_stage1(ISceneViewExtension* extension, uintptr_t a2, uintptr_t a3, uintptr_t a4) {
         if (ue59_discovery_rejected) { return false; }
@@ -22658,6 +22678,14 @@ struct SceneViewExtensionAnalyzer {
             }
 
             SPDLOG_INFO("[Stage 1] Found most called index to be {} with {} calls", max_index, max_count);
+
+            if (sdk::get_engine_version().major == 6 &&
+                (!sdk::get_engine_version().is_validated_ue6() ||
+                 sdk::ue6::extension_layout(max_index) == sdk::ue6::ExtensionLayout::unsupported)) {
+                ue59_discovery_rejected = true;
+                SPDLOG_ERROR("[UE6][ViewExtension] Unreviewed active slot {}; callbacks remain inactive", max_index);
+                return false;
+            }
 
             if (sdk::ue59::is_runtime() && (!sdk::ue59::reviewed_runtime() || max_index != sdk::ue59::extension_active_slot)) {
                 ue59_discovery_rejected = true;
@@ -22714,6 +22742,12 @@ struct SceneViewExtensionAnalyzer {
         }
 
         std::scoped_lock _{dummy_mutex};
+
+        if (sdk::get_engine_version().major == 6 &&
+            (sdk::ue6::extension_layout(is_active_this_frame_index) == sdk::ue6::ExtensionLayout::unsupported ||
+             (N != 4 && N != sdk::ue6::extension_pre_render(sdk::ue6::extension_layout(is_active_this_frame_index))))) {
+            return false;
+        }
 
         if constexpr (N == uevr::ue521::view_extension::begin_slot) {
             observe_ue521_source_family(a2, reinterpret_cast<uintptr_t>(_ReturnAddress()),
@@ -22788,6 +22822,7 @@ struct SceneViewExtensionAnalyzer {
                     const auto b = *(uint32_t*)&((uint8_t*)view_family_a2)[i];
 
                     if (b == a + 1 && a >= 10) { // rule out really low frame counts (this could be something else)
+                        if (sdk::get_engine_version().major == 6 && !validate_ue6_family(view_family_a2, i)) { continue; }
                         if (func.frame_count_a2 + 1 == b) {
                             SPDLOG_DEBUG("[A2] Function index {} Found frame count offset at {:x}, ({})", N, i, b);
 
@@ -22814,6 +22849,8 @@ struct SceneViewExtensionAnalyzer {
                                 if (func.times_frame_count_correct_a2 >= 50 && 
                                     func_next->times_frame_count_correct_a3 >= 50 && 
                                     func.frame_count_offset_a2 == func_next->frame_count_offset_a3 &&
+                                    (sdk::get_engine_version().major != 6 || sdk::ue6::extension_mapping(index_0_called,
+                                        is_active_this_frame_index, N, next_index, i)) &&
                                     std::abs((int32_t)func.frame_count_a2 - (int32_t)func_next->frame_count_a3) <= 3) // In some games, the frame delta is really high but the same offset (so, it's wrong)
                                 {
                                     SPDLOG_INFO("Found final frame count offset at {:x}", i);
@@ -22848,6 +22885,7 @@ struct SceneViewExtensionAnalyzer {
                     const auto b = *(uint32_t*)&((uint8_t*)view_family_a3)[i];
 
                     if (b == a + 1 && a >= 10) { // rule out really low frame counts (this could be something else)
+                        if (sdk::get_engine_version().major == 6 && !validate_ue6_family(view_family_a3, i)) { continue; }
                         if (func.frame_count_a3 + 1 == b) {
                             SPDLOG_DEBUG("[A3] Function index {} Found frame count offset at {:x} ({})", N, i, b);
                             ++func.times_frame_count_correct_a3;
@@ -23299,6 +23337,9 @@ bool SceneViewExtensionAnalyzer::validate_cached_discovery(void** original_vtabl
 }
 
 bool SceneViewExtensionAnalyzer::try_apply_cached_discovery(void** original_vtable) {
+    // Same-version main snapshots changed callback order. Re-prove the live
+    // callback/family relationship rather than trusting an October cache.
+    if (sdk::get_engine_version().major == 6) { return false; }
     if (!is_ue_5_7_or_newer()) {
         return false;
     }
@@ -27384,11 +27425,15 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             view_family->set_render_target(original_target);
             g_hook->invalidate_native_stereo_frame_packet(NativeStereoFixState::FailedClosed, reason);
             SPDLOG_WARNING_EVERY_N_SEC(2,
-                "[{}][NativeStereoFix] Keeping the original packed eye pair: {}", sdk::ue59::is_runtime() ? "UE5.9" : "UE5.8", reason);
+                "[{}][NativeStereoFix] Keeping the original packed eye pair: {}",
+                sdk::get_engine_version().major == 6 ? "UE6" : sdk::ue59::is_runtime() ? "UE5.9" : "UE5.8", reason);
             call_original();
         };
         const auto memory = sdk::discovery::process_memory();
         const auto layout = sdk::FSceneViewFamily::get_layout_snapshot();
+        if (sdk::get_engine_version().major == 6) {
+            fail_closed("UE6 render-thread family copy/ownership needs matching binary validation"); return;
+        }
         static const bool renderer_proven = sdk::ue59::reviewed_runtime()
             ? g_hook->m_render_module_begin_render_viewfamily_hook.original_bytes().size() <= 0x2a &&
                 uevr::ue59_native::renderer_layout(memory, g_hook->m_render_module_begin_render_viewfamily_hook.target_address())
@@ -33751,13 +33796,18 @@ bool ue56_promote_source_matched_slate_scene_output(
     return true;
 }
 
+std::optional<uevr::ue60::DecodedInput> read_ue6_slate_input(void* candidate, void* renderer) {
+    std::array<uint8_t, sizeof(uevr::ue60::SlateInputPrefix)> bytes{};
+    if (!sdk::discovery::read_process(nullptr, reinterpret_cast<uintptr_t>(candidate), bytes.data(), bytes.size())) { return {}; }
+    return uevr::ue60::decode_sdr_input(bytes, renderer);
+}
+
 bool try_read_ue55_slate_draw_inputs(void* candidate, void* renderer, UE55SlateDrawWindowPassInputsHead& out) {
     if (uevr::compat::get().slate_input_layout == uevr::compat::SlateInputLayout::UE60) {
-        uevr::ue60::SlateInputPrefix input{};
-        SIZE_T copied{};
-        if (!ReadProcessMemory(GetCurrentProcess(), candidate, &input, sizeof(input), &copied) ||
-            copied != sizeof(input) || !uevr::ue60::valid_sdr_input(input, renderer) ||
-            !is_readable_process_range(reinterpret_cast<uintptr_t>(input.window), sizeof(void*))) { return false; }
+        const auto decoded = read_ue6_slate_input(candidate, renderer);
+        if (!decoded) { return false; }
+        const auto& input = decoded->prefix;
+        if (!is_readable_process_range(reinterpret_cast<uintptr_t>(input.window), sizeof(void*))) { return false; }
         out = {input.renderer, input.window_element_list, input.window, static_cast<sdk::FViewportInfo*>(input.viewport_info)};
         return true;
     }
@@ -33776,11 +33826,10 @@ bool try_read_ue55_slate_draw_inputs(void* candidate, void* renderer, UE55SlateD
 
 bool try_read_ue55_slate_draw_inputs_full(void* candidate, void* renderer, UE55SlateDrawWindowPassInputs& out) {
     if (uevr::compat::get().slate_input_layout == uevr::compat::SlateInputLayout::UE60) {
-        uevr::ue60::SlateInputPrefix input{};
-        SIZE_T copied{};
-        if (!ReadProcessMemory(GetCurrentProcess(), candidate, &input, sizeof(input), &copied) ||
-            copied != sizeof(input) || !uevr::ue60::valid_sdr_input(input, renderer) ||
-            !is_readable_process_range(reinterpret_cast<uintptr_t>(input.window), sizeof(void*)) ||
+        const auto decoded = read_ue6_slate_input(candidate, renderer);
+        if (!decoded) { return false; }
+        const auto& input = decoded->prefix;
+        if (!is_readable_process_range(reinterpret_cast<uintptr_t>(input.window), sizeof(void*)) ||
             !is_readable_process_range(reinterpret_cast<uintptr_t>(input.viewport_info), sizeof(void*))) { return false; }
         out = {};
         out.renderer = input.renderer;
@@ -33790,7 +33839,8 @@ bool try_read_ue55_slate_draw_inputs_full(void* candidate, void* renderer, UE55S
         out.cursor_position = {input.cursor.x, input.cursor.y};
         out.scene_view_rect = {{input.scene_rect.min.x, input.scene_rect.min.y}, {input.scene_rect.max.x, input.scene_rect.max.y}};
         out.viewport_scale_ui = input.ui_scale;
-        SPDLOG_INFO_ONCE("[UE6.0][SlateUI] Validated October SDR/HDR-metadata input prefix; original input is unchanged");
+        SPDLOG_INFO_ONCE("[UE6.0][SlateUI] Validated unique {} SDR input prefix; HDR/screenshot ownership is unchanged",
+            decoded->layout == uevr::ue60::InputLayout::november ? "November screenshot-aware" : "October");
         return true;
     }
     if (sdk::ue59::is_runtime()) {

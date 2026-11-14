@@ -2350,6 +2350,7 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/UE59Slate.hpp"
 	"src/mods/vr/UE59ViewExtension.hpp"
 	"src/mods/vr/UE60Slate.hpp"
+	"src/mods/vr/UE60ViewExtension.hpp"
 	"src/mods/vr/UECompatibility.hpp"
 	"src/mods/vr/UIAlpha.hpp"
 	"src/mods/vr/UIAlphaGPU.hpp"

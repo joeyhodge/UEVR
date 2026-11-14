@@ -10,6 +10,7 @@
 #include <sdk/ObjectLivenessPolicy.hpp>
 #include "mods/vr/UECompatibility.hpp"
 #include "mods/vr/UE60Slate.hpp"
+#include "UE6NovemberTests.hpp"
 
 namespace {
 int failures{};
@@ -66,7 +67,7 @@ void test_profiles() {
     const auto liveness = sdk::object_liveness::classify(6,0,0);
     expect(sdk::object_liveness::rejected(liveness, 1u << 21) && sdk::object_liveness::rejected(liveness, 1u << 28) &&
         !sdk::object_liveness::rejected(liveness, 1u << 29), "UE6 garbage/unreachable masks must not reject RefCounted");
-    for (const auto text : {L"6.0.0-0+++UE6+Main", L"++UE6+Main-6.0-CL-0", L"++ue6+Main-6.0.3-CL-0"}) {
+    for (const auto text : {L"6.0.0-0+++UE6+Main", L"++UE6+Main-6.0-CL-0", L"++ue6+Main-6.0.0-CL-0"}) {
         const auto version = sdk::parse_engine_version(text);
         expect(version && version->is_validated_ue6(), "reviewed embedded version formats");
     }
@@ -81,6 +82,10 @@ void test_profiles() {
         known.scene_view_layout == uevr::compat::SceneViewLayout::UE60, "reviewed capabilities");
     const auto future = uevr::compat::make_profile({6,1,0,sdk::EngineVersionSource::Embedded});
     expect(!future.source_validated && !future.supports_live_openxr_resize && !future.supports_modern_slate_scan, "future minor fails closed");
+    const auto future_patch = uevr::compat::make_profile({6,0,1,sdk::EngineVersionSource::Embedded});
+    expect(!future_patch.source_validated && future_patch.version.is_unvalidated_ue6() &&
+        sdk::scene_view_layout::classify_engine_version(6,0,1) == sdk::scene_view_layout::FSceneViewInitLayout::UnsupportedNewer,
+        "unreviewed UE6 patch cannot silently inherit the reviewed source contracts");
     expect(uevr::compat::has_reviewed_slate_ui_source(known, false), "UE6 Slate is not blocked by the UE5.8 metadata gate");
     expect(!uevr::compat::has_reviewed_slate_ui_source(future, true), "future UE6 Slate cannot inherit a UE5.8 metadata match");
     const auto ue58 = uevr::compat::make_profile({5,8,0,sdk::EngineVersionSource::Embedded});
@@ -127,4 +132,4 @@ void test_texture() {
     expect(sdk::ue6::valid_texture_desc(desc), "explicit 2D array accepted");
 }
 }
-int main() { test_profiles(); test_helpers(); test_slate(); test_texture(); return failures ? 1 : 0; }
+int main() { test_profiles(); test_helpers(); test_slate(); test_texture(); ue6_november_tests::run(expect); return failures ? 1 : 0; }

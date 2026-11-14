@@ -20,6 +20,7 @@
 
 #include <safetyhook.hpp>
 #include <sdk/Math.hpp>
+#include <sdk/EngineVersion.hpp>
 
 #include "vr/runtimes/OpenVR.hpp"
 #include "vr/runtimes/OpenXR.hpp"
@@ -700,6 +701,9 @@ public:
     }
 
     bool is_native_stereo_fix_enabled() const {
+        // Do not allocate captures or mutate view pairs until the new UE6
+        // renderer's family ownership and render-thread ABI are binary-verified.
+        if (sdk::get_engine_version().major == 6) { return false; }
         if (is_mono_transition_quiescing()) { return false; }
         if (uevr::nascar::is_target()) {
             return is_nascar_native_stereo_fix_requested() && m_fake_stereo_hook && m_fake_stereo_hook->is_nascar_native_ready();

@@ -63,6 +63,16 @@ if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
 }
 
 $manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
+if ($manifest.schemaVersion -notin @(1, 2)) { throw 'Unsupported UE6 snapshot manifest schema' }
+$paths = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+foreach ($entry in $manifest.files) {
+    if ([IO.Path]::IsPathRooted($entry.path) -or $entry.path -notmatch '^Engine/' -or
+        $entry.path -match '(^|[/\\])\.\.([/\\]|$)' -or $entry.path -match ':' -or
+        -not $paths.Add($entry.path)) { throw "Unsafe or duplicate snapshot path: $($entry.path)" }
+    if ($entry.targetSha256 -notmatch '^[0-9a-fA-F]{64}$' -or
+        ($null -ne $entry.baselineSha256 -and $entry.baselineSha256 -notmatch '^[0-9a-fA-F]{64}$') -or
+        ($manifest.schemaVersion -eq 1 -and $null -eq $entry.baselineSha256)) { throw "Invalid hash for $($entry.path)" }
+}
 $targetRoot = Resolve-SourceRoot -Path $UE6Source -Label 'UE6'
 $baselineRoot = if ($BaselineSource) {
     Resolve-SourceRoot -Path $BaselineSource -Label 'Baseline'
@@ -96,7 +106,9 @@ foreach ($entry in $manifest.files) {
     $baselineStatus = 'not-checked'
     if ($baselineRoot) {
         $baselinePath = Join-Path $baselineRoot $relativePath
-        if (-not (Test-Path -LiteralPath $baselinePath -PathType Leaf)) {
+        if ($null -eq $entry.baselineSha256) {
+            $baselineStatus = if (Test-Path -LiteralPath $baselinePath) { 'unexpected' } else { 'reviewed-absent' }
+        } elseif (-not (Test-Path -LiteralPath $baselinePath -PathType Leaf)) {
             $baselineStatus = 'missing'
         } else {
             $baselineHash = Get-SnapshotHash $baselinePath
@@ -116,7 +128,7 @@ foreach ($entry in $manifest.files) {
         [pscustomobject]@{ Label = 'target'; Status = $targetStatus },
         [pscustomobject]@{ Label = 'baseline'; Status = $baselineStatus }
     )) {
-        if ($snapshot.Status -in @('match', 'not-checked')) {
+        if ($snapshot.Status -in @('match', 'not-checked', 'reviewed-absent')) {
             continue
         }
 

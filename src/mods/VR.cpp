@@ -15863,6 +15863,8 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                 draw_status_badge("Native Fix status:", "skipped: disabled", skipped_color);
             } else if (m_rendering_method->value() != RenderingMethod::NATIVE_STEREO) {
                 draw_status_badge("Native Fix status:", "skipped: Native Stereo rendering required", skipped_color);
+            } else if (sdk::get_engine_version().major == 6) {
+                draw_status_badge("Native Fix status:", "blocked: UE6 renderer ownership needs binary validation; ordinary Native is unchanged", blocked_color);
             } else if (m_fake_stereo_hook == nullptr) {
                 draw_status_badge("Native Fix status:", "unavailable: stereo hook not installed", blocked_color);
             } else if (is_native_stereo_fix_enabled() || is_nascar_native_stereo_fix_requested()) {

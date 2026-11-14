@@ -93,7 +93,7 @@ constexpr Profile make_profile(sdk::EngineVersion version) noexcept {
         return result;
     }
 
-    if (version.is(6, 0)) {
+    if (version.is_validated_ue6()) {
         result.source_validated = true;
         result.ue57_or_newer = true;
         result.ue58_or_newer = true;

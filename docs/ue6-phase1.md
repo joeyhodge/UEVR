@@ -1,4 +1,7 @@
-# UE6 Compatibility: October 2026 Refresh
+# UE6 Compatibility: October 2026 Refresh (Historical)
+
+The [November 2026 refresh](ue6-refresh-20261113.md) supersedes this source
+profile. Keep this report for the October comparison and prior test evidence.
 
 This work is isolated to `UE6Testing` in UESDK and UEVR. It merges the current
 `eBaseballfocused` baseline, including Mono/DIBR, then adds the source-reviewed

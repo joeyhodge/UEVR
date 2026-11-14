@@ -58,6 +58,18 @@ try {
         files = @($files)
     } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
     Check 'matching snapshots' 0
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    $manifest.schemaVersion = 2
+    Write-Fixture (Join-Path $target 'Engine\moved-layout.h') 'reviewed-new-header'
+    $manifest.files += [pscustomobject]@{
+        severity = 'critical'; area = 'moved-header'; path = 'Engine/moved-layout.h'
+        targetSha256 = Fixture-Hash (Join-Path $target 'Engine\moved-layout.h'); baselineSha256 = $null
+    }
+    $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+    Check 'reviewed header newly split out of its old file' 0
+    Write-Fixture (Join-Path $baseline 'Engine\moved-layout.h') 'unexpected-baseline'
+    Check 'unexpected file in reviewed-absent baseline' 1
+    Remove-Item -LiteralPath (Join-Path $baseline 'Engine\moved-layout.h')
     Write-Fixture (Join-Path $target 'Engine\support.txt') 'changed-support'
     Check 'support drift is warning only' 0
     Write-Fixture (Join-Path $target 'Engine\critical.txt') 'changed-critical'
@@ -70,6 +82,10 @@ try {
     Write-Fixture (Join-Path $baseline 'Engine\critical.txt') 'reviewed-critical'
     Write-Fixture (Join-Path $target 'Engine\Build\Build.version') '{"MajorVersion":6,"MinorVersion":1,"PatchVersion":0}'
     Check 'unreviewed version' 1
+    Write-Fixture (Join-Path $target 'Engine\Build\Build.version') $version
+    $manifest.files[-1].path = '../outside.h'
+    $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+    Check 'path traversal is rejected before reading' 1
     Write-Host 'UE6 snapshot drift fixtures passed.'
 } finally {
     $resolved = [IO.Path]::GetFullPath($root)
