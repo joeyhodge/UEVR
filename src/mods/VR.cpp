@@ -5228,7 +5228,7 @@ void VR::update_subnautica2_native_water_compatibility(sdk::UGameEngine* engine)
         g_framework->is_dx12() &&
         is_hmd_active() &&
         m_compatibility_subnautica2_native_water->value() &&
-        m_rendering_method->value() == RenderingMethod::NATIVE_STEREO &&
+        is_native_stereo_method() &&
         !m_native_stereo_fix->value();
 
     if (!active) {
@@ -5482,7 +5482,7 @@ void VR::update_1666amsterdam_native_postprocess_compatibility(sdk::UGameEngine*
         g_framework->is_dx12() &&
         is_hmd_active() &&
         m_compatibility_1666amsterdam_native_postprocess->value() &&
-        m_rendering_method->value() == RenderingMethod::NATIVE_STEREO &&
+        is_native_stereo_method() &&
         !m_native_stereo_fix->value();
 
     if (!active) {
@@ -6079,7 +6079,7 @@ void VR::set_windrose_meta_ui_2d_state_active(
     bool force_2d,
     bool active)
 {
-    if (m_rendering_method->value() != RenderingMethod::NATIVE_STEREO) {
+    if (!is_native_stereo_method()) {
         return;
     }
 
@@ -8820,6 +8820,10 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         } else {
             m_rendering_method->draw("Rendering Method");
             m_synced_afr_method->draw("Synced Sequential Method");
+
+            if (m_rendering_method->value() == RenderingMethod::QUAD_VIEW) {
+                draw_quad_view_ui();
+            }
         }
 
         m_world_scale->draw("World Scale");
@@ -10490,4 +10494,45 @@ void VR::update_statistics_overlay(sdk::UGameEngine* engine) {
         engine->exec(L"stat unit");
         m_show_statistics_state = m_show_statistics->value();
     }
+}
+
+void VR::draw_quad_view_ui() {
+    ImGui::Indent();
+
+    if (m_extreme_compat_mode->value()) {
+        ImGui::TextColored(ImVec4{1.0f, 0.6f, 0.2f, 1.0f}, "Quad View is off: Extreme Compatibility Mode renders one view at a time.");
+    }
+
+    if (ImGui::TreeNodeEx("Sharp views (where you look)", ImGuiTreeNodeFlags_DefaultOpen)) {
+        m_quad_view_focus_width->draw("Width (share of view)");
+        m_quad_view_focus_height->draw("Height (share of view)");
+        m_quad_view_focus_density->draw("Pixel density");
+        m_quad_view_follow_gaze->draw("Follow gaze (eye tracking)");
+        if (m_quad_view_follow_gaze->value()) {
+            m_quad_view_gaze_dead_zone->draw("Gaze dead zone");
+        }
+        m_quad_view_show_outline->draw("Show sharp area outline");
+        ImGui::TreePop();
+    }
+
+    if (ImGui::TreeNodeEx("Wide views (periphery cost)", ImGuiTreeNodeFlags_DefaultOpen)) {
+        m_quad_view_wide_scale->draw("Resolution (share of native, restart)");
+        m_quad_view_wide_lod_scale->draw("LOD scale (lower = simpler meshes, fewer small objects)");
+        ImGui::TreePop();
+    }
+
+    if (ImGui::TreeNodeEx("Matching", ImGuiTreeNodeFlags_DefaultOpen)) {
+        m_quad_view_shared_exposure->draw("Shared exposure");
+        m_quad_view_edge_blend->draw("Edge blend");
+        ImGui::TreePop();
+    }
+
+    const auto runtime = get_runtime();
+    if (runtime != nullptr && runtime->ready()) {
+        const auto layout = uevr::quadview::make_layout(get_quad_view_settings(), get_hmd_width(), get_hmd_height());
+        ImGui::Text("Atlas %ux%u, %.0f%% of native stereo pixels", layout.atlas_w, layout.atlas_h,
+            100.0 * uevr::quadview::pixel_share(layout, get_hmd_width(), get_hmd_height()));
+    }
+
+    ImGui::Unindent();
 }

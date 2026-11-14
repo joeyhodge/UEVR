@@ -36,6 +36,7 @@
 #include "vr/GamepadRecovery.hpp"
 #include "vr/NativeOpenXRAsyncWorker.hpp"
 #include "vr/NativeOpenXRWaitOnly.hpp"
+#include "vr/QuadView.hpp"
 
 #undef max
 #include <tracy/Tracy.hpp>
@@ -51,6 +52,7 @@ public:
         NATIVE_STEREO = 0,
         SYNCHRONIZED = 1,
         ALTERNATING = 2,
+        QUAD_VIEW = 3, // native stereo with 4 views (2 wide + 2 focus), see mods/vr/QuadView.hpp
     };
 
     enum SynchronizeStage {
@@ -510,14 +512,43 @@ public:
                m_extreme_compat_mode->value() == true;
     }
 
+    // Quad View renders through the native stereo path with 4 views instead of 2.
+    bool is_native_stereo_method() const {
+        return m_rendering_method->value() == RenderingMethod::NATIVE_STEREO ||
+               m_rendering_method->value() == RenderingMethod::QUAD_VIEW;
+    }
+
+    uevr::quadview::Settings get_quad_view_settings() const {
+        uevr::quadview::Settings s{};
+        s.enabled = is_using_quad_view();
+        s.wide_scale = m_quad_view_wide_scale->value();
+        s.focus_width = m_quad_view_focus_width->value();
+        s.focus_height = m_quad_view_focus_height->value();
+        s.focus_density = m_quad_view_focus_density->value();
+        s.dead_zone = m_quad_view_follow_gaze->value() ? m_quad_view_gaze_dead_zone->value() : 0.0;
+        return s;
+    }
+
+    void draw_quad_view_ui();
+    bool is_quad_view_gaze_enabled() const { return m_quad_view_follow_gaze->value(); }
+    float get_quad_view_wide_lod_scale() const { return m_quad_view_wide_lod_scale->value(); }
+    bool is_quad_view_shared_exposure_enabled() const { return m_quad_view_shared_exposure->value(); }
+    float get_quad_view_edge_blend() const { return m_quad_view_edge_blend->value(); }
+    bool is_quad_view_outline_enabled() const { return m_quad_view_show_outline->value(); }
+
+    bool is_using_quad_view() const {
+        return m_rendering_method->value() == RenderingMethod::QUAD_VIEW && !is_using_afr() &&
+               !is_using_2d_screen() && !is_stereo_emulation_enabled();
+    }
+
     bool is_using_native_stereo() const {
-        return m_rendering_method->value() == RenderingMethod::NATIVE_STEREO &&
+        return is_native_stereo_method() &&
                !is_using_afr();
     }
 
     bool is_using_synchronized_afr() const {
         return m_rendering_method->value() == RenderingMethod::SYNCHRONIZED ||
-               (m_extreme_compat_mode->value() && m_rendering_method->value() == RenderingMethod::NATIVE_STEREO);
+               (m_extreme_compat_mode->value() && is_native_stereo_method());
     }
 
     bool is_using_strict_synchronized_afr() const {
@@ -1369,6 +1400,7 @@ private:
         "Native Stereo",
         "Synchronized Sequential",
         "Alternating/AFR",
+        "Quad View (Experimental)",
     };
 
     static const inline std::vector<std::string> s_sync_mode_names{
@@ -1603,6 +1635,18 @@ private:
     const ModToggle::Ptr m_ghosting_fix_bootstrap_view_states{ ModToggle::create(generate_name("GhostingFixBootstrapViewStates"), false) };
     const ModToggle::Ptr m_native_stereo_fix{ ModToggle::create(generate_name("NativeStereoFix"), false) };
     const ModToggle::Ptr m_native_stereo_fix_same_pass{ ModToggle::create(generate_name("NativeStereoFixSamePass"), true) };
+
+    // Quad View (RenderingMethod::QUAD_VIEW). Shown under the Rendering Method combo when selected.
+    const ModSlider::Ptr m_quad_view_wide_scale{ ModSlider::create(generate_name("QuadViewWideScale"), 0.2f, 1.0f, 0.5f) };
+    const ModSlider::Ptr m_quad_view_focus_width{ ModSlider::create(generate_name("QuadViewFocusWidth"), 0.1f, 0.8f, 0.3f) };
+    const ModSlider::Ptr m_quad_view_focus_height{ ModSlider::create(generate_name("QuadViewFocusHeight"), 0.1f, 0.8f, 0.3f) };
+    const ModSlider::Ptr m_quad_view_focus_density{ ModSlider::create(generate_name("QuadViewFocusDensity"), 0.5f, 2.0f, 1.0f) };
+    const ModToggle::Ptr m_quad_view_follow_gaze{ ModToggle::create(generate_name("QuadViewFollowGaze"), true) };
+    const ModSlider::Ptr m_quad_view_gaze_dead_zone{ ModSlider::create(generate_name("QuadViewGazeDeadZone"), 0.0f, 0.15f, 0.03f) };
+    const ModSlider::Ptr m_quad_view_wide_lod_scale{ ModSlider::create(generate_name("QuadViewWideLODScale"), 0.1f, 1.0f, 0.5f) };
+    const ModToggle::Ptr m_quad_view_shared_exposure{ ModToggle::create(generate_name("QuadViewSharedExposure"), true) };
+    const ModSlider::Ptr m_quad_view_edge_blend{ ModSlider::create(generate_name("QuadViewEdgeBlend"), 0.0f, 0.5f, 0.2f) };
+    const ModToggle::Ptr m_quad_view_show_outline{ ModToggle::create(generate_name("QuadViewShowOutline"), false) };
     const ModToggle::Ptr m_native_stereo_fix_preserve_secondary_pass{ ModToggle::create(generate_name("NativeStereoFixPreserveSecondaryPass"), true) };
     const ModToggle::Ptr m_native_stereo_fix_texture_array_submit{ ModToggle::create(generate_name("NativeStereoFixTextureArraySubmit"), false) };
     const ModToggle::Ptr m_native_stereo_fix_async_openxr_wait{ ModToggle::create(generate_name("NativeStereoFixAsyncOpenXRWait"), false) };
@@ -1929,6 +1973,16 @@ public:
             *m_ghosting_fix_bootstrap_view_states,
             *m_native_stereo_fix,
             *m_native_stereo_fix_same_pass,
+            *m_quad_view_wide_scale,
+            *m_quad_view_focus_width,
+            *m_quad_view_focus_height,
+            *m_quad_view_focus_density,
+            *m_quad_view_follow_gaze,
+            *m_quad_view_gaze_dead_zone,
+            *m_quad_view_wide_lod_scale,
+            *m_quad_view_shared_exposure,
+            *m_quad_view_edge_blend,
+            *m_quad_view_show_outline,
             *m_native_stereo_fix_preserve_secondary_pass,
             *m_native_stereo_fix_texture_array_submit,
             *m_native_stereo_fix_async_openxr_wait,
