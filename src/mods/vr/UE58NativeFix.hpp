@@ -39,6 +39,10 @@ inline bool is_paradox_drive(std::wstring_view path) {
     return matches_executable_name(path, L"paradoxdrive-win64-shipping.exe");
 }
 
+inline bool needs_copy_extent_revalidation(std::wstring_view path, uint32_t file_version_ms) {
+    return is_paradox_drive(path) && file_version_ms == ((5u << 16) | 8u);
+}
+
 inline bool needs_guarded_fallback(std::wstring_view path) {
     return matches_executable_name(path, L"slasher-win64-shipping.exe") || is_paradox_drive(path);
 }
