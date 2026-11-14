@@ -534,6 +534,7 @@ public:
     void draw_quad_view_ui();
     bool is_quad_view_gaze_enabled() const { return m_quad_view_follow_gaze->value(); }
     bool is_quad_view_ue4_allowed() const { return m_quad_view_allow_ue4->value(); }
+    bool is_quad_view_ue4_ready() const { return m_quad_view_ue4_settle_frames >= QUAD_VIEW_UE4_SETTLE_FRAMES; }
     bool is_quad_view_sharp_first() const { return m_quad_view_sharp_first->value(); }
     float get_quad_view_wide_lod_scale() const { return m_quad_view_wide_lod_scale->value(); }
     bool is_quad_view_shared_exposure_enabled() const { return m_quad_view_shared_exposure->value(); }
@@ -1683,6 +1684,8 @@ private:
     const ModSlider::Ptr m_quad_view_wide_min_pixels{ ModSlider::create(generate_name("QuadViewWideMinPixels"), 0.0f, 8.0f, 0.0f) };
     // Cascade (CPU) particle spawn rate, whole image (r.EmitterSpawnRateScale). 1 = unchanged.
     const ModToggle::Ptr m_quad_view_sharp_first{ ModToggle::create(generate_name("QuadViewSharpFirst"), false) };
+    static constexpr uint32_t QUAD_VIEW_UE4_SETTLE_FRAMES = 60;
+    uint32_t m_quad_view_ue4_settle_frames{0};
     const ModToggle::Ptr m_quad_view_allow_ue4{ ModToggle::create(generate_name("QuadViewAllowUE4"), false) };
     const ModToggle::Ptr m_quad_view_cull_actors{ ModToggle::create(generate_name("QuadViewCullSmallActors"), false) };
     const ModSlider::Ptr m_quad_view_cpu_particles{ ModSlider::create(generate_name("QuadViewCPUParticles"), 0.1f, 1.0f, 1.0f) };

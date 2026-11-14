@@ -7536,6 +7536,9 @@ struct QuadViewCVarOverride {
         }
     }
 
+    // Looked up and not there (after the first lookup attempt).
+    bool missing() const { return variable == nullptr && lookups > 0; }
+
     const char* status() const {
         if (applied) return "active";
         if (variable == nullptr && lookups > 0) return "not found in this game";
@@ -7637,11 +7640,23 @@ void VR::update_hmd_state(bool from_view_extensions, uint32_t frame_count) {
         }
         g_quad_emitter_spawn_rate.update(spawn);
 
-        std::optional<float> occlusion{};
-        if (quad && m_fake_stereo_hook != nullptr && !m_fake_stereo_hook->has_double_precision()) {
-            occlusion = 0.0f;
+        // UE4: occlusion queries go off first, and the four views only start
+        // once they have been off for a while, so no query issued for the old
+        // two-view setup is still in flight when the views (and their view
+        // states) change. Turning both on at once crashed Last Hope on inject.
+        const bool ue4_quad_wanted = is_using_quad_view() && m_quad_view_allow_ue4->value() &&
+            m_fake_stereo_hook != nullptr && !m_fake_stereo_hook->has_double_precision();
+        g_quad_ue4_occlusion_queries.update(ue4_quad_wanted ? std::optional<float>{0.0f} : std::nullopt);
+        if (!ue4_quad_wanted) {
+            m_quad_view_ue4_settle_frames = 0;
+        } else if (g_quad_ue4_occlusion_queries.applied || g_quad_ue4_occlusion_queries.missing()) {
+            if (m_quad_view_ue4_settle_frames < QUAD_VIEW_UE4_SETTLE_FRAMES) {
+                ++m_quad_view_ue4_settle_frames;
+                if (m_quad_view_ue4_settle_frames == QUAD_VIEW_UE4_SETTLE_FRAMES) {
+                    spdlog::info("[QuadView] UE4: occlusion queries settled, starting the four views");
+                }
+            }
         }
-        g_quad_ue4_occlusion_queries.update(occlusion);
     }
 
     if (frame_count != 0 && is_using_afr() && frame_count % 2 == 0) {

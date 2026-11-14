@@ -30961,7 +30961,7 @@ bool FFakeStereoRenderingHook::is_quad_view_active() {
     // UE4 goes through the same hooks with float vectors and matrices, but it
     // is unproven (a UE4.26 game crashed on its first four-view frame), so it
     // stays behind an explicit opt-in.
-    if (!g_hook->m_has_double_precision && !vr->is_quad_view_ue4_allowed()) {
+    if (!g_hook->m_has_double_precision && (!vr->is_quad_view_ue4_allowed() || !vr->is_quad_view_ue4_ready())) {
         return false;
     }
 
