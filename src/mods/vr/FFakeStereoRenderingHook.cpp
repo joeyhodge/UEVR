@@ -6285,7 +6285,10 @@ bool ue58_native_view_layout() {
         SPDLOG_INFO("[UE5.9][NativeStereoFix] Constructor field-copy contract {} (runtime validation pending)", valid ? "proven" : "unproven; preserving packed eyes");
         return valid;
     }
-    static const bool proven = uevr::ue58_native::view_layout(sdk::discovery::process_memory(), constructor);
+    static const bool allow_paradox_drive_layout = uevr::ue58_native::is_paradox_drive(
+        utility::get_module_pathw(utility::get_executable()).value_or(L""));
+    static const bool proven = uevr::ue58_native::view_layout(
+        sdk::discovery::process_memory(), constructor, allow_paradox_drive_layout);
     return proven;
 }
 
@@ -6296,7 +6299,7 @@ bool ue58_native_linked_runtime() {
     static const bool must_fail_closed = uevr::ue58_native::needs_guarded_fallback(
         utility::get_module_pathw(utility::get_executable()).value_or(L""));
     // Compatible stock builds qualify by original code, not by their advertised
-    // patch number. A changed Fatekeeper build must not re-enter the crashing path.
+    // patch number. Changed Fatekeeper/ParadoxDrive builds must not re-enter the crashing path.
     return must_fail_closed || ue58_native_view_layout();
 }
 
