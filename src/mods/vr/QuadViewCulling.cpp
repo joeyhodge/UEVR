@@ -163,11 +163,8 @@ void ActorCulling::scan_objects(uint32_t budget) try {
             continue;
         }
 
-        // Class default objects are never in the world.
-        if (object->get_full_name().find(L"Default__") != std::wstring::npos) {
-            continue;
-        }
-
+        // Class default objects are kept too: they have no registered
+        // components, so their bounds are empty and they are never hidden.
         Candidate c{};
         c.actor = (sdk::UObject*)object;
         c.index = index;
@@ -252,7 +249,8 @@ void ActorCulling::pick_hidden() {
     }
 }
 
-void ActorCulling::on_pre_engine_tick(bool enabled, double min_pixels, double px_per_tangent, sdk::UObject* controller) {
+void ActorCulling::on_pre_engine_tick(bool enabled, double min_pixels, double px_per_tangent, sdk::UObject* controller,
+    sdk::UObject* world) {
     restore(); // never carry a swapped list into game code
 
     m_enabled = enabled && min_pixels >= 0.5;
@@ -266,6 +264,37 @@ void ActorCulling::on_pre_engine_tick(bool enabled, double min_pixels, double px
     }
 
     if (!setup()) {
+        return;
+    }
+
+    // Level loads tear down and rebuild the world: drop everything and stay
+    // out of the way until the new world has settled.
+    if (world != m_world) {
+        if (m_world != nullptr) {
+            spdlog::info("[QuadView][Culling] World changed; pausing culling while it loads");
+        }
+        m_world = world;
+        m_candidates.clear();
+        std::fill(m_position_by_index.begin(), m_position_by_index.end(), 0);
+        m_scan_cursor = 0;
+        m_bounds_cursor = 0;
+        m_to_hide.clear();
+        m_last_hidden = 0;
+        m_settle_frames = 300;
+    }
+
+    if (world == nullptr || controller == nullptr) {
+        m_controller = nullptr;
+        m_to_hide.clear();
+        m_last_hidden = 0;
+        return;
+    }
+
+    if (m_settle_frames > 0) {
+        --m_settle_frames;
+        m_controller = nullptr;
+        m_to_hide.clear();
+        m_last_hidden = 0;
         return;
     }
 

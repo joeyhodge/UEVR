@@ -4853,12 +4853,15 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
         }
         const bool cull = quad && m_quad_view_cull_actors->value();
         sdk::UObject* controller{nullptr};
+        sdk::UObject* cull_world{nullptr};
         if (cull) {
             const auto world = engine != nullptr ? engine->get_world() : nullptr;
+            cull_world = (sdk::UObject*)world;
             const auto gameplay = sdk::UGameplayStatics::get();
             controller = (world != nullptr && gameplay != nullptr) ? (sdk::UObject*)gameplay->get_player_controller(world, 0) : nullptr;
         }
-        uevr::quadview::ActorCulling::get().on_pre_engine_tick(cull, m_quad_view_wide_min_pixels->value(), px_per_tangent, controller);
+        uevr::quadview::ActorCulling::get().on_pre_engine_tick(cull, m_quad_view_wide_min_pixels->value(), px_per_tangent, controller,
+            cull_world);
     }
     if (!hitch_diagnostics_enabled) {
         if (m_hitch_diagnostics_enabled_last_frame) {
