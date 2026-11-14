@@ -1,5 +1,6 @@
 #pragma once
 
+// (std::min)/(std::max) are parenthesised so Windows.h min/max macros cannot break them.
 // Quad view foveated rendering: the portable, engine-independent parts.
 //
 // Unreal renders four views per frame instead of two:
@@ -97,7 +98,7 @@ inline Layout make_layout(const Settings& s, uint32_t eye_w, uint32_t eye_h) {
     l.views[1] = {ww, 0, ww, wh};
     l.views[2] = {0, wh, fw, fh};
     l.views[3] = {fw, wh, fw, fh};
-    l.atlas_w = std::max(2 * ww, 2 * fw);
+    l.atlas_w = (std::max)(2 * ww, 2 * fw);
     l.atlas_h = wh + fh;
     return l;
 }
@@ -109,7 +110,7 @@ inline Layout fit_layout(Layout l, uint32_t max_w, uint32_t max_h) {
     if (l.atlas_w == 0 || l.atlas_h == 0 || (l.atlas_w <= max_w && l.atlas_h <= max_h)) {
         return l;
     }
-    const double k = std::min(double(max_w) / l.atlas_w, double(max_h) / l.atlas_h);
+    const double k = (std::min)(double(max_w) / l.atlas_w, double(max_h) / l.atlas_h);
     // even_size rounds, so shrink the scale until the rounded atlas fits.
     for (double scale = k; scale > 0.05; scale *= 0.995) {
         Layout f{};
@@ -120,7 +121,7 @@ inline Layout fit_layout(Layout l, uint32_t max_w, uint32_t max_h) {
         f.views[1] = {ww, 0, ww, wh};
         f.views[2] = {0, wh, fw, fh};
         f.views[3] = {fw, wh, fw, fh};
-        f.atlas_w = std::max(2 * ww, 2 * fw);
+        f.atlas_w = (std::max)(2 * ww, 2 * fw);
         f.atlas_h = wh + fh;
         if (f.atlas_w <= max_w && f.atlas_h <= max_h) return f;
     }
@@ -330,7 +331,7 @@ inline RectF focus_dest_rect(const Tangents& rendered, const Tangents& focus, do
 // easing to 0 over the outer `blend` share of each side (smoothstep). This is
 // what the compose pixel shader computes; kept here so it is tested.
 inline double edge_alpha(double u, double v, double blend) {
-    const double d = std::min(std::min(u, 1.0 - u), std::min(v, 1.0 - v));
+    const double d = (std::min)((std::min)(u, 1.0 - u), (std::min)(v, 1.0 - v));
     if (d <= 0) return 0.0;
     if (blend <= 0) return 1.0;
     const double t = std::clamp(d / blend, 0.0, 1.0);
