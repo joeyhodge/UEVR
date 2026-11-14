@@ -7551,6 +7551,9 @@ QuadViewCVarOverride g_quad_emitter_spawn_rate{L"r.EmitterSpawnRateScale"};
 // UE4.26 on D3D11 hit a fatal DXGI_ERROR_INVALID_CALL reading an occlusion
 // query (D3D11Query.cpp) on its first four-view frame.
 QuadViewCVarOverride g_quad_ue4_occlusion_queries{L"r.AllowOcclusionQueries"};
+// ...and still died seconds later on another query read: the GPU timing
+// queries (GPU stats) are the other query users in UE4's D3D11 renderer.
+QuadViewCVarOverride g_quad_ue4_gpu_stats{L"r.GPUStatsEnabled"};
 }
 
 void VR::update_hmd_state(bool from_view_extensions, uint32_t frame_count) {
@@ -7647,6 +7650,7 @@ void VR::update_hmd_state(bool from_view_extensions, uint32_t frame_count) {
         const bool ue4_quad_wanted = is_using_quad_view() && m_quad_view_allow_ue4->value() &&
             m_fake_stereo_hook != nullptr && !m_fake_stereo_hook->has_double_precision();
         g_quad_ue4_occlusion_queries.update(ue4_quad_wanted ? std::optional<float>{0.0f} : std::nullopt);
+        g_quad_ue4_gpu_stats.update(ue4_quad_wanted ? std::optional<float>{0.0f} : std::nullopt);
         if (!ue4_quad_wanted) {
             m_quad_view_ue4_settle_frames = 0;
         } else if (g_quad_ue4_occlusion_queries.applied || g_quad_ue4_occlusion_queries.missing()) {
