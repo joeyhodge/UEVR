@@ -7490,6 +7490,29 @@ void VR::update_hmd_state(bool from_view_extensions, uint32_t frame_count) {
         }
     }
 
+    // Quad View: each sharp view is its own small Unreal view, so the tonemapper
+    // draws a vignette around it (a dark ring around the sharp area, and a darker
+    // image where you look). r.Tonemapper.Quality below 2 removes the vignette
+    // (and film grain) for every view; the original value comes back when
+    // Quad View or this option is turned off.
+    {
+        const bool want = FFakeStereoRenderingHook::is_quad_view_active() && m_quad_view_disable_vignette->value();
+        if (want) {
+            const auto quality = sdk::get_cvar_int(L"Renderer", L"r.Tonemapper.Quality");
+            if (quality && *quality >= 2) {
+                if (!m_quad_view_saved_tonemapper_quality) {
+                    m_quad_view_saved_tonemapper_quality = *quality;
+                }
+                sdk::set_cvar_int(L"Renderer", L"r.Tonemapper.Quality", 1);
+                spdlog::info("[QuadView] Vignette off: r.Tonemapper.Quality {} -> 1", *quality);
+            }
+        } else if (m_quad_view_saved_tonemapper_quality) {
+            sdk::set_cvar_int(L"Renderer", L"r.Tonemapper.Quality", *m_quad_view_saved_tonemapper_quality);
+            spdlog::info("[QuadView] Vignette restored: r.Tonemapper.Quality -> {}", *m_quad_view_saved_tonemapper_quality);
+            m_quad_view_saved_tonemapper_quality.reset();
+        }
+    }
+
     if (frame_count != 0 && is_using_afr() && frame_count % 2 == 0) {
         if (runtime->is_openxr()) {
             std::scoped_lock __{ m_openxr->sync_assignment_mtx };
@@ -10570,6 +10593,7 @@ void VR::draw_quad_view_ui() {
             m_quad_view_show_outline->draw("Show sharp area outline");
             m_quad_view_debug_wide_only->draw("Debug: show wide views only (see the periphery quality)");
         }
+        m_quad_view_disable_vignette->draw("Remove vignette (otherwise each sharp view gets its own dark edges)");
         const bool composed = m_openxr->quad_composed.load();
         ImGui::TextDisabled(composed ? "Output: composed by UEVR (wide + sharp, blended)"
                                      : "Output: sharp views sent to the headset as an overlay layer (hard edge)");

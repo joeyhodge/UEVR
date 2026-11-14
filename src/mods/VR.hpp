@@ -1660,6 +1660,8 @@ private:
     const ModToggle::Ptr m_quad_view_show_outline{ ModToggle::create(generate_name("QuadViewShowOutline"), false) };
     const ModToggle::Ptr m_quad_view_compose{ ModToggle::create(generate_name("QuadViewCompose"), true) };
     const ModToggle::Ptr m_quad_view_debug_wide_only{ ModToggle::create(generate_name("QuadViewDebugWideOnly"), false) };
+    const ModToggle::Ptr m_quad_view_disable_vignette{ ModToggle::create(generate_name("QuadViewDisableVignette"), true) };
+    std::optional<int> m_quad_view_saved_tonemapper_quality{};
     const ModToggle::Ptr m_native_stereo_fix_preserve_secondary_pass{ ModToggle::create(generate_name("NativeStereoFixPreserveSecondaryPass"), true) };
     const ModToggle::Ptr m_native_stereo_fix_texture_array_submit{ ModToggle::create(generate_name("NativeStereoFixTextureArraySubmit"), false) };
     const ModToggle::Ptr m_native_stereo_fix_async_openxr_wait{ ModToggle::create(generate_name("NativeStereoFixAsyncOpenXRWait"), false) };
@@ -1998,6 +2000,7 @@ public:
             *m_quad_view_show_outline,
             *m_quad_view_compose,
             *m_quad_view_debug_wide_only,
+            *m_quad_view_disable_vignette,
             *m_native_stereo_fix_preserve_secondary_pass,
             *m_native_stereo_fix_texture_array_submit,
             *m_native_stereo_fix_async_openxr_wait,
