@@ -221,7 +221,7 @@ bool QuadViewCompositor::record(ID3D12Device* device, ID3D12GraphicsCommandList*
         draw(frame.layout.views[eye], eye * eye_w, 0.0, eye_w, eye_h, 0.0f, false);
     }
 
-    for (uint32_t eye = 0; eye < 2; ++eye) {
+    for (uint32_t eye = 0; eye < 2 && !frame.wide_only; ++eye) {
         const auto d = uevr::quadview::focus_dest_rect(frame.rendered[eye], frame.focus[eye], eye * eye_w, eye_w, eye_h);
         if (d.w > 1.0 && d.h > 1.0) {
             draw(frame.layout.views[eye + 2], d.x, d.y, d.w, d.h, frame.edge_blend, frame.outline);

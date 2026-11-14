@@ -30971,7 +30971,7 @@ void FFakeStereoRenderingHook::adjust_view_rect(FFakeStereoRendering* stereo, in
     const bool medium_one_based_eye_pass = medium_is_current_game();
     // Quad View: UE5 numbers the four views 0..3, so index 2 is the left
     // sharp view, not a sign of one-based eye indices.
-    const bool quad_view = is_quad_view_active();
+    const bool quad_view = is_quad_view_active() && index >= 0; // INDEX_NONE (-1) is a mono pass, not a quad view
 
     if (quad_view) {
         // Leave the stereo index detection untouched for when Quad View is turned off.
@@ -31635,7 +31635,7 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
     static bool index_was_ever_two = false;
 
     const bool medium_one_based_projection_pass = medium_is_current_game();
-    const bool quad_view = is_quad_view_active();
+    const bool quad_view = is_quad_view_active() && view_index >= 0; // INDEX_NONE (-1) is a mono pass, not a quad view
 
     // This is eSSP_FULL, we don't care. It will cause the view to become monoscopic if we do anything.
     // or maybe we should, this could be used for WorldToScreen.

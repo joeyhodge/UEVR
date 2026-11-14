@@ -33,6 +33,7 @@ public:
         uevr::quadview::Tangents focus[2]{};      // the sharp windows this frame was rendered with
         float edge_blend{0.2f};                   // share of each side of the sharp view that fades out
         bool outline{false};
+        bool wide_only{false};                    // debug: skip the sharp views
     };
 
     // Creates a SpriteBatch for the given output format using the compositor's

@@ -536,6 +536,7 @@ public:
     float get_quad_view_edge_blend() const { return m_quad_view_edge_blend->value(); }
     bool is_quad_view_outline_enabled() const { return m_quad_view_show_outline->value(); }
     bool is_quad_view_compositor_enabled() const { return m_quad_view_compose->value(); }
+    bool is_quad_view_wide_only_debug() const { return m_quad_view_debug_wide_only->value(); }
 
     // Where the four views sit in the render target. Hooks (render side) and
     // the OpenXR submit both call this, so they always agree on the rects.
@@ -1658,6 +1659,7 @@ private:
     const ModSlider::Ptr m_quad_view_edge_blend{ ModSlider::create(generate_name("QuadViewEdgeBlend"), 0.0f, 0.5f, 0.2f) };
     const ModToggle::Ptr m_quad_view_show_outline{ ModToggle::create(generate_name("QuadViewShowOutline"), false) };
     const ModToggle::Ptr m_quad_view_compose{ ModToggle::create(generate_name("QuadViewCompose"), true) };
+    const ModToggle::Ptr m_quad_view_debug_wide_only{ ModToggle::create(generate_name("QuadViewDebugWideOnly"), false) };
     const ModToggle::Ptr m_native_stereo_fix_preserve_secondary_pass{ ModToggle::create(generate_name("NativeStereoFixPreserveSecondaryPass"), true) };
     const ModToggle::Ptr m_native_stereo_fix_texture_array_submit{ ModToggle::create(generate_name("NativeStereoFixTextureArraySubmit"), false) };
     const ModToggle::Ptr m_native_stereo_fix_async_openxr_wait{ ModToggle::create(generate_name("NativeStereoFixAsyncOpenXRWait"), false) };
@@ -1995,6 +1997,7 @@ public:
             *m_quad_view_edge_blend,
             *m_quad_view_show_outline,
             *m_quad_view_compose,
+            *m_quad_view_debug_wide_only,
             *m_native_stereo_fix_preserve_secondary_pass,
             *m_native_stereo_fix_texture_array_submit,
             *m_native_stereo_fix_async_openxr_wait,

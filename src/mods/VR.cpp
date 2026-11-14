@@ -10539,7 +10539,7 @@ void VR::draw_quad_view_ui() {
             m_quad_view_gaze_dead_zone->draw("Gaze dead zone");
 
             if (!m_openxr->eye_gaze_supported) {
-                ImGui::TextColored(warn, "Eye tracking: not offered by this OpenXR runtime (sharp area stays centred)");
+                ImGui::TextColored(warn, "Eye tracking: not started. Restart the game (or reinitialize the runtime) after turning gaze on.");
             } else if (m_openxr->is_quad_gaze_tracking()) {
                 ImGui::TextColored(good, "Eye tracking: following your gaze");
             } else {
@@ -10568,6 +10568,7 @@ void VR::draw_quad_view_ui() {
         if (m_quad_view_compose->value()) {
             m_quad_view_edge_blend->draw("Edge blend");
             m_quad_view_show_outline->draw("Show sharp area outline");
+            m_quad_view_debug_wide_only->draw("Debug: show wide views only (see the periphery quality)");
         }
         const bool composed = m_openxr->quad_composed.load();
         ImGui::TextDisabled(composed ? "Output: composed by UEVR (wide + sharp, blended)"
