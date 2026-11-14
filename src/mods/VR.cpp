@@ -10672,7 +10672,10 @@ void VR::draw_quad_view_ui() {
         ImGui::TextColored(warn, "Quad View is off while Native Stereo Fix, SceneView or Splitscreen compatibility is on.");
     }
     if (m_fake_stereo_hook != nullptr && !m_fake_stereo_hook->has_double_precision()) {
-        ImGui::TextColored(warn, "Unreal Engine 4 game: Quad View is experimental here (tested on UE5).");
+        m_quad_view_allow_ue4->draw("Allow on Unreal Engine 4 (experimental, may crash)");
+        if (!m_quad_view_allow_ue4->value()) {
+            ImGui::TextColored(warn, "Unreal Engine 4 game: Quad View is off, this game renders plain stereo.");
+        }
     }
 
     if (g_framework != nullptr && !g_framework->is_dx12()) {

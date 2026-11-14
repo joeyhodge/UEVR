@@ -30941,14 +30941,19 @@ bool FFakeStereoRenderingHook::is_stereo_enabled(FFakeStereoRendering* stereo) {
 }
 
 bool FFakeStereoRenderingHook::is_quad_view_active() {
-    // UE4 works through the same hooks with float vectors and matrices; the
-    // view passes it gets back (1 primary, 2 for the others) mean left/right
-    // eye there, so every extra view shares the left view's eye adaptation.
     if (g_hook == nullptr || uevr::nascar::is_target()) {
         return false;
     }
 
     const auto& vr = VR::get();
+
+    // UE4 goes through the same hooks with float vectors and matrices, but it
+    // is unproven (a UE4.26 game crashed on its first four-view frame), so it
+    // stays behind an explicit opt-in.
+    if (!g_hook->m_has_double_precision && !vr->is_quad_view_ue4_allowed()) {
+        return false;
+    }
+
     return vr->is_using_quad_view() &&
         !vr->is_native_stereo_fix_enabled() &&
         !vr->is_sceneview_compatibility_enabled() &&
