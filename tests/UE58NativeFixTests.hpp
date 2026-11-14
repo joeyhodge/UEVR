@@ -4,6 +4,7 @@
 #include <utility>
 #include <vector>
 #include "mods/vr/UE58NativeFix.hpp"
+#include "mods/vr/NativeStereoCopyExtent.hpp"
 
 namespace ue58_native_tests {
 namespace n = uevr::ue58_native;
@@ -87,7 +88,57 @@ struct NativeCalls {
     }
 };
 
+template<class Expect> void test_copy_extent(Expect&& expect) {
+    namespace c = uevr::native_stereo_copy;
+    expect(n::needs_copy_extent_revalidation(L"D:/Games/ParadoxDrive-Win64-Shipping.exe", 0x50008),
+        "ParadoxDrive UE5.8 revalidates Native Fix copy extents after deferred scene adoption");
+    for (const auto version : {0x4001bu, 0x50007u, 0x50009u, 0x60000u, 0u}) {
+        expect(!n::needs_copy_extent_revalidation(L"ParadoxDrive-Win64-Shipping.exe", version),
+            "The ParadoxDrive copy follow-up does not change other engine intervals");
+    }
+    for (const auto name : {L"ParadoxDrive.exe", L"Other-Win64-Shipping.exe",
+        L"ParadoxDrive-Win64-Shipping.exe.old", L"D:/ParadoxDrive-Win64-Shipping.exe/Other.exe"}) {
+        expect(!n::needs_copy_extent_revalidation(name, 0x50008),
+            "The ParadoxDrive copy follow-up requires the exact game basename");
+    }
+
+    // The live resize rebuilt XR before the engine published its smaller target.
+    c::CopyExtent extent{true, true, true, 2734, 1336, 3708, 1812, 1367, 1336};
+    expect(c::copy_extent_action(extent) == c::CopyExtentAction::rebuild,
+        "ParadoxDrive rejects the recorded stale 3708x1812 copy against 2734x1336 resources");
+    extent.source_width = 3708; extent.source_height = 1812;
+    expect(c::copy_extent_action(extent) == c::CopyExtentAction::wait_for_scene,
+        "ParadoxDrive waits while the old scene target is still published, even if its cache matches");
+    extent.source_width = 2734; extent.source_height = 1336;
+    extent.cached_width = 2734; extent.cached_height = 1336;
+    expect(c::copy_extent_action(extent) == c::CopyExtentAction::unchanged,
+        "ParadoxDrive resumes only after ordinary setup has refreshed both cached dimensions");
+    extent.cached_height = 1812;
+    expect(c::copy_extent_action(extent) == c::CopyExtentAction::rebuild,
+        "A matching width cannot hide a stale height or permit an out-of-bounds source box");
+    extent.cached_height = 1336; extent.cached_width = 3708;
+    expect(c::copy_extent_action(extent) == c::CopyExtentAction::rebuild,
+        "A matching height cannot hide a stale right-eye destination offset");
+    extent.external_scene = false;
+    expect(c::copy_extent_action(extent) == c::CopyExtentAction::wait_for_scene,
+        "A desktop backbuffer cannot stand in for the ParadoxDrive packed engine target");
+    extent.external_scene = true; extent.descriptor_valid = false;
+    expect(c::copy_extent_action(extent) == c::CopyExtentAction::wait_for_scene,
+        "ParadoxDrive does not rebuild from an incompatible native resource");
+    extent.scoped = false;
+    expect(c::copy_extent_action(extent) == c::CopyExtentAction::unchanged,
+        "The copy policy is inert outside the existing Native Fix OpenXR title guard");
+
+    extent = {true, true, true, 4944, 2416, 2734, 1336, 2472, 2416};
+    expect(c::copy_extent_action(extent) == c::CopyExtentAction::rebuild,
+        "Growing resolution also refreshes copy and spectator resources instead of clipping the new eye pair");
+    extent.cached_width = 4944; extent.cached_height = 2416;
+    expect(c::copy_extent_action(extent) == c::CopyExtentAction::unchanged,
+        "The corrected resolution does not cause a steady-state rebuild loop");
+}
+
 template<class Expect> void run(Expect&& expect) {
+    test_copy_extent(expect);
     using namespace n::contract;
     expect(n::needs_guarded_fallback(L"D:/Games/SLASHER-Win64-Shipping.exe") &&
         n::needs_guarded_fallback(L"d:\\Games\\slasher-win64-shipping.EXE"), "changed Fatekeeper code must fail closed rather than return to the crashing path");
