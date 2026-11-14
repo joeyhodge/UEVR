@@ -203,6 +203,16 @@ static void compose_tests() {
     expect(near(q::edge_alpha(0.01, 0.5, 0.0), 1.0), "no blend gives a hard edge");
 }
 
+static void order_tests() {
+    const auto a = q::slot_for_view(0, false, true);
+    const auto b = q::slot_for_view(1, false, true);
+    const auto c = q::slot_for_view(2, false, true);
+    const auto d = q::slot_for_view(3, false, true);
+    expect(a.focus && a.eye == 0 && b.focus && b.eye == 1, "sharp first: views 0/1 are the sharp pair");
+    expect(!c.focus && c.eye == 0 && !d.focus && d.eye == 1, "sharp first: views 2/3 are the wide pair");
+    expect(c.index() == 0 && a.index() == 2, "slot indices stay semantic (atlas, LOD, culling)");
+}
+
 static void offset_tests() {
     const q::Tangents full{-1.0, 1.0, 1.0, -1.0};
     q::Settings s{};
@@ -262,6 +272,7 @@ int main() {
         compose_tests();
         shape_tests();
         offset_tests();
+        order_tests();
         culling_tests();
     } catch (const std::exception& e) {
         std::cerr << "FAILED: " << e.what() << '\n';

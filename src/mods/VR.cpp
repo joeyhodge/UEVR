@@ -7545,6 +7545,9 @@ struct QuadViewCVarOverride {
 
 QuadViewCVarOverride g_quad_foliage_min_screen_size{L"foliage.MinimumScreenSize"};
 QuadViewCVarOverride g_quad_emitter_spawn_rate{L"r.EmitterSpawnRateScale"};
+// UE4.26 on D3D11 hit a fatal DXGI_ERROR_INVALID_CALL reading an occlusion
+// query (D3D11Query.cpp) on its first four-view frame.
+QuadViewCVarOverride g_quad_ue4_occlusion_queries{L"r.AllowOcclusionQueries"};
 }
 
 void VR::update_hmd_state(bool from_view_extensions, uint32_t frame_count) {
@@ -7633,6 +7636,12 @@ void VR::update_hmd_state(bool from_view_extensions, uint32_t frame_count) {
             spawn = m_quad_view_cpu_particles->value();
         }
         g_quad_emitter_spawn_rate.update(spawn);
+
+        std::optional<float> occlusion{};
+        if (quad && m_fake_stereo_hook != nullptr && !m_fake_stereo_hook->has_double_precision()) {
+            occlusion = 0.0f;
+        }
+        g_quad_ue4_occlusion_queries.update(occlusion);
     }
 
     if (frame_count != 0 && is_using_afr() && frame_count % 2 == 0) {
@@ -10745,6 +10754,8 @@ void VR::draw_quad_view_ui() {
             m_quad_view_focus_shape->draw("Sharp area shape");
         }
         m_quad_view_disable_vignette->draw("Remove vignette (otherwise each sharp view gets its own dark edges)");
+        m_quad_view_sharp_first->draw("Render sharp views first (experimental)");
+        ImGui::TextDisabled("For games whose hair (Groom) only draws in the first two views. The left sharp view then drives\nexposure and shadows, which may look different. Takes effect on the next frame.");
         const bool composed = m_openxr->quad_composed.load();
         ImGui::TextDisabled(composed ? "Output: composed by UEVR (wide + sharp, blended)"
                                      : "Output: sharp views sent to the headset as an overlay layer (hard edge)");

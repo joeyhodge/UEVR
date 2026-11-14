@@ -31019,7 +31019,7 @@ void FFakeStereoRenderingHook::adjust_view_rect(FFakeStereoRendering* stereo, in
 
     if (quad_view) {
         const auto layout = VR::get()->get_quad_view_layout();
-        const auto slot = uevr::quadview::slot_for_view(index, false);
+        const auto slot = uevr::quadview::slot_for_view(index, false, VR::get()->is_quad_view_sharp_first());
         const auto& r = layout.views[slot.index()];
         *x = (int)r.x;
         *y = (int)r.y;
@@ -31078,11 +31078,14 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
     static bool index_was_ever_two = false;
     static bool index_was_ever_negative = false;
     const bool medium_one_based_eye_pass = medium_is_current_game();
-    // Quad View: views 0..3 are wide L, wide R, sharp L, sharp R. A sharp view
-    // sits at its eye's position and rotation; only its projection differs.
+    // Quad View: views 0..3 are wide L, wide R, sharp L, sharp R (or the sharp
+    // pair first, see slot_for_view). A sharp view sits at its eye's position
+    // and rotation; only its projection differs.
     const bool quad_view = is_quad_view_active();
-    const auto quad_slot = uevr::quadview::slot_for_view(view_index, false);
-    const bool quad_focus = quad_view && quad_slot.focus;
+    const auto quad_slot = uevr::quadview::slot_for_view(view_index, false, VR::get()->is_quad_view_sharp_first());
+    // The first view of each eye in render order samples the pose and runs
+    // the once-per-eye side effects; the eye's other view reuses them.
+    const bool quad_pose_owner = !quad_view || (quad_slot.focus == vr->is_quad_view_sharp_first());
     if (quad_view) {
         t_quad_view_next_slot = (int32_t)quad_slot.index();
     }
@@ -31183,7 +31186,7 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
 
     // One head-pose sample per frame: the sharp views reuse the pose the wide
     // views were built from, so wide and sharp can never drift apart.
-    if (true_index == 0 && !is_full_pass && !quad_focus) {
+    if (true_index == 0 && !is_full_pass && quad_pose_owner) {
         if (has_double_precision) {
             g_hook->m_last_pre_rotation_double = *rot_d;
         } else {
@@ -31395,7 +31398,7 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
         // only do it on the right eye pass
         // if we did it on the left, there would be eye desyncs when the right eye is rendered
         const auto payday3_aim_guard = is_payday3_aim_guard_enabled();
-        if (true_index == 1 && !quad_focus && (vr->is_roomscale_enabled() || (!payday3_aim_guard && vr->is_aim_pawn_control_rotation_enabled()))) {
+        if (true_index == 1 && quad_pose_owner && (vr->is_roomscale_enabled() || (!payday3_aim_guard && vr->is_aim_pawn_control_rotation_enabled()))) {
             const auto engine = sdk::UEngine::get();
             const auto world = engine != nullptr ? engine->get_world() : nullptr;
 
@@ -31456,7 +31459,7 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
             mod->on_post_calculate_stereo_view_offset(stereo, view_index, view_rotation, world_to_meters, view_location, g_hook->m_has_double_precision);
         }
 
-        if (true_index == 0 && !quad_focus) {
+        if (true_index == 0 && quad_pose_owner) {
             if (has_double_precision) {
                 g_hook->m_last_rotation_double = *rot_d;
             } else {
@@ -31473,7 +31476,7 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
             (vr->is_headlocked_aim_enabled() ||
                 (vr->is_controller_aim_enabled() && vr->is_using_controllers()));
 
-        if (true_index == 1 && !quad_focus &&
+        if (true_index == 1 && quad_pose_owner &&
             vr->is_any_aim_method_active() &&
             !controller_camera_guard_active &&
             (vr->is_aim_modify_player_control_rotation_enabled() || direct_aim_compatibility_fallback))
@@ -31746,7 +31749,7 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
             VR::get()->get_runtime()->update_matrices((float)old_znear, 10000.0f);
         }
 
-        const auto quad_slot = uevr::quadview::slot_for_view(view_index, false);
+        const auto quad_slot = uevr::quadview::slot_for_view(view_index, false, VR::get()->is_quad_view_sharp_first());
 
         if (quad_view && quad_slot.focus) {
             // Sharp view: an off-axis frustum around the focus window, same

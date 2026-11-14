@@ -534,6 +534,7 @@ public:
     void draw_quad_view_ui();
     bool is_quad_view_gaze_enabled() const { return m_quad_view_follow_gaze->value(); }
     bool is_quad_view_ue4_allowed() const { return m_quad_view_allow_ue4->value(); }
+    bool is_quad_view_sharp_first() const { return m_quad_view_sharp_first->value(); }
     float get_quad_view_wide_lod_scale() const { return m_quad_view_wide_lod_scale->value(); }
     bool is_quad_view_shared_exposure_enabled() const { return m_quad_view_shared_exposure->value(); }
     float get_quad_view_edge_blend() const { return m_quad_view_edge_blend->value(); }
@@ -1681,6 +1682,7 @@ private:
     // (foliage and instanced meshes, through foliage.MinimumScreenSize).
     const ModSlider::Ptr m_quad_view_wide_min_pixels{ ModSlider::create(generate_name("QuadViewWideMinPixels"), 0.0f, 8.0f, 0.0f) };
     // Cascade (CPU) particle spawn rate, whole image (r.EmitterSpawnRateScale). 1 = unchanged.
+    const ModToggle::Ptr m_quad_view_sharp_first{ ModToggle::create(generate_name("QuadViewSharpFirst"), false) };
     const ModToggle::Ptr m_quad_view_allow_ue4{ ModToggle::create(generate_name("QuadViewAllowUE4"), false) };
     const ModToggle::Ptr m_quad_view_cull_actors{ ModToggle::create(generate_name("QuadViewCullSmallActors"), false) };
     const ModSlider::Ptr m_quad_view_cpu_particles{ ModSlider::create(generate_name("QuadViewCPUParticles"), 0.1f, 1.0f, 1.0f) };
@@ -2030,6 +2032,7 @@ public:
             *m_quad_view_cpu_particles,
             *m_quad_view_cull_actors,
             *m_quad_view_allow_ue4,
+            *m_quad_view_sharp_first,
             *m_native_stereo_fix_preserve_secondary_pass,
             *m_native_stereo_fix_texture_array_submit,
             *m_native_stereo_fix_async_openxr_wait,

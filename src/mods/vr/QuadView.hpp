@@ -58,10 +58,14 @@ struct Slot {
 
 // UEVR sees view indices either starting from 0 (0..3) or from 1 (1..4),
 // the same ambiguity it already resolves for stereo with index_starts_from_one.
-inline Slot slot_for_view(int32_t view_index, bool index_starts_from_one) {
+// Render order: wide L, wide R, sharp L, sharp R by default. With sharp_first
+// the sharp pair is rendered first (sharp L, sharp R, wide L, wide R), for
+// games whose effects only draw in the first two views (Groom hair).
+inline Slot slot_for_view(int32_t view_index, bool index_starts_from_one, bool sharp_first = false) {
     const int32_t n = index_starts_from_one ? view_index - 1 : view_index;
     const auto i = static_cast<uint32_t>(((n % 4) + 4) % 4);
-    return Slot{i % 2u, i >= 2u};
+    const bool second_pair = i >= 2u;
+    return Slot{i % 2u, sharp_first ? !second_pair : second_pair};
 }
 
 // Only the first view drives the frame (shadows, exposure, history setup);
