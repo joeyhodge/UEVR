@@ -24,10 +24,9 @@ static_assert(constrained_offset == sdk::sinking_city_2::native::constrained_vie
     pass_offset == sdk::sinking_city_2::native::pass_offset &&
     primary_index_offset == sdk::sinking_city_2::native::primary_index_offset);
 
-inline bool needs_guarded_fallback(std::wstring_view path) {
+inline bool matches_executable_name(std::wstring_view path, std::wstring_view name) {
     const auto separator = path.find_last_of(L"/\\");
     path = path.substr(separator == path.npos ? 0 : separator + 1);
-    constexpr std::wstring_view name = L"slasher-win64-shipping.exe";
     if (path.size() != name.size()) { return false; }
     for (size_t i = 0; i < path.size(); ++i) {
         const auto c = path[i] >= L'A' && path[i] <= L'Z' ? path[i] + (L'a' - L'A') : path[i];
@@ -36,19 +35,35 @@ inline bool needs_guarded_fallback(std::wstring_view path) {
     return true;
 }
 
+inline bool is_paradox_drive(std::wstring_view path) {
+    return matches_executable_name(path, L"paradoxdrive-win64-shipping.exe");
+}
+
+inline bool needs_guarded_fallback(std::wstring_view path) {
+    return matches_executable_name(path, L"slasher-win64-shipping.exe") || is_paradox_drive(path);
+}
+
 template<size_t N>
 bool matches(const sdk::discovery::Memory& memory, uintptr_t address,
     const std::array<uint8_t, N>& code, const std::array<uint8_t, N>& mask) {
     return sdk::sinking_city_2::native::matches(memory, address, code, mask);
 }
 
-inline bool view_layout(const sdk::discovery::Memory& memory, uintptr_t constructor) {
+inline bool view_layout(const sdk::discovery::Memory& memory, uintptr_t constructor,
+    bool allow_paradox_drive_layout = false) {
     using namespace contract;
-    return sdk::discovery::relative_address(constructor, 0x5d2) &&
-        matches(memory, constructor + 0x30, view_identity_code, view_identity_mask) &&
+    if (!sdk::discovery::relative_address(constructor, 0x5d2)) { return false; }
+    if (matches(memory, constructor + 0x30, view_identity_code, view_identity_mask) &&
         matches(memory, constructor + 0x3b9, view_rects_code, view_rects_mask) &&
         matches(memory, constructor + 0x49f, view_projection_code, view_projection_mask) &&
-        matches(memory, constructor + 0x547, view_stereo_code, view_stereo_mask);
+        matches(memory, constructor + 0x547, view_stereo_code, view_stereo_mask)) { return true; }
+
+    // ParadoxDrive retains these exact member/control-flow contracts at different code offsets.
+    return allow_paradox_drive_layout &&
+        matches(memory, constructor + 0x39, view_identity_code, view_identity_mask) &&
+        matches(memory, constructor + 0x3af, view_rects_code, view_rects_mask) &&
+        matches(memory, constructor + 0x495, view_projection_code, view_projection_mask) &&
+        matches(memory, constructor + 0x53d, view_stereo_code, view_stereo_mask);
 }
 
 inline bool renderer_layout(const sdk::discovery::Memory& memory, uintptr_t renderer) {

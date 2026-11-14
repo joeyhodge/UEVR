@@ -91,9 +91,16 @@ template<class Expect> void run(Expect&& expect) {
     using namespace n::contract;
     expect(n::needs_guarded_fallback(L"D:/Games/SLASHER-Win64-Shipping.exe") &&
         n::needs_guarded_fallback(L"d:\\Games\\slasher-win64-shipping.EXE"), "changed Fatekeeper code must fail closed rather than return to the crashing path");
+    for (auto name : {L"ParadoxDrive-Win64-Shipping.exe", L"D:/Games/ParadoxDrive/ParadoxDrive-Win64-Shipping.exe",
+            L"d:\\Games\\PARADOXDRIVE-WIN64-SHIPPING.EXE"}) {
+        expect(n::is_paradox_drive(name) && n::needs_guarded_fallback(name),
+            "ParadoxDrive keeps its code-validated linked route or fails closed after an update");
+    }
     for (auto name : {L"", L"Other.exe", L"xSLASHER-Win64-Shipping.exe", L"SLASHER-Win64-Shipping.exe.old",
-            L"D:/SLASHER-Win64-Shipping.exe/Other.exe"}) {
-        expect(!n::needs_guarded_fallback(name), "other titles require actual code capability rather than a substring or patch-number guess");
+            L"D:/SLASHER-Win64-Shipping.exe/Other.exe", L"ParadoxDrive.exe", L"xParadoxDrive-Win64-Shipping.exe",
+            L"ParadoxDrive-Win64-Shipping.exe.old", L"D:/ParadoxDrive-Win64-Shipping.exe/Other.exe"}) {
+        expect(!n::needs_guarded_fallback(name) && !n::is_paradox_drive(name),
+            "other titles and launchers require actual code capability rather than a substring or patch-number guess");
     }
     Memory m;
     const auto b = m.base, copy = b + 0x100, deleting = b + 0x700, destroy = b + 0x800;
@@ -118,6 +125,7 @@ template<class Expect> void run(Expect&& expect) {
         "UE5.8 proves native deep-copy and base-only destructor through their shared vtable");
     expect(n::view_layout(m.view(), ctor) && n::renderer_layout(m.view(), renderer),
         "constructor and plural renderer independently corroborate UE5.8 eye/family fields");
+    expect(n::view_layout(m.view(), ctor, true), "ParadoxDrive admission does not change the existing stock constructor proof");
     const auto good = m;
     const auto mutate = [&](uintptr_t p, const auto& mask, auto&& validate) {
         for (size_t i = 0; i < mask.size(); ++i) {
@@ -143,6 +151,41 @@ template<class Expect> void run(Expect&& expect) {
     m = good;
     expect(!n::family_functions(m.view(), copy, b, m.bytes.size(), [](uintptr_t) -> size_t { return 0; }),
         "native family calls require original function boundaries, not interior pattern matches");
+
+    {
+        Memory shifted;
+        shifted.put(ctor + 0x39, view_identity_code);
+        shifted.put(ctor + 0x3af, view_rects_code);
+        shifted.put(ctor + 0x495, view_projection_code);
+        shifted.put(ctor + 0x53d, view_stereo_code);
+        expect(!n::view_layout(shifted.view(), ctor) && n::view_layout(shifted.view(), ctor, true),
+            "ParadoxDrive's verified code placement requires explicit title admission, not a global UE5.8 relaxation");
+        const auto before = shifted;
+        const auto mutate_shifted = [&](uintptr_t address, const auto& mask) {
+            for (size_t i = 0; i < mask.size(); ++i) {
+                if (!mask[i]) { continue; }
+                shifted = before;
+                shifted.bytes[address - b + i] ^= 1;
+                expect(!n::view_layout(shifted.view(), ctor, true),
+                    "changed ParadoxDrive member access or control flow rejects before eye writes or engine calls");
+            }
+        };
+        mutate_shifted(ctor + 0x39, view_identity_mask);
+        mutate_shifted(ctor + 0x3af, view_rects_mask);
+        mutate_shifted(ctor + 0x495, view_projection_mask);
+        mutate_shifted(ctor + 0x53d, view_stereo_mask);
+        shifted = before;
+        shifted.readable = false;
+        expect(!n::view_layout(shifted.view(), ctor, true), "unreadable ParadoxDrive constructor code rejects");
+        shifted = before;
+        shifted.executable = false;
+        expect(!n::view_layout(shifted.view(), ctor, true), "non-executable ParadoxDrive code rejects");
+        shifted = before;
+        expect(!n::view_layout(shifted.view(), 0, true) &&
+            !n::view_layout(shifted.view(), UINTPTR_MAX - 0x10, true) &&
+            !n::view_layout(shifted.view(), ctor + 1, true),
+            "null, overflowing and interior ParadoxDrive constructor candidates cannot authorize the layout");
+    }
 
     for (auto dims : {std::pair{1024,1024}, std::pair{2472,2416}, std::pair{3500,3100}, std::pair{8192,4096}}) {
         for (int letterbox : {0, 20, 100}) {
@@ -245,7 +288,7 @@ template<class Expect> void shipping_image(const char* path, Expect&& expect) {
         }
     } image;
     image.file.open(path, std::ios::binary | std::ios::ate);
-    if (!image.file) { expect(false,"open exact Fatekeeper shipping image"); return; }
+    if (!image.file) { expect(false,"open exact analyzed UE5.8 shipping image"); return; }
     image.size = static_cast<uint64_t>(image.file.tellg());
     std::array<uint8_t,65536> header{};
     image.file.seekg(0);
@@ -289,15 +332,19 @@ template<class Expect> void shipping_image(const char* path, Expect&& expect) {
         return e!=entries.end() && (*e)[0]==rva && (*e)[1]>(*e)[0] ? (*e)[1]-(*e)[0] : 0;
     };
     const bool roadtruckers = image.size==186809344;
-    expect((image.size==195425280 || roadtruckers) && image.base==0x140000000,
-        "UE5.8 fixture is an analyzed complete Fatekeeper or RoadTruckers build");
-    const uintptr_t constructor=roadtruckers ? 0x142f9c3e0 : 0x142f43710;
-    const uintptr_t renderer=roadtruckers ? 0x143befbb0 : 0x143b8c630;
-    const uintptr_t copy=roadtruckers ? 0x142f9dd20 : 0x142f45050;
-    const uintptr_t destroy=roadtruckers ? 0x142fa0180 : 0x142f47530;
-    const uintptr_t table=roadtruckers ? 0x148967ea0 : 0x148eba550;
-    expect(n::view_layout(memory,constructor) && n::renderer_layout(memory,renderer),
+    const bool paradoxdrive = image.size==167882752;
+    expect((image.size==195425280 || roadtruckers || paradoxdrive) && image.base==0x140000000,
+        "UE5.8 fixture is an analyzed complete Fatekeeper, RoadTruckers or ParadoxDrive build");
+    const uintptr_t constructor=paradoxdrive ? 0x142f098f0 : roadtruckers ? 0x142f9c3e0 : 0x142f43710;
+    const uintptr_t renderer=paradoxdrive ? 0x143b53a40 : roadtruckers ? 0x143befbb0 : 0x143b8c630;
+    const uintptr_t copy=paradoxdrive ? 0x142f0b010 : roadtruckers ? 0x142f9dd20 : 0x142f45050;
+    const uintptr_t destroy=paradoxdrive ? 0x142f0d3d0 : roadtruckers ? 0x142fa0180 : 0x142f47530;
+    const uintptr_t table=paradoxdrive ? 0x147df9c90 : roadtruckers ? 0x148967ea0 : 0x148eba550;
+    expect(n::view_layout(memory,constructor,paradoxdrive) && n::renderer_layout(memory,renderer),
         "actual unmodified game code proves projection/rect/stereo identity and linked renderer argument flow");
+    if (paradoxdrive) {
+        expect(!n::view_layout(memory,constructor), "actual ParadoxDrive code does not broaden the stock UE5.8 proof");
+    }
     const auto f=n::family_functions(memory,copy,image.base,image.module_size,size);
     expect(f && f->destroy==destroy && f->vtable==table,
         "actual game copy and base destructor resolve through original unwind boundaries and shared native vtable");
