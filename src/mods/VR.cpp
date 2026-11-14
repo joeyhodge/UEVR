@@ -43,6 +43,7 @@
 #include <sdk/TArray.hpp>
 #include <sdk/UObjectArray.hpp>
 #include <sdk/Utility.hpp>
+#include "vr/QuadViewCulling.hpp"
 
 #include <tracy/Tracy.hpp>
 #include "utility/SupportDiagnostics.hpp"
@@ -4838,6 +4839,21 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     const bool hitch_diagnostics_enabled = m_enable_hitch_diagnostics->value();
 
     m_cvar_manager->on_pre_engine_tick(engine, delta);
+
+    // Quad View small-actor culling for the wide views (QuadViewCulling.hpp).
+    {
+        const bool quad = FFakeStereoRenderingHook::is_quad_view_active();
+        double px_per_tangent = 0.0;
+        if (quad && letterbox_runtime != nullptr) {
+            const auto* t = letterbox_runtime->rendered_tangents[0];
+            const double width = (double)t[1] - (double)t[0];
+            if (width > 0.01 && std::isfinite(width)) {
+                px_per_tangent = (double)get_quad_view_layout().views[0].w / width;
+            }
+        }
+        uevr::quadview::ActorCulling::get().on_pre_engine_tick(quad && m_quad_view_cull_actors->value(),
+            m_quad_view_wide_min_pixels->value(), px_per_tangent);
+    }
     if (!hitch_diagnostics_enabled) {
         if (m_hitch_diagnostics_enabled_last_frame) {
             stop_hitch_snapshot_writer();
@@ -10677,6 +10693,17 @@ void VR::draw_quad_view_ui() {
         m_quad_view_wide_min_pixels->draw("Cull objects smaller than (pixels, 0 = off)");
         ImGui::TextDisabled("Small object culling: %s. Covers foliage and instanced meshes; the sharp area keeps them.",
             g_quad_foliage_min_screen_size.status());
+        if (m_quad_view_wide_min_pixels->value() >= 0.5f) {
+            m_quad_view_cull_actors->draw("Also cull small actors: meshes, characters (experimental)");
+            if (m_quad_view_cull_actors->value()) {
+                const auto st = uevr::quadview::ActorCulling::get().status();
+                if (!st.problem.empty()) {
+                    ImGui::TextColored(warn, "Actor culling unavailable: %s", st.problem.c_str());
+                } else {
+                    ImGui::TextDisabled("Actor culling: %zu actors tracked, %zu hidden in the wide views", st.tracked, st.hidden);
+                }
+            }
+        }
         m_quad_view_cpu_particles->draw("CPU particles (Cascade, whole image)");
         ImGui::TextDisabled("CPU particles: %s. Particles are simulated once for all views, so this also thins them where you look.",
             g_quad_emitter_spawn_rate.status());

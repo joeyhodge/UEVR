@@ -44,6 +44,7 @@
 #include <sdk/DiscoveryMemory.hpp>
 #include <sdk/GearsEDayDiscovery.hpp>
 #include <sdk/TheSinkingCity2Native.hpp>
+#include "QuadViewCulling.hpp"
 #include "UE58NativeFix.hpp"
 #include "UE59NativeFix.hpp"
 #include "UE59NativeD3D11.hpp"
@@ -31076,6 +31077,21 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
     const bool quad_focus = quad_view && quad_slot.focus;
     if (quad_view) {
         t_quad_view_next_slot = (int32_t)quad_slot.index();
+    }
+
+    // Small-actor culling: swap the controller's hidden list in for the wide
+    // views and back out for the sharp ones (see QuadViewCulling.hpp).
+    if (quad_view && view_index >= 0 && view_location != nullptr) {
+        double location[3]{};
+        if (g_hook->m_has_double_precision) {
+            std::memcpy(location, view_location, sizeof(location));
+        } else {
+            const auto* f = (const float*)view_location;
+            location[0] = f[0]; location[1] = f[1]; location[2] = f[2];
+        }
+        uevr::quadview::ActorCulling::get().on_view((int32_t)quad_slot.index(), location);
+    } else {
+        uevr::quadview::ActorCulling::get().restore();
     }
 
     if (view_index == -1) {

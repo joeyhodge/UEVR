@@ -349,6 +349,14 @@ inline double edge_alpha(double u, double v, double blend) {
     return t * t * (3 - 2 * t);
 }
 
+// Size in wide-view pixels of an object with bounding radius `radius` seen
+// from `distance` (same units): it spans about 2r/d tangent units. Inside the
+// bounds counts as huge, so nothing around the camera is ever culled.
+inline double wide_pixel_size(double radius, double distance, double px_per_tangent) {
+    if (!(distance > radius)) return 1e9;
+    return 2.0 * radius / distance * px_per_tangent;
+}
+
 // Shape of the sharp area as the compositor blends it (the sharp view itself
 // is always rendered as a rectangle).
 enum class FocusShape : int { RECTANGLE = 0, ROUNDED = 1, ELLIPSE = 2 };

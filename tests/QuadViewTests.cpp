@@ -210,6 +210,12 @@ static void offset_tests() {
     expect(near(w.right, 1.0), "an offset window still stays inside the view");
 }
 
+static void culling_tests() {
+    // 10 cm object, 50 m away, 1000 px per tangent unit -> 2 px
+    expect(near(q::wide_pixel_size(5.0, 5000.0, 1000.0), 2.0), "pixel size of a small far object");
+    expect(q::wide_pixel_size(50.0, 20.0, 1000.0) > 1e6, "standing inside the bounds never culls");
+}
+
 static void shape_tests() {
     using S = q::FocusShape;
     for (double u : {0.05, 0.1, 0.3, 0.5}) {
@@ -249,6 +255,7 @@ int main() {
         compose_tests();
         shape_tests();
         offset_tests();
+        culling_tests();
     } catch (const std::exception& e) {
         std::cerr << "FAILED: " << e.what() << '\n';
         return 1;

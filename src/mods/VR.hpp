@@ -1680,6 +1680,7 @@ private:
     // (foliage and instanced meshes, through foliage.MinimumScreenSize).
     const ModSlider::Ptr m_quad_view_wide_min_pixels{ ModSlider::create(generate_name("QuadViewWideMinPixels"), 0.0f, 8.0f, 0.0f) };
     // Cascade (CPU) particle spawn rate, whole image (r.EmitterSpawnRateScale). 1 = unchanged.
+    const ModToggle::Ptr m_quad_view_cull_actors{ ModToggle::create(generate_name("QuadViewCullSmallActors"), false) };
     const ModSlider::Ptr m_quad_view_cpu_particles{ ModSlider::create(generate_name("QuadViewCPUParticles"), 0.1f, 1.0f, 1.0f) };
     const ModToggle::Ptr m_native_stereo_fix_preserve_secondary_pass{ ModToggle::create(generate_name("NativeStereoFixPreserveSecondaryPass"), true) };
     const ModToggle::Ptr m_native_stereo_fix_texture_array_submit{ ModToggle::create(generate_name("NativeStereoFixTextureArraySubmit"), false) };
@@ -2025,6 +2026,7 @@ public:
             *m_quad_view_offset_y,
             *m_quad_view_wide_min_pixels,
             *m_quad_view_cpu_particles,
+            *m_quad_view_cull_actors,
             *m_native_stereo_fix_preserve_secondary_pass,
             *m_native_stereo_fix_texture_array_submit,
             *m_native_stereo_fix_async_openxr_wait,
