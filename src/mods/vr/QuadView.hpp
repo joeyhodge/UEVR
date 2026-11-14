@@ -101,6 +101,35 @@ inline Layout make_layout(const Settings& s, uint32_t eye_w, uint32_t eye_h) {
     return l;
 }
 
+// Scales a layout down, as a whole, until it fits inside max_w x max_h (the
+// render target UEVR already asks Unreal for: two eyes wide, one eye high).
+// Every view keeps its aspect ratio and the views keep their relative density.
+inline Layout fit_layout(Layout l, uint32_t max_w, uint32_t max_h) {
+    if (l.atlas_w == 0 || l.atlas_h == 0 || (l.atlas_w <= max_w && l.atlas_h <= max_h)) {
+        return l;
+    }
+    const double k = std::min(double(max_w) / l.atlas_w, double(max_h) / l.atlas_h);
+    // even_size rounds, so shrink the scale until the rounded atlas fits.
+    for (double scale = k; scale > 0.05; scale *= 0.995) {
+        Layout f{};
+        const auto sz = [&](uint32_t v) { return even_size(v * scale, 2); };
+        const uint32_t ww = sz(l.views[0].w), wh = sz(l.views[0].h);
+        const uint32_t fw = sz(l.views[2].w), fh = sz(l.views[2].h);
+        f.views[0] = {0, 0, ww, wh};
+        f.views[1] = {ww, 0, ww, wh};
+        f.views[2] = {0, wh, fw, fh};
+        f.views[3] = {fw, wh, fw, fh};
+        f.atlas_w = std::max(2 * ww, 2 * fw);
+        f.atlas_h = wh + fh;
+        if (f.atlas_w <= max_w && f.atlas_h <= max_h) return f;
+    }
+    return l;
+}
+
+inline Layout make_fitted_layout(const Settings& s, uint32_t eye_w, uint32_t eye_h) {
+    return fit_layout(make_layout(s, eye_w, eye_h), 2 * eye_w, eye_h);
+}
+
 // A window of the given share of `full`, centred on (cx, cy) in tangent space
 // and slid back inside `full` where it would cross an edge.
 inline Tangents focus_window(const Tangents& full, double share_x, double share_y, double cx, double cy) {
@@ -160,6 +189,32 @@ inline FrameViews make_frame_views(uint64_t pose_id, const Tangents eye_full[2],
         f.tangents[eye + 2] = focus_window(eye_full[eye], s.focus_width, s.focus_height, gaze.cx[eye], gaze.cy[eye]);
     }
     return f;
+}
+
+// Unreal's reversed-Z, infinite far plane, off-axis projection for a view
+// whose edges sit at the given tangents (the same form UEVR's OpenXR runtime
+// builds for each eye). `out` is in memory order: Unreal reads it as rows,
+// glm as columns, so it can be copied straight into either matrix type.
+// For a view-space point (x right, y up, z forward): clip = [x y z 1] * M,
+// and x/z == right lands on NDC x == +1, y/z == up on NDC y == +1.
+inline void projection_from_tangents(const Tangents& t, float near_z, float out[16]) {
+    const double inv_rl = 1.0 / (t.right - t.left);
+    const double inv_tb = 1.0 / (t.up - t.down);
+    for (int i = 0; i < 16; ++i) out[i] = 0.0f;
+    out[0] = float(2.0 * inv_rl);
+    out[5] = float(2.0 * inv_tb);
+    out[8] = float(-(t.right + t.left) * inv_rl);
+    out[9] = float(-(t.up + t.down) * inv_tb);
+    out[11] = 1.0f;
+    out[14] = near_z;
+}
+
+// OpenXR wants angles (XrFovf) for each submitted view.
+struct Angles {
+    float left, right, up, down;
+};
+inline Angles to_angles(const Tangents& t) {
+    return {float(std::atan(t.left)), float(std::atan(t.right)), float(std::atan(t.up)), float(std::atan(t.down))};
 }
 
 // Share of the eye's pixels the four views cost, versus plain stereo at

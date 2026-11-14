@@ -3945,6 +3945,9 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
 
     XrCompositionLayerProjection dummy_projection_layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
     std::array<XrCompositionLayerProjectionView, 2> dummy_projection_layer_views{};
+    // Quad View: the sharp views go out as a second projection layer on top
+    // of the wide one. Each covers only its own (narrow) field of view.
+    std::array<XrCompositionLayerProjectionView, 2> quad_focus_views{};
 
     if (should_push_dummy) {
         const auto& vd_swapchain = this->swapchains[(uint32_t)OpenXR::SwapchainIndex::DUMMY_VIRTUAL_DESKTOP];
@@ -3981,6 +3984,22 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
         projection_layer_views.resize(pipelined_stage_views.size(), {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW});
         depth_layers.resize(projection_layer_views.size(), {XR_TYPE_COMPOSITION_LAYER_DEPTH_INFO_KHR});
 
+        const bool quad_submit =
+            FFakeStereoRenderingHook::is_quad_view_active() &&
+            !is_afr && !has_native_stereo_array && !stalker_pair &&
+            projection_layer_views.size() == 2;
+        const auto quad_layout = quad_submit ? VR::get()->get_quad_view_layout() : uevr::quadview::Layout{};
+        // The layout is in render-target pixels (two eyes wide, one eye high);
+        // scale it in case the swapchain was sized differently.
+        const auto quad_scale = [&](const Swapchain& sc) {
+            const auto hw = std::max<uint32_t>(VR::get()->get_hmd_width(), 1);
+            const auto hh = std::max<uint32_t>(VR::get()->get_hmd_height(), 1);
+            return std::pair<double, double>{double(sc.width) / (2.0 * hw), double(sc.height) / hh};
+        };
+        if (quad_submit) {
+            SPDLOG_INFO_ONCE("[QuadView][OpenXR] Submitting quad view frames: atlas {}x{}", quad_layout.atlas_w, quad_layout.atlas_h);
+        }
+
         for (auto i = 0; i < projection_layer_views.size(); ++i) {            
             Swapchain* swapchain = nullptr;
 
@@ -4015,6 +4034,17 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
             }
             offset_y = view_bounds[i][2] * swapchain->height;
             extent_y = view_bounds[i][3] * swapchain->height - offset_y;
+
+            if (quad_submit) {
+                // Wide view i sits in its own rect of the atlas; view_bounds still
+                // crops the rendered (derived) field of view down to the real one.
+                const auto& r = quad_layout.views[i];
+                const auto [sx, sy] = quad_scale(*swapchain);
+                offset_x = (int32_t)((r.x + view_bounds[i][0] * r.w) * sx);
+                extent_x = (int32_t)((r.x + view_bounds[i][1] * r.w) * sx) - offset_x;
+                offset_y = (int32_t)((r.y + view_bounds[i][2] * r.h) * sy);
+                extent_y = (int32_t)((r.y + view_bounds[i][3] * r.h) * sy) - offset_y;
+            }
             
             // SPDLOG_INFO("image calc for eye {} {}, {}, {}, {}", i, offset_x, extent_x, offset_y, extent_y);
             projection_layer_views[i].subImage.imageRect.offset = {offset_x, offset_y};
@@ -4061,6 +4091,34 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
         layer.viewCount = (uint32_t)projection_layer_views.size();
         layer.views = projection_layer_views.data();
         layer.layerFlags = 0;
+
+        if (quad_submit && VR::get()->is_quad_view_overlay_enabled()) {
+            const auto& sc = this->swapchains[(uint32_t)OpenXR::SwapchainIndex::DOUBLE_WIDE];
+            const auto [sx, sy] = quad_scale(sc);
+
+            for (uint32_t eye = 0; eye < 2; ++eye) {
+                auto& view = quad_focus_views[eye];
+                view = projection_layer_views[eye];
+                view.next = nullptr; // no depth for the overlay
+                // Same pose as the wide view of this eye (one sample per frame);
+                // only the field of view narrows to the sharp window.
+                const auto a = uevr::quadview::to_angles(VR::get()->get_quad_view_focus_tangents(eye));
+                view.fov = {a.left, a.right, a.up, a.down};
+
+                const auto& r = quad_layout.views[eye + 2];
+                const auto ox = (int32_t)(r.x * sx), oy = (int32_t)(r.y * sy);
+                view.subImage.imageRect.offset = {ox, oy};
+                view.subImage.imageRect.extent = {(int32_t)((r.x + r.w) * sx) - ox, (int32_t)((r.y + r.h) * sy) - oy};
+            }
+
+            auto& focus_layer = projection_layer_cache.emplace_back();
+            focus_layer.type = XR_TYPE_COMPOSITION_LAYER_PROJECTION;
+            focus_layer.next = nullptr;
+            focus_layer.space = this->stage_space;
+            focus_layer.viewCount = (uint32_t)quad_focus_views.size();
+            focus_layer.views = quad_focus_views.data();
+            focus_layer.layerFlags = 0;
+        }
 
         if (should_push_dummy && !movie_override) {
             layers.push_back((XrCompositionLayerBaseHeader*)&dummy_projection_layer);

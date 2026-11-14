@@ -817,6 +817,10 @@ public:
         return m_has_double_precision;
     }
 
+    // True when this frame renders four views (Quad View): UE5 only, native
+    // stereo path, and none of the compatibility modes that own the view list.
+    static bool is_quad_view_active();
+
     bool has_attempted_to_hook_engine() const {
         return m_attempted_hook_game_engine_tick;
     }

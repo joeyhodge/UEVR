@@ -10502,6 +10502,9 @@ void VR::draw_quad_view_ui() {
     if (m_extreme_compat_mode->value()) {
         ImGui::TextColored(ImVec4{1.0f, 0.6f, 0.2f, 1.0f}, "Quad View is off: Extreme Compatibility Mode renders one view at a time.");
     }
+    if (get_runtime() != nullptr && !get_runtime()->is_openxr()) {
+        ImGui::TextColored(ImVec4{1.0f, 0.6f, 0.2f, 1.0f}, "Quad View needs the OpenXR runtime; OpenVR only shows the wide views.");
+    }
 
     if (ImGui::TreeNodeEx("Sharp views (where you look)", ImGuiTreeNodeFlags_DefaultOpen)) {
         m_quad_view_focus_width->draw("Width (share of view)");
@@ -10516,7 +10519,7 @@ void VR::draw_quad_view_ui() {
     }
 
     if (ImGui::TreeNodeEx("Wide views (periphery cost)", ImGuiTreeNodeFlags_DefaultOpen)) {
-        m_quad_view_wide_scale->draw("Resolution (share of native, restart)");
+        m_quad_view_wide_scale->draw("Resolution (share of native)");
         m_quad_view_wide_lod_scale->draw("LOD scale (lower = simpler meshes, fewer small objects)");
         ImGui::TreePop();
     }
@@ -10527,12 +10530,39 @@ void VR::draw_quad_view_ui() {
         ImGui::TreePop();
     }
 
+    if (ImGui::TreeNodeEx("Output", ImGuiTreeNodeFlags_DefaultOpen)) {
+        m_quad_view_overlay_layer->draw("Show sharp views as an OpenXR overlay layer");
+        ImGui::TreePop();
+    }
+
+    ImGui::TextWrapped("Work in progress: gaze following, wide LOD scale, edge blend and the outline are not active yet. "
+                       "The sharp views stay centred.");
+
     const auto runtime = get_runtime();
     if (runtime != nullptr && runtime->ready()) {
-        const auto layout = uevr::quadview::make_layout(get_quad_view_settings(), get_hmd_width(), get_hmd_height());
+        const auto layout = get_quad_view_layout();
         ImGui::Text("Atlas %ux%u, %.0f%% of native stereo pixels", layout.atlas_w, layout.atlas_h,
             100.0 * uevr::quadview::pixel_share(layout, get_hmd_width(), get_hmd_height()));
+        for (uint32_t i = 0; i < uevr::quadview::VIEW_COUNT; ++i) {
+            const auto& r = layout.views[i];
+            ImGui::Text("  %s %s: %ux%u at (%u, %u)", i % 2 == 0 ? "Left" : "Right", i < 2 ? "wide " : "sharp", r.w, r.h, r.x, r.y);
+        }
     }
 
     ImGui::Unindent();
+}
+
+uevr::quadview::Tangents VR::get_quad_view_focus_tangents(uint32_t eye) const {
+    eye = std::min<uint32_t>(eye, 1);
+    const auto runtime = get_runtime();
+    // raw_projections holds the eye's real field of view as tangents: left, right, top, bottom.
+    uevr::quadview::Tangents full{};
+    if (runtime != nullptr) {
+        const auto& p = runtime->raw_projections[eye];
+        if (p[1] > p[0] && p[2] > p[3]) {
+            full = {p[0], p[1], p[2], p[3]};
+        }
+    }
+    const auto s = get_quad_view_settings();
+    return uevr::quadview::focus_window(full, s.focus_width, s.focus_height, m_quad_view_gaze.cx[eye], m_quad_view_gaze.cy[eye]);
 }

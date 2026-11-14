@@ -92,6 +92,48 @@ static void frame_tests() {
     }
 }
 
+static void fit_tests() {
+    q::Settings s{};
+    s.wide_scale = 1.0; s.focus_width = 0.4; s.focus_height = 0.4; s.focus_density = 2.0;
+    const auto raw = q::make_layout(s, 2000, 2000);
+    expect(raw.atlas_h > 2000, "this layout overflows one eye height");
+    const auto fit = q::make_fitted_layout(s, 2000, 2000);
+    expect(fit.atlas_w <= 4000 && fit.atlas_h <= 2000, "fitted layout fits the two-eye render target");
+    for (const auto& r : fit.views) {
+        expect(r.x + r.w <= fit.atlas_w && r.y + r.h <= fit.atlas_h, "fitted views stay in the atlas");
+        expect(r.w % 2 == 0 && r.h % 2 == 0, "fitted sizes are even");
+    }
+    const double before = double(raw.views[2].w) / raw.views[0].w;
+    const double after = double(fit.views[2].w) / fit.views[0].w;
+    expect(std::fabs(before - after) < 0.02, "fitting keeps the focus/wide density ratio");
+    s = q::Settings{};
+    const auto small = q::make_fitted_layout(s, 3840, 3552);
+    expect(small.atlas_w == q::make_layout(s, 3840, 3552).atlas_w, "a layout that fits is left alone");
+}
+
+static void projection_tests() {
+    const q::Tangents t{-0.4, 0.2, 0.3, -0.1};
+    float m[16];
+    q::projection_from_tangents(t, 10.0f, m);
+    // clip = [x y z 1] * M with rows read from memory order.
+    auto ndc = [&](double x, double y, double z, double& nx, double& ny, double& nz) {
+        const double cx = x * m[0] + y * m[4] + z * m[8] + m[12];
+        const double cy = x * m[1] + y * m[5] + z * m[9] + m[13];
+        const double cz = x * m[2] + y * m[6] + z * m[10] + m[14];
+        const double cw = x * m[3] + y * m[7] + z * m[11] + m[15];
+        nx = cx / cw; ny = cy / cw; nz = cz / cw;
+    };
+    double nx, ny, nz;
+    ndc(t.right * 5, t.up * 5, 5, nx, ny, nz);
+    expect(near(nx, 1.0, 1e-6) && near(ny, 1.0, 1e-6), "right/up tangent edge lands on +1 NDC");
+    ndc(t.left * 5, t.down * 5, 5, nx, ny, nz);
+    expect(near(nx, -1.0, 1e-6) && near(ny, -1.0, 1e-6), "left/down tangent edge lands on -1 NDC");
+    ndc(0, 0, 10, nx, ny, nz);
+    expect(near(nz, 1.0, 1e-6), "reversed Z: the near plane maps to depth 1");
+    const auto a = q::to_angles(t);
+    expect(near(std::tan(a.left), t.left, 1e-6) && near(std::tan(a.down), t.down, 1e-6), "angles round-trip");
+}
+
 int main() {
     try {
         slot_tests();
@@ -99,6 +141,8 @@ int main() {
         window_tests();
         gaze_tests();
         frame_tests();
+        fit_tests();
+        projection_tests();
     } catch (const std::exception& e) {
         std::cerr << "FAILED: " << e.what() << '\n';
         return 1;

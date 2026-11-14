@@ -535,6 +535,16 @@ public:
     bool is_quad_view_shared_exposure_enabled() const { return m_quad_view_shared_exposure->value(); }
     float get_quad_view_edge_blend() const { return m_quad_view_edge_blend->value(); }
     bool is_quad_view_outline_enabled() const { return m_quad_view_show_outline->value(); }
+    bool is_quad_view_overlay_enabled() const { return m_quad_view_overlay_layer->value(); }
+
+    // Where the four views sit in the render target. Hooks (render side) and
+    // the OpenXR submit both call this, so they always agree on the rects.
+    uevr::quadview::Layout get_quad_view_layout() const {
+        return uevr::quadview::make_fitted_layout(get_quad_view_settings(), get_hmd_width(), get_hmd_height());
+    }
+
+    // The sharp window of one eye, in tangents, inside that eye's real field of view.
+    uevr::quadview::Tangents get_quad_view_focus_tangents(uint32_t eye) const;
 
     bool is_using_quad_view() const {
         return m_rendering_method->value() == RenderingMethod::QUAD_VIEW && !is_using_afr() &&
@@ -1647,6 +1657,8 @@ private:
     const ModToggle::Ptr m_quad_view_shared_exposure{ ModToggle::create(generate_name("QuadViewSharedExposure"), true) };
     const ModSlider::Ptr m_quad_view_edge_blend{ ModSlider::create(generate_name("QuadViewEdgeBlend"), 0.0f, 0.5f, 0.2f) };
     const ModToggle::Ptr m_quad_view_show_outline{ ModToggle::create(generate_name("QuadViewShowOutline"), false) };
+    const ModToggle::Ptr m_quad_view_overlay_layer{ ModToggle::create(generate_name("QuadViewOverlayLayer"), true) };
+    uevr::quadview::GazeFilter m_quad_view_gaze{}; // centred until eye tracking is wired
     const ModToggle::Ptr m_native_stereo_fix_preserve_secondary_pass{ ModToggle::create(generate_name("NativeStereoFixPreserveSecondaryPass"), true) };
     const ModToggle::Ptr m_native_stereo_fix_texture_array_submit{ ModToggle::create(generate_name("NativeStereoFixTextureArraySubmit"), false) };
     const ModToggle::Ptr m_native_stereo_fix_async_openxr_wait{ ModToggle::create(generate_name("NativeStereoFixAsyncOpenXRWait"), false) };
@@ -1983,6 +1995,7 @@ public:
             *m_quad_view_shared_exposure,
             *m_quad_view_edge_blend,
             *m_quad_view_show_outline,
+            *m_quad_view_overlay_layer,
             *m_native_stereo_fix_preserve_secondary_pass,
             *m_native_stereo_fix_texture_array_submit,
             *m_native_stereo_fix_async_openxr_wait,

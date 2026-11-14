@@ -30897,6 +30897,18 @@ bool FFakeStereoRenderingHook::is_stereo_enabled(FFakeStereoRendering* stereo) {
     return result;
 }
 
+bool FFakeStereoRenderingHook::is_quad_view_active() {
+    if (g_hook == nullptr || !g_hook->m_has_double_precision || uevr::nascar::is_target()) {
+        return false;
+    }
+
+    const auto& vr = VR::get();
+    return vr->is_using_quad_view() &&
+        !vr->is_native_stereo_fix_enabled() &&
+        !vr->is_sceneview_compatibility_enabled() &&
+        !vr->is_splitscreen_compatibility_enabled();
+}
+
 void FFakeStereoRenderingHook::adjust_view_rect(FFakeStereoRendering* stereo, int32_t index, int* x, int* y, uint32_t* w, uint32_t* h) {
     if (uevr::nascar::is_target() && !g_hook->m_nascar_ready.load(std::memory_order_acquire)) {
         return g_hook->m_nascar_stereo.call_slot(8, stereo, index, x, y, w, h);
@@ -30915,8 +30927,13 @@ void FFakeStereoRenderingHook::adjust_view_rect(FFakeStereoRendering* stereo, in
 
     static bool index_starts_from_one = true;
     const bool medium_one_based_eye_pass = medium_is_current_game();
+    // Quad View: UE5 numbers the four views 0..3, so index 2 is the left
+    // sharp view, not a sign of one-based eye indices.
+    const bool quad_view = is_quad_view_active();
 
-    if (!medium_one_based_eye_pass) {
+    if (quad_view) {
+        // Leave the stereo index detection untouched for when Quad View is turned off.
+    } else if (!medium_one_based_eye_pass) {
         if (index == 2) {
             index_starts_from_one = true;
         } else if (index == 0) {
@@ -30946,6 +30963,19 @@ void FFakeStereoRenderingHook::adjust_view_rect(FFakeStereoRendering* stereo, in
         *w = std::min<uint32_t>(VR::get()->get_hmd_width(), *w);
         *h = std::min<uint32_t>(VR::get()->get_hmd_height(), *h);
         --g_hook->m_skip_next_adjust_view_rect_count;
+        return;
+    }
+
+    if (quad_view) {
+        const auto layout = VR::get()->get_quad_view_layout();
+        const auto slot = uevr::quadview::slot_for_view(index, false);
+        const auto& r = layout.views[slot.index()];
+        *x = (int)r.x;
+        *y = (int)r.y;
+        *w = r.w;
+        *h = r.h;
+        SPDLOG_INFO_ONCE("[QuadView] AdjustViewRect: atlas {}x{}, wide {}x{}, sharp {}x{}",
+            layout.atlas_w, layout.atlas_h, layout.views[0].w, layout.views[0].h, layout.views[2].w, layout.views[2].h);
         return;
     }
 
@@ -30997,6 +31027,11 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
     static bool index_was_ever_two = false;
     static bool index_was_ever_negative = false;
     const bool medium_one_based_eye_pass = medium_is_current_game();
+    // Quad View: views 0..3 are wide L, wide R, sharp L, sharp R. A sharp view
+    // sits at its eye's position and rotation; only its projection differs.
+    const bool quad_view = is_quad_view_active();
+    const auto quad_slot = uevr::quadview::slot_for_view(view_index, false);
+    const bool quad_focus = quad_view && quad_slot.focus;
 
     if (view_index == -1) {
         index_was_ever_negative = true;
@@ -31023,14 +31058,14 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
     }
 
     // This is eSSP_FULL, we don't care. It will cause the view to become monoscopic if we do anything.
-    if (index_was_ever_two && view_index == 0 && !synced_ue56_zero_view_is_eye) {
+    if (!quad_view && index_was_ever_two && view_index == 0 && !synced_ue56_zero_view_is_eye) {
         SPDLOG_INFO_ONCE("calculate stereo view offset called with view index 0 after 2, ignoring.");
         return;
     }
 
     vr->set_world_to_meters(world_to_meters);
 
-    if (!medium_one_based_eye_pass) {
+    if (!medium_one_based_eye_pass && !quad_view) {
         if (view_index == 2) {
             index_starts_from_one = true;
             index_was_ever_two = true;
@@ -31051,6 +31086,9 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
     auto true_index = medium_one_based_eye_pass
         ? view_index - 1
         : (index_starts_from_one ? ((view_index + 1) % 2) : (view_index % 2));
+    if (quad_view) {
+        true_index = (int32_t)quad_slot.eye;
+    }
     const auto has_double_precision = g_hook->m_has_double_precision;
     const auto rot_d = (Rotator<double>*)view_rotation;
 
@@ -31074,7 +31112,9 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
         }
     }
 
-    if (true_index == 0 && !is_full_pass) {
+    // One head-pose sample per frame: the sharp views reuse the pose the wide
+    // views were built from, so wide and sharp can never drift apart.
+    if (true_index == 0 && !is_full_pass && !quad_focus) {
         if (has_double_precision) {
             g_hook->m_last_pre_rotation_double = *rot_d;
         } else {
@@ -31286,7 +31326,7 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
         // only do it on the right eye pass
         // if we did it on the left, there would be eye desyncs when the right eye is rendered
         const auto payday3_aim_guard = is_payday3_aim_guard_enabled();
-        if (true_index == 1 && (vr->is_roomscale_enabled() || (!payday3_aim_guard && vr->is_aim_pawn_control_rotation_enabled()))) {
+        if (true_index == 1 && !quad_focus && (vr->is_roomscale_enabled() || (!payday3_aim_guard && vr->is_aim_pawn_control_rotation_enabled()))) {
             const auto engine = sdk::UEngine::get();
             const auto world = engine != nullptr ? engine->get_world() : nullptr;
 
@@ -31347,7 +31387,7 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
             mod->on_post_calculate_stereo_view_offset(stereo, view_index, view_rotation, world_to_meters, view_location, g_hook->m_has_double_precision);
         }
 
-        if (true_index == 0) {
+        if (true_index == 0 && !quad_focus) {
             if (has_double_precision) {
                 g_hook->m_last_rotation_double = *rot_d;
             } else {
@@ -31364,7 +31404,7 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
             (vr->is_headlocked_aim_enabled() ||
                 (vr->is_controller_aim_enabled() && vr->is_using_controllers()));
 
-        if (true_index == 1 &&
+        if (true_index == 1 && !quad_focus &&
             vr->is_any_aim_method_active() &&
             !controller_camera_guard_active &&
             (vr->is_aim_modify_player_control_rotation_enabled() || direct_aim_compatibility_fallback))
@@ -31550,6 +31590,7 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
     static bool index_was_ever_two = false;
 
     const bool medium_one_based_projection_pass = medium_is_current_game();
+    const bool quad_view = is_quad_view_active();
 
     // This is eSSP_FULL, we don't care. It will cause the view to become monoscopic if we do anything.
     // or maybe we should, this could be used for WorldToScreen.
@@ -31558,7 +31599,7 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
         return out;
     }*/
 
-    if (!medium_one_based_projection_pass) {
+    if (!medium_one_based_projection_pass && !quad_view) {
         if (view_index == 2) {
             index_starts_from_one = true;
             index_was_ever_two = true;
@@ -31636,10 +31677,28 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
             VR::get()->get_runtime()->update_matrices((float)old_znear, 10000.0f);
         }
 
-        if (!g_hook->m_has_double_precision) {
-            *out = VR::get()->get_projection_matrix((VRRuntime::Eye)(true_index));
+        const auto quad_slot = uevr::quadview::slot_for_view(view_index, false);
+
+        if (quad_view && quad_slot.focus) {
+            // Sharp view: an off-axis frustum around the focus window, same
+            // near plane and reversed-Z form as the eye's own projection.
+            float m[16]{};
+            uevr::quadview::projection_from_tangents(
+                VR::get()->get_quad_view_focus_tangents(quad_slot.eye), VR::get()->m_nearz, m);
+            Matrix4x4f fmat{};
+            std::memcpy(&fmat, m, sizeof(m));
+
+            if (!g_hook->m_has_double_precision) {
+                *out = fmat;
+            } else {
+                double_matrix = fmat;
+            }
+
+            SPDLOG_INFO_ONCE("[QuadView] Using the sharp-view projection for view {}", view_index);
+        } else if (!g_hook->m_has_double_precision) {
+            *out = VR::get()->get_projection_matrix((VRRuntime::Eye)(quad_view ? quad_slot.eye : true_index));
         } else {
-            const auto fmat = VR::get()->get_projection_matrix((VRRuntime::Eye)(true_index));
+            const auto fmat = VR::get()->get_projection_matrix((VRRuntime::Eye)(quad_view ? quad_slot.eye : true_index));
             double_matrix = fmat;
         }
     } else {
@@ -31818,7 +31877,8 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
     }
 
     if (g_hook->m_sceneview_data.inside_post_init_properties) {
-        return 2;
+        // LocalPlayer sizes its ViewStates (TAA/TSR history, exposure) from this.
+        return is_quad_view_active() ? 4 : 2;
     }
 
     static const bool ktjl = [] {
@@ -31931,6 +31991,11 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
         return 1;
     }
 
+    if (is_quad_view_active()) {
+        SPDLOG_INFO_ONCE("[QuadView] Requesting four views (wide L, wide R, sharp L, sharp R)");
+        return 4;
+    }
+
     if (vr->is_native_stereo_fix_enabled()) {
         const bool ue59_dx11_fix = is_ue59_dx11_backend();
         if (ue59_dx11_fix && !vrmod::D3D11Component::ue59_native_fix_mode_supported(vr.get())) {
@@ -32040,6 +32105,13 @@ EStereoscopicPass FFakeStereoRenderingHook::get_view_pass_for_index_hook(FFakeSt
     // So we need to imitate it here to prevent a crash
     if (!stereo_requested || view_index < 0) {
         return EStereoscopicPass::eSSP_FULL;
+    }
+
+    // Quad View: only the left wide view is primary. Every other view is a
+    // secondary of it, which makes Unreal share its eye adaptation (exposure)
+    // across all four views, the fix BeamNG needed by hand.
+    if (is_quad_view_active()) {
+        return view_index == 0 ? EStereoscopicPass::eSSP_PRIMARY : EStereoscopicPass::eSSP_SECONDARY;
     }
 
     return view_index % 2 == 0 ? EStereoscopicPass::eSSP_PRIMARY : EStereoscopicPass::eSSP_SECONDARY;
