@@ -338,6 +338,63 @@ inline double edge_alpha(double u, double v, double blend) {
     return t * t * (3 - 2 * t);
 }
 
+// Shape of the sharp area as the compositor blends it (the sharp view itself
+// is always rendered as a rectangle).
+enum class FocusShape : int { RECTANGLE = 0, ROUNDED = 1, ELLIPSE = 2 };
+
+// Distance from (u, v) (0..1 across the sharp sprite) to the shape's edge, as
+// a share of the sprite size: 0 on the edge, 0.5 in the centre, negative
+// outside. Mirrors quad_view_compose.fx.
+inline double shape_edge_share(FocusShape shape, double u, double v) {
+    const double px = std::abs(u - 0.5) * 2.0; // 0 centre .. 1 sprite edge
+    const double py = std::abs(v - 0.5) * 2.0;
+    switch (shape) {
+    case FocusShape::ELLIPSE:
+        return (1.0 - std::sqrt(px * px + py * py)) * 0.5;
+    case FocusShape::ROUNDED: {
+        constexpr double r = 0.5; // corner radius, share of the half size
+        const double qx = px - (1.0 - r);
+        const double qy = py - (1.0 - r);
+        const double ox = (std::max)(qx, 0.0);
+        const double oy = (std::max)(qy, 0.0);
+        const double d = std::sqrt(ox * ox + oy * oy) + (std::min)((std::max)(qx, qy), 0.0) - r;
+        return -d * 0.5;
+    }
+    default:
+        return (std::min)(1.0 - px, 1.0 - py) * 0.5;
+    }
+}
+
+inline double shape_alpha(FocusShape shape, double u, double v, double blend) {
+    const double d = shape_edge_share(shape, u, v);
+    if (d <= 0) return 0.0;
+    if (blend <= 0) return 1.0;
+    const double t = std::clamp(d / blend, 0.0, 1.0);
+    return t * t * (3 - 2 * t);
+}
+
+// The compositor passes each sprite's settings through SpriteBatch's layer
+// depth: (shape * 2 + outline + blend * 2) / 8, blend in 0..0.5.
+inline float pack_sprite_settings(FocusShape shape, bool outline, float blend) {
+    const float b = std::clamp(blend, 0.0f, 0.5f) * 2.0f * 0.998f;
+    const int code = (int)shape * 2 + (outline ? 1 : 0);
+    return ((float)code + b) / 8.0f;
+}
+
+struct SpriteSettings {
+    FocusShape shape;
+    bool outline;
+    float blend;
+};
+
+inline SpriteSettings unpack_sprite_settings(float packed) {
+    const float v = packed * 8.0f;
+    const float code = std::floor(v + 0.0005f);
+    const float b = std::clamp(v - code, 0.0f, 1.0f) * 0.5f;
+    const int c = (int)code;
+    return SpriteSettings{(FocusShape)(c / 2), (c % 2) != 0, b};
+}
+
 // Share of the eye's pixels the four views cost, versus plain stereo at
 // native resolution (for the log and the settings UI).
 inline double pixel_share(const Layout& l, uint32_t eye_w, uint32_t eye_h) {

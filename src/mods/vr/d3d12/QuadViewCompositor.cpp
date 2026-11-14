@@ -205,26 +205,27 @@ bool QuadViewCompositor::record(ID3D12Device* device, ID3D12GraphicsCommandList*
 
     const DirectX::XMUINT2 atlas_size{(uint32_t)atlas_desc.Width, (uint32_t)atlas_desc.Height};
 
-    const auto draw = [&](const uevr::quadview::Rect& src, double x, double y, double w, double h, float blend, bool outline) {
+    const auto draw = [&](const uevr::quadview::Rect& src, double x, double y, double w, double h,
+                          uevr::quadview::FocusShape shape, float blend, bool outline) {
         const RECT s{(LONG)src.x, (LONG)src.y, (LONG)(src.x + src.w), (LONG)(src.y + src.h)};
         const DirectX::XMFLOAT2 position{(float)x, (float)y};
         const DirectX::XMFLOAT2 scale{(float)(w / src.w), (float)(h / src.h)};
         // The shader reads the destination rectangle from the colour and the
-        // blend/outline settings from the depth (see quad_view_compose.fx).
+        // shape/blend/outline settings from the depth (see quad_view_compose.fx).
         const auto rect = DirectX::XMVectorSet((float)x, (float)y, (float)(x + w), (float)(y + h));
-        const float packed = std::clamp(blend, 0.0f, 0.5f) * 0.5f + (outline ? 0.5f : 0.0f);
+        const float packed = uevr::quadview::pack_sprite_settings(shape, outline, blend);
         m_batch->Draw(m_source->get_srv_gpu(), atlas_size, position, &s, rect, 0.0f, DirectX::XMFLOAT2{0.0f, 0.0f}, scale,
             DirectX::DX12::SpriteEffects_None, packed);
     };
 
     for (uint32_t eye = 0; eye < 2; ++eye) {
-        draw(frame.layout.views[eye], eye * eye_w, 0.0, eye_w, eye_h, 0.0f, false);
+        draw(frame.layout.views[eye], eye * eye_w, 0.0, eye_w, eye_h, uevr::quadview::FocusShape::RECTANGLE, 0.0f, false);
     }
 
     for (uint32_t eye = 0; eye < 2 && !frame.wide_only; ++eye) {
         const auto d = uevr::quadview::focus_dest_rect(frame.rendered[eye], frame.focus[eye], eye * eye_w, eye_w, eye_h);
         if (d.w > 1.0 && d.h > 1.0) {
-            draw(frame.layout.views[eye + 2], d.x, d.y, d.w, d.h, frame.edge_blend, frame.outline);
+            draw(frame.layout.views[eye + 2], d.x, d.y, d.w, d.h, frame.shape, frame.edge_blend, frame.outline);
         }
     }
 

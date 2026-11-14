@@ -32,6 +32,7 @@ public:
         uevr::quadview::Tangents rendered[2]{};   // field of view each wide view was rendered with
         uevr::quadview::Tangents focus[2]{};      // the sharp windows this frame was rendered with
         float edge_blend{0.2f};                   // share of each side of the sharp view that fades out
+        uevr::quadview::FocusShape shape{uevr::quadview::FocusShape::RECTANGLE}; // blended shape of the sharp area
         bool outline{false};
         bool wide_only{false};                    // debug: skip the sharp views
     };

@@ -534,6 +534,9 @@ public:
     float get_quad_view_wide_lod_scale() const { return m_quad_view_wide_lod_scale->value(); }
     bool is_quad_view_shared_exposure_enabled() const { return m_quad_view_shared_exposure->value(); }
     float get_quad_view_edge_blend() const { return m_quad_view_edge_blend->value(); }
+    uevr::quadview::FocusShape get_quad_view_focus_shape() const {
+        return (uevr::quadview::FocusShape)std::clamp(m_quad_view_focus_shape->value(), 0, 2);
+    }
     bool is_quad_view_outline_enabled() const { return m_quad_view_show_outline->value(); }
     bool is_quad_view_compositor_enabled() const { return m_quad_view_compose->value(); }
     bool is_quad_view_wide_only_debug() const { return m_quad_view_debug_wide_only->value(); }
@@ -1462,6 +1465,12 @@ private:
         DESKTOP_MIRROR_SCENE_ONLY = 1,
     };
 
+    static const inline std::vector<std::string> s_quad_view_focus_shape_names{
+        "Rectangle",
+        "Rounded rectangle",
+        "Ellipse",
+    };
+
     static const inline std::vector<std::string> s_desktop_mirror_mode_names{
         "Full",
         "Scene Only",
@@ -1648,7 +1657,7 @@ private:
     const ModToggle::Ptr m_native_stereo_fix_same_pass{ ModToggle::create(generate_name("NativeStereoFixSamePass"), true) };
 
     // Quad View (RenderingMethod::QUAD_VIEW). Shown under the Rendering Method combo when selected.
-    const ModSlider::Ptr m_quad_view_wide_scale{ ModSlider::create(generate_name("QuadViewWideScale"), 0.2f, 1.0f, 0.5f) };
+    const ModSlider::Ptr m_quad_view_wide_scale{ ModSlider::create(generate_name("QuadViewWideScale"), 0.1f, 1.0f, 0.5f) };
     const ModSlider::Ptr m_quad_view_focus_width{ ModSlider::create(generate_name("QuadViewFocusWidth"), 0.1f, 0.8f, 0.3f) };
     const ModSlider::Ptr m_quad_view_focus_height{ ModSlider::create(generate_name("QuadViewFocusHeight"), 0.1f, 0.8f, 0.3f) };
     const ModSlider::Ptr m_quad_view_focus_density{ ModSlider::create(generate_name("QuadViewFocusDensity"), 0.5f, 2.0f, 1.0f) };
@@ -1662,6 +1671,12 @@ private:
     const ModToggle::Ptr m_quad_view_debug_wide_only{ ModToggle::create(generate_name("QuadViewDebugWideOnly"), false) };
     const ModToggle::Ptr m_quad_view_disable_vignette{ ModToggle::create(generate_name("QuadViewDisableVignette"), true) };
     std::optional<int> m_quad_view_saved_tonemapper_quality{};
+    const ModCombo::Ptr m_quad_view_focus_shape{ ModCombo::create(generate_name("QuadViewFocusShape"), s_quad_view_focus_shape_names, 0) };
+    // 0 = off. Objects smaller than this many pixels in the wide views are culled
+    // (foliage and instanced meshes, through foliage.MinimumScreenSize).
+    const ModSlider::Ptr m_quad_view_wide_min_pixels{ ModSlider::create(generate_name("QuadViewWideMinPixels"), 0.0f, 8.0f, 0.0f) };
+    // Cascade (CPU) particle spawn rate, whole image (r.EmitterSpawnRateScale). 1 = unchanged.
+    const ModSlider::Ptr m_quad_view_cpu_particles{ ModSlider::create(generate_name("QuadViewCPUParticles"), 0.1f, 1.0f, 1.0f) };
     const ModToggle::Ptr m_native_stereo_fix_preserve_secondary_pass{ ModToggle::create(generate_name("NativeStereoFixPreserveSecondaryPass"), true) };
     const ModToggle::Ptr m_native_stereo_fix_texture_array_submit{ ModToggle::create(generate_name("NativeStereoFixTextureArraySubmit"), false) };
     const ModToggle::Ptr m_native_stereo_fix_async_openxr_wait{ ModToggle::create(generate_name("NativeStereoFixAsyncOpenXRWait"), false) };
@@ -2001,6 +2016,9 @@ public:
             *m_quad_view_compose,
             *m_quad_view_debug_wide_only,
             *m_quad_view_disable_vignette,
+            *m_quad_view_focus_shape,
+            *m_quad_view_wide_min_pixels,
+            *m_quad_view_cpu_particles,
             *m_native_stereo_fix_preserve_secondary_pass,
             *m_native_stereo_fix_texture_array_submit,
             *m_native_stereo_fix_async_openxr_wait,

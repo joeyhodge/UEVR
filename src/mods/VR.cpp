@@ -7446,6 +7446,82 @@ void VR::on_pre_viewport_client_draw(void* viewport_client, void* viewport, void
     }
 }
 
+namespace {
+// A float cvar that Quad View overrides while it runs, restoring the game's
+// own value when Quad View (or the option) is turned off. The cvar is looked up
+// lazily and again from time to time, since plugin modules register late.
+struct QuadViewCVarOverride {
+    const wchar_t* name;
+    sdk::IConsoleVariable* variable{nullptr};
+    uint32_t lookups{0};
+    std::optional<float> saved{};
+    std::optional<float> applied{};
+
+    bool find() {
+        if (variable != nullptr) {
+            return true;
+        }
+        if (lookups++ % 300 != 0) {
+            return false;
+        }
+        const auto console_manager = sdk::FConsoleManager::get();
+        auto* object = console_manager != nullptr ? console_manager->find(name) : nullptr;
+        if (object == nullptr || object->AsCommand() != nullptr) {
+            return false;
+        }
+        variable = (sdk::IConsoleVariable*)object;
+        return true;
+    }
+
+    bool set(float value) {
+        wchar_t text[64]{};
+        swprintf_s(text, L"%.9g", value);
+        try {
+            return variable->Set(text);
+        } catch (...) {
+            return false;
+        }
+    }
+
+    // target: the value to hold, or nullopt to give the game its value back.
+    void update(std::optional<float> target) {
+        if (target) {
+            if (!find()) {
+                return;
+            }
+            const auto current = variable->TryGetFloat();
+            if (!current) {
+                return;
+            }
+            if (applied && std::abs(*current - *target) <= 1e-9f + std::abs(*target) * 1e-4f) {
+                return;
+            }
+            if (!saved) {
+                saved = *current;
+            }
+            if (set(*target)) {
+                applied = *target;
+                spdlog::info("[QuadView] {} {} -> {}", utility::narrow(name), *current, *target);
+            }
+        } else if (saved && variable != nullptr) {
+            set(*saved);
+            spdlog::info("[QuadView] {} restored to {}", utility::narrow(name), *saved);
+            saved.reset();
+            applied.reset();
+        }
+    }
+
+    const char* status() const {
+        if (applied) return "active";
+        if (variable == nullptr && lookups > 0) return "not found in this game";
+        return "off";
+    }
+};
+
+QuadViewCVarOverride g_quad_foliage_min_screen_size{L"foliage.MinimumScreenSize"};
+QuadViewCVarOverride g_quad_emitter_spawn_rate{L"r.EmitterSpawnRateScale"};
+}
+
 void VR::update_hmd_state(bool from_view_extensions, uint32_t frame_count) {
     ZoneScopedN(__FUNCTION__);
 
@@ -7511,6 +7587,27 @@ void VR::update_hmd_state(bool from_view_extensions, uint32_t frame_count) {
             spdlog::info("[QuadView] Vignette restored: r.Tonemapper.Quality -> {}", *m_quad_view_saved_tonemapper_quality);
             m_quad_view_saved_tonemapper_quality.reset();
         }
+    }
+
+    // Quad View: cull small objects in the wide views. foliage.MinimumScreenSize
+    // is a share of the screen measured with each view's own projection, so a
+    // threshold of N wide-view pixels culls only what is tiny in the periphery;
+    // the narrow sharp views see the same object much bigger and keep it.
+    {
+        const bool quad = FFakeStereoRenderingHook::is_quad_view_active();
+        std::optional<float> min_screen{};
+        if (quad && m_quad_view_wide_min_pixels->value() >= 0.5f) {
+            const auto layout = get_quad_view_layout();
+            const auto wide_px = (float)(std::max)(1u, (std::min)(layout.views[0].w, layout.views[0].h));
+            min_screen = m_quad_view_wide_min_pixels->value() / wide_px;
+        }
+        g_quad_foliage_min_screen_size.update(min_screen);
+
+        std::optional<float> spawn{};
+        if (quad && m_quad_view_cpu_particles->value() < 0.999f) {
+            spawn = m_quad_view_cpu_particles->value();
+        }
+        g_quad_emitter_spawn_rate.update(spawn);
     }
 
     if (frame_count != 0 && is_using_afr() && frame_count % 2 == 0) {
@@ -10575,6 +10672,12 @@ void VR::draw_quad_view_ui() {
     if (ImGui::TreeNodeEx("Wide views (periphery cost)", ImGuiTreeNodeFlags_DefaultOpen)) {
         m_quad_view_wide_scale->draw("Resolution (share of native)");
         m_quad_view_wide_lod_scale->draw("LOD scale (lower = simpler meshes)");
+        m_quad_view_wide_min_pixels->draw("Cull objects smaller than (pixels, 0 = off)");
+        ImGui::TextDisabled("Small object culling: %s. Covers foliage and instanced meshes; the sharp area keeps them.",
+            g_quad_foliage_min_screen_size.status());
+        m_quad_view_cpu_particles->draw("CPU particles (Cascade, whole image)");
+        ImGui::TextDisabled("CPU particles: %s. Particles are simulated once for all views, so this also thins them where you look.",
+            g_quad_emitter_spawn_rate.status());
 
         switch (FFakeStereoRenderingHook::s_quad_lod_status.load()) {
         case 0: ImGui::TextDisabled("LOD: learning this game's view layout..."); break;
@@ -10592,6 +10695,9 @@ void VR::draw_quad_view_ui() {
             m_quad_view_edge_blend->draw("Edge blend");
             m_quad_view_show_outline->draw("Show sharp area outline");
             m_quad_view_debug_wide_only->draw("Debug: show wide views only (see the periphery quality)");
+        }
+        if (m_quad_view_compose->value()) {
+            m_quad_view_focus_shape->draw("Sharp area shape");
         }
         m_quad_view_disable_vignette->draw("Remove vignette (otherwise each sharp view gets its own dark edges)");
         const bool composed = m_openxr->quad_composed.load();

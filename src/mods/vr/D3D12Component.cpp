@@ -4512,6 +4512,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                         d3d12::QuadViewCompositor::Frame frame{};
                         frame.layout = vr->get_quad_view_layout();
                         frame.edge_blend = vr->get_quad_view_edge_blend();
+                        frame.shape = vr->get_quad_view_focus_shape();
                         frame.outline = vr->is_quad_view_outline_enabled();
                         frame.wide_only = vr->is_quad_view_wide_only_debug();
                         const auto focus = xr->peek_submit_quad_focus();

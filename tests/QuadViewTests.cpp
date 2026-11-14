@@ -196,6 +196,31 @@ static void compose_tests() {
     expect(near(q::edge_alpha(0.01, 0.5, 0.0), 1.0), "no blend gives a hard edge");
 }
 
+static void shape_tests() {
+    using S = q::FocusShape;
+    for (double u : {0.05, 0.1, 0.3, 0.5}) {
+        expect(near(q::shape_alpha(S::RECTANGLE, u, 0.5, 0.2), q::edge_alpha(u, 0.5, 0.2)), "rectangle matches the old edge fade");
+    }
+    expect(near(q::shape_alpha(S::ELLIPSE, 0.5, 0.5, 0.2), 1.0), "ellipse centre is sharp");
+    expect(near(q::shape_alpha(S::ELLIPSE, 0.05, 0.05, 0.2), 0.0), "ellipse corner is wide");
+    expect(q::shape_alpha(S::ELLIPSE, 0.05, 0.5, 0.2) > 0.0, "ellipse side is inside the shape");
+    expect(near(q::shape_alpha(S::ROUNDED, 0.02, 0.02, 0.2), 0.0), "rounded corner is cut");
+    expect(near(q::shape_alpha(S::ROUNDED, 0.5, 0.5, 0.2), 1.0), "rounded centre is sharp");
+    expect(near(q::shape_alpha(S::ROUNDED, 0.1, 0.5, 0.2), q::edge_alpha(0.1, 0.5, 0.2)), "rounded sides fade like the rectangle");
+
+    for (int shape = 0; shape < 3; ++shape) {
+        for (bool outline : {false, true}) {
+            for (float blend : {0.0f, 0.1f, 0.25f, 0.5f}) {
+                const auto u = q::unpack_sprite_settings(q::pack_sprite_settings((S)shape, outline, blend));
+                expect((int)u.shape == shape && u.outline == outline && std::abs(u.blend - blend) < 0.002f,
+                    "sprite settings survive the layer depth packing");
+                const float packed = q::pack_sprite_settings((S)shape, outline, blend);
+                expect(packed >= 0.0f && packed < 1.0f, "packed settings stay in the depth range");
+            }
+        }
+    }
+}
+
 int main() {
     try {
         slot_tests();
@@ -208,6 +233,7 @@ int main() {
         gaze_direction_tests();
         lod_offset_tests();
         compose_tests();
+        shape_tests();
     } catch (const std::exception& e) {
         std::cerr << "FAILED: " << e.what() << '\n';
         return 1;
