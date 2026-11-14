@@ -15849,6 +15849,8 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                 "learning and the game needs UEVR to force Unreal to create a second scene history.");
             if (uevr::nascar::is_target()) {
                 ImGui::TextWrapped("NASCAR: bounded lazy allocation during normal view setup. No PostInitProperties replay, extra rendered views, or protected-image hooks. Native is unchanged.");
+            } else if (sdk::get_engine_version().major == 6) {
+                ImGui::TextWrapped("UE6: histories are allocated by normal engine view setup for the current world. No PostInitProperties replay or private view-state allocator calls.");
             } else {
                 ImGui::TextWrapped(
                     "Risky/legacy path: enable before injection or a scene load when possible; avoid live toggle spam.");

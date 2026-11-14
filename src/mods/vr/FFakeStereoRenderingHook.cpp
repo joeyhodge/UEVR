@@ -6428,6 +6428,7 @@ bool pbz_ue574_dx12_runtime() {
 }
 
 bool uses_lazy_localplayer_viewstates() {
+    if (sdk::ue6::never_replay_viewstate_postinit(sdk::get_engine_version().major)) { return true; }
     // Reviewed UE5.9 allocates histories in CalcSceneViewInitOptions, too.
     // PostInitProperties replay is not an allocator and must not be used here.
     return sdk::ue59::lazy_viewstates(sdk::ue59::current_identity()) ||

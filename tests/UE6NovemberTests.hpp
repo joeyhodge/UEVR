@@ -26,6 +26,8 @@ static_assert(offsetof(FamilyModel<1>, scene) == 0x60 && offsetof(FamilyModel<2>
 
 template<class Expect>
 void run(Expect&& expect) {
+    expect(sdk::ue6::never_replay_viewstate_postinit(6) && !sdk::ue6::never_replay_viewstate_postinit(5),
+        "UE6 histories use original engine view setup, never PostInitProperties replay; UE5 policy is unchanged");
     const sdk::ue6::ConsoleSetContext context{0x09000000};
     for (const size_t words : {1, 2, 3}) {
         const size_t used = 4 + 2 * words * 4;

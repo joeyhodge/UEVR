@@ -291,6 +291,20 @@
       "baselineSha256": "023B1228EA8D37AA81F2F641F402C7F278B809505184A9B4D6027B0789160A42"
     },
     {
+      "severity": "critical",
+      "area": "localplayer-world-bound-eye-states",
+      "path": "Engine/Source/Runtime/Engine/Private/LocalPlayer.cpp",
+      "targetSha256": "3EA2F66A9F1DC2DEBE5777098C323EB6259BA5833849C9BA1DAB677657F8D205",
+      "baselineSha256": "CA770D80A48981D7D62E048DC18E1BF0FD5DC496E0330F8A0E9030EB2858DCB2"
+    },
+    {
+      "severity": "critical",
+      "area": "localplayer-world-bound-eye-states",
+      "path": "Engine/Source/Runtime/Engine/Private/SceneViewStateReference.cpp",
+      "targetSha256": "44786AA23674FF12A2224230F25D7AFA8E12A8264D9CBA4A759A953EB44A7DC5",
+      "baselineSha256": "A19362FF3B537F75A268B3CA332170C2DC3B8F038C8FC1D8768D056F80445B5F"
+    },
+    {
       "severity": "support",
       "area": "split-headers-and-dependent-layouts",
       "path": "Engine/Source/Runtime/Engine/Private/ShowFlags.cpp",
@@ -338,6 +352,13 @@
       "path": "Engine/Source/Runtime/Engine/Public/SceneViewProjectionData.h",
       "targetSha256": "5FCC4B7AEE1269740F0DBF68FE967FCD76E2616708E8B22B5B55D3C34C66CB78",
       "baselineSha256": null
+    },
+    {
+      "severity": "critical",
+      "area": "localplayer-world-bound-eye-states",
+      "path": "Engine/Source/Runtime/Engine/Public/SceneViewStateReference.h",
+      "targetSha256": "5EA4008D5E38A66EA02BC7EAC5D002010CB9A73956AEC268DC9AAE64C189BB26",
+      "baselineSha256": "8ADD97028DD3085B08C332A625EF60975E714AABD7E6BC88E5CE044ADB228311"
     },
     {
       "severity": "critical",
