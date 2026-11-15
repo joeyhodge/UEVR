@@ -6,6 +6,7 @@
 #include "mods/vr/UE58NativeFix.hpp"
 #include "mods/vr/NativeStereoCopyExtent.hpp"
 #include "mods/vr/ParadoxDriveRHI.hpp"
+#include "fixtures/UE584StockABI.hpp"
 
 namespace ue58_native_tests {
 namespace n = uevr::ue58_native;
@@ -177,7 +178,6 @@ template<class Expect> void run(Expect&& expect) {
         "UE5.8 proves native deep-copy and base-only destructor through their shared vtable");
     expect(n::view_layout(m.view(), ctor) && n::renderer_layout(m.view(), renderer),
         "constructor and plural renderer independently corroborate UE5.8 eye/family fields");
-    expect(n::view_layout(m.view(), ctor, true), "ParadoxDrive admission does not change the existing stock constructor proof");
     const auto good = m;
     const auto mutate = [&](uintptr_t p, const auto& mask, auto&& validate) {
         for (size_t i = 0; i < mask.size(); ++i) {
@@ -210,16 +210,16 @@ template<class Expect> void run(Expect&& expect) {
         shifted.put(ctor + 0x3af, view_rects_code);
         shifted.put(ctor + 0x495, view_projection_code);
         shifted.put(ctor + 0x53d, view_stereo_code);
-        expect(!n::view_layout(shifted.view(), ctor) && n::view_layout(shifted.view(), ctor, true),
-            "ParadoxDrive's verified code placement requires explicit title admission, not a global UE5.8 relaxation");
+        expect(n::view_layout(shifted.view(), ctor),
+            "independently verified stock UE5.8.4 Shipping and ParadoxDrive share the shifted constructor proof");
         const auto before = shifted;
         const auto mutate_shifted = [&](uintptr_t address, const auto& mask) {
             for (size_t i = 0; i < mask.size(); ++i) {
                 if (!mask[i]) { continue; }
                 shifted = before;
                 shifted.bytes[address - b + i] ^= 1;
-                expect(!n::view_layout(shifted.view(), ctor, true),
-                    "changed ParadoxDrive member access or control flow rejects before eye writes or engine calls");
+                expect(!n::view_layout(shifted.view(), ctor),
+                    "changed stock UE5.8.4 member access or control flow rejects before eye writes or engine calls");
             }
         };
         mutate_shifted(ctor + 0x39, view_identity_mask);
@@ -228,15 +228,40 @@ template<class Expect> void run(Expect&& expect) {
         mutate_shifted(ctor + 0x53d, view_stereo_mask);
         shifted = before;
         shifted.readable = false;
-        expect(!n::view_layout(shifted.view(), ctor, true), "unreadable ParadoxDrive constructor code rejects");
+        expect(!n::view_layout(shifted.view(), ctor), "unreadable stock Shipping constructor code rejects");
         shifted = before;
         shifted.executable = false;
-        expect(!n::view_layout(shifted.view(), ctor, true), "non-executable ParadoxDrive code rejects");
+        expect(!n::view_layout(shifted.view(), ctor), "non-executable stock Shipping code rejects");
         shifted = before;
-        expect(!n::view_layout(shifted.view(), 0, true) &&
-            !n::view_layout(shifted.view(), UINTPTR_MAX - 0x10, true) &&
-            !n::view_layout(shifted.view(), ctor + 1, true),
-            "null, overflowing and interior ParadoxDrive constructor candidates cannot authorize the layout");
+        expect(!n::view_layout(shifted.view(), 0) &&
+            !n::view_layout(shifted.view(), UINTPTR_MAX - 0x10) &&
+            !n::view_layout(shifted.view(), ctor + 1),
+            "null, overflowing and interior stock Shipping constructor candidates cannot authorize the layout");
+    }
+
+    {
+        namespace stock = uevr::tests::ue584_stock;
+        Memory captured;
+        captured.put(ctor + 0x39, stock::view_identity);
+        captured.put(ctor + 0x3af, stock::view_rects);
+        captured.put(ctor + 0x495, stock::view_projection);
+        captured.put(ctor + 0x53d, stock::view_stereo);
+        captured.put(renderer + 0x2a, stock::renderer_span);
+        captured.put(renderer + 0x19c, stock::renderer_frame);
+        captured.put(copy, stock::family_copy);
+        captured.put(deleting, stock::family_delete);
+        captured.put(destroy, stock::family_destroy);
+        captured.put(table, deleting);
+        captured.put(copy + 0x2b, int32_t(table - (copy + 0x2f)));
+        captured.put(deleting + 0x10, int32_t(destroy - (deleting + 0x14)));
+        captured.put(destroy + 9, int32_t(table - (destroy + 0xd)));
+        const auto family = n::family_functions(captured.view(), copy, b, captured.bytes.size(), size);
+        expect(n::view_layout(captured.view(), ctor) && n::renderer_layout(captured.view(), renderer) &&
+            family && family->copy == copy && family->destroy == destroy && family->vtable == table,
+            "independent stock UE5.8.4 Shipping bytes prove the linked view/renderer and family ownership contracts");
+        captured.bytes[ctor - b + 0x53d] ^= 1;
+        expect(!n::view_layout(captured.view(), ctor),
+            "a changed stock constructor cannot use the confirmed Shipping eye layout");
     }
 
     for (auto dims : {std::pair{1024,1024}, std::pair{2472,2416}, std::pair{3500,3100}, std::pair{8192,4096}}) {
@@ -385,23 +410,26 @@ template<class Expect> void shipping_image(const char* path, Expect&& expect) {
     };
     const bool roadtruckers = image.size==186809344;
     const bool paradoxdrive = image.size==167882752;
-    expect((image.size==195425280 || roadtruckers || paradoxdrive) && image.base==0x140000000,
-        "UE5.8 fixture is an analyzed complete Fatekeeper, RoadTruckers or ParadoxDrive build");
-    const uintptr_t constructor=paradoxdrive ? 0x142f098f0 : roadtruckers ? 0x142f9c3e0 : 0x142f43710;
-    const uintptr_t renderer=paradoxdrive ? 0x143b53a40 : roadtruckers ? 0x143befbb0 : 0x143b8c630;
-    const uintptr_t copy=paradoxdrive ? 0x142f0b010 : roadtruckers ? 0x142f9dd20 : 0x142f45050;
-    const uintptr_t destroy=paradoxdrive ? 0x142f0d3d0 : roadtruckers ? 0x142fa0180 : 0x142f47530;
-    const uintptr_t table=paradoxdrive ? 0x147df9c90 : roadtruckers ? 0x148967ea0 : 0x148eba550;
-    expect(n::view_layout(memory,constructor,paradoxdrive) && n::renderer_layout(memory,renderer),
+    const bool stock584 = image.size==165862328;
+    const bool analyzed = (image.size==195425280 || roadtruckers || paradoxdrive || stock584) && image.base==0x140000000;
+    expect(analyzed, "UE5.8 fixture is an analyzed complete stock Shipping, Fatekeeper, RoadTruckers or ParadoxDrive build");
+    if (!analyzed) { return; }
+    const uintptr_t constructor=stock584 ? 0x142f02bb0 : paradoxdrive ? 0x142f098f0 : roadtruckers ? 0x142f9c3e0 : 0x142f43710;
+    const uintptr_t renderer=stock584 ? 0x143b4cc80 : paradoxdrive ? 0x143b53a40 : roadtruckers ? 0x143befbb0 : 0x143b8c630;
+    const uintptr_t copy=stock584 ? 0x142f042d0 : paradoxdrive ? 0x142f0b010 : roadtruckers ? 0x142f9dd20 : 0x142f45050;
+    const uintptr_t destroy=stock584 ? 0x142f06690 : paradoxdrive ? 0x142f0d3d0 : roadtruckers ? 0x142fa0180 : 0x142f47530;
+    const uintptr_t table=stock584 ? 0x147cb4820 : paradoxdrive ? 0x147df9c90 : roadtruckers ? 0x148967ea0 : 0x148eba550;
+    expect(n::view_layout(memory,constructor) && n::renderer_layout(memory,renderer),
         "actual unmodified game code proves projection/rect/stereo identity and linked renderer argument flow");
-    if (paradoxdrive) {
-        expect(!n::view_layout(memory,constructor), "actual ParadoxDrive code does not broaden the stock UE5.8 proof");
+    if (paradoxdrive || stock584) {
         namespace p = uevr::paradoxdrive_rhi;
-        expect(p::render_texture_layout(memory,image.base,image.module_size,0x143209630,size) &&
-            p::builder_layout(memory,image.base,image.module_size,0x143261190,size),
-            "actual ParadoxDrive RDG overload and constructor prove the immediate-list reference before unwrapping");
-        expect(!p::render_texture_layout(memory,image.base,image.module_size,0x143209631,size) &&
-            !p::builder_layout(memory,image.base,image.module_size,0x143261191,size),
+        const auto callback=stock584 ? uintptr_t{0x143202870} : uintptr_t{0x143209630};
+        const auto builder=stock584 ? uintptr_t{0x14325a3d0} : uintptr_t{0x143261190};
+        expect(p::render_texture_layout(memory,image.base,image.module_size,callback,size) &&
+            p::builder_layout(memory,image.base,image.module_size,builder,size),
+            "actual stock/ParadoxDrive RDG overload and constructor prove the immediate-list reference before unwrapping");
+        expect(!p::render_texture_layout(memory,image.base,image.module_size,callback+1,size) &&
+            !p::builder_layout(memory,image.base,image.module_size,builder+1,size),
             "actual interior RDG code addresses cannot authorize the borrowed reference");
     }
     const auto f=n::family_functions(memory,copy,image.base,image.module_size,size);
