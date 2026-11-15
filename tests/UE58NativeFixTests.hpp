@@ -6,7 +6,9 @@
 #include "mods/vr/UE58NativeFix.hpp"
 #include "mods/vr/NativeStereoCopyExtent.hpp"
 #include "mods/vr/ParadoxDriveRHI.hpp"
+#include "mods/vr/UE584Development.hpp"
 #include "fixtures/UE584StockABI.hpp"
+#include "fixtures/UE584DevelopmentABI.hpp"
 
 namespace ue58_native_tests {
 namespace n = uevr::ue58_native;
@@ -139,8 +141,71 @@ template<class Expect> void test_copy_extent(Expect&& expect) {
         "The corrected resolution does not cause a steady-state rebuild loop");
 }
 
+template<class Expect> void test_development(Expect&& expect) {
+    namespace d = uevr::ue584_development;
+    namespace f = uevr::tests::ue584_development;
+    namespace s = uevr::tests::ue584_stock;
+    Memory memory;
+    const auto base = memory.base, copy = base + 0x100, deleting = base + 0x700, destroy = base + 0x800;
+    const auto table = base + 0x6000, constructor = base + 0x2000, renderer = base + 0x3000;
+    memory.put(constructor + 0x39, s::view_identity);
+    memory.put(constructor + 0x3af, s::view_rects);
+    memory.put(constructor + 0x495, s::view_projection);
+    memory.put(constructor + 0x53d, f::view_stereo);
+    memory.put(renderer + 0x30, f::renderer);
+    memory.put(copy, f::family_copy); memory.put(deleting, f::family_delete); memory.put(destroy, f::family_destroy);
+    memory.put(table, deleting);
+    memory.put(copy + 0x25, int32_t(table - (copy + 0x29)));
+    memory.put(deleting + 0x10, int32_t(destroy - (deleting + 0x14)));
+    memory.put(destroy + 9, int32_t(table - (destroy + 0xd)));
+    const auto size = [&](uintptr_t address) -> size_t {
+        return address == copy ? f::family_copy.size() : address == deleting ? f::family_delete.size() :
+            address == destroy ? f::family_destroy.size() : 0;
+    };
+    const auto resolve = [&] { return d::family_functions(memory.view(), copy, base, memory.bytes.size(), size); };
+    const auto family = resolve();
+    expect(d::view_layout(memory.view(), constructor) && d::renderer_layout(memory.view(), renderer) &&
+        family && family->development_layout && family->copy == copy && family->destroy == destroy && family->vtable == table,
+        "independent Development bytes prove eye fields, the linked renderer and the larger family's native ownership");
+    expect(!n::view_layout(memory.view(), constructor) && !n::renderer_layout(memory.view(), renderer) &&
+        !n::family_functions(memory.view(), copy, base, memory.bytes.size(), size),
+        "Development cannot inherit Shipping constructor, renderer or placement-storage authorization");
+    const auto original = memory;
+    const auto mutate = [&](uintptr_t address, const auto& mask, auto&& check) {
+        for (size_t i = 0; i < mask.size(); ++i) {
+            if (!mask[i]) { continue; }
+            memory = original;
+            memory.bytes[address - base + i] ^= 1;
+            expect(!check(), "changed Development identity, ownership or control flow rejects before engine calls");
+        }
+    };
+    const auto view = [&] { return d::view_layout(memory.view(), constructor); };
+    const auto render = [&] { return d::renderer_layout(memory.view(), renderer); };
+    mutate(constructor + 0x39, n::contract::view_identity_mask, view);
+    mutate(constructor + 0x3af, n::contract::view_rects_mask, view);
+    mutate(constructor + 0x495, n::contract::view_projection_mask, view);
+    mutate(constructor + 0x53d, d::contract::view_stereo_mask, view);
+    mutate(renderer + 0x30, d::contract::renderer_mask, render);
+    mutate(copy, uevr::ue59_native::contract::development_family_copy_mask, resolve);
+    mutate(deleting, uevr::ue59_native::contract::development_family_delete_mask, resolve);
+    mutate(destroy, d::contract::family_destroy_mask, resolve);
+    memory = original; memory.put(destroy + 9, int32_t(table + 8 - (destroy + 0xd)));
+    expect(!resolve(), "the Development base destructor must restore the same vtable as its copy constructor");
+    memory = original; memory.put(table, deleting + 1);
+    expect(!resolve(), "a Development interior/deleting/context-destructor mismatch rejects");
+    memory = original; memory.readable = false;
+    expect(!view() && !render() && !resolve(), "unreadable Development code cannot authorize a write or native call");
+    memory = original; memory.executable = false;
+    expect(!view() && !render() && !resolve(), "non-executable Development candidates reject");
+    memory = original;
+    expect(!d::view_layout(memory.view(), UINTPTR_MAX - 16) &&
+        !d::family_functions(memory.view(), copy, base, memory.bytes.size(), [](uintptr_t) -> size_t { return 0; }),
+        "Development requires bounded addresses and original function starts/sizes");
+}
+
 template<class Expect> void run(Expect&& expect) {
     test_copy_extent(expect);
+    test_development(expect);
     using namespace n::contract;
     expect(n::needs_guarded_fallback(L"D:/Games/SLASHER-Win64-Shipping.exe") &&
         n::needs_guarded_fallback(L"d:\\Games\\slasher-win64-shipping.EXE"), "changed Fatekeeper code must fail closed rather than return to the crashing path");
@@ -408,6 +473,30 @@ template<class Expect> void shipping_image(const char* path, Expect&& expect) {
         const auto e=std::lower_bound(entries.begin(),entries.end(),rva,[](auto e,uint32_t rva) { return e[0]<rva; });
         return e!=entries.end() && (*e)[0]==rva && (*e)[1]>(*e)[0] ? (*e)[1]-(*e)[0] : 0;
     };
+    if (image.size == 331843000 && image.base == 0x140000000) {
+        namespace d = uevr::ue584_development;
+        constexpr uintptr_t constructor = 0x145e36770, renderer = 0x147973b60;
+        constexpr uintptr_t copy = 0x145e38330, destroy = 0x145e3c9e0, table = 0x14fdc9398;
+        const auto family = d::family_functions(memory, copy, image.base, image.module_size, size);
+        expect(d::view_layout(memory, constructor) && d::renderer_layout(memory, renderer) &&
+            family && family->development_layout && family->destroy == destroy && family->vtable == table,
+            "actual Development EXE/PDB code proves its independent linked renderer and full native family ownership");
+        expect(!n::view_layout(memory, constructor) && !n::renderer_layout(memory, renderer) &&
+            !n::family_functions(memory, copy, image.base, image.module_size, size),
+            "the actual Development binary is never authorized by Shipping layout contracts");
+        namespace p = uevr::paradoxdrive_rhi;
+        constexpr uintptr_t callback = 0x146546610, builder = 0x146607330;
+        const auto scan = [&](uintptr_t cursor, size_t, const char*) -> std::optional<uintptr_t> {
+            return cursor <= builder ? std::optional<uintptr_t>{builder} : std::nullopt;
+        };
+        expect(p::classify_input(memory, L"UnrealGame.exe", 0x50008, image.base, image.module_size,
+            callback, scan, size) == p::Input::VerifiedRDG,
+            "actual Development callback and constructor prove RDG +0xc0 rather than the legacy allocator root");
+        expect(!d::view_layout(memory, constructor+1) &&
+            !d::family_functions(memory, copy+1, image.base, image.module_size, size),
+            "interior Development addresses cannot authorize private calls");
+        return;
+    }
     const bool roadtruckers = image.size==186809344;
     const bool paradoxdrive = image.size==167882752;
     const bool stock584 = image.size==165862328;
