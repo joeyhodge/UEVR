@@ -35,6 +35,7 @@ public:
         uevr::quadview::FocusShape shape{uevr::quadview::FocusShape::RECTANGLE}; // blended shape of the sharp area
         bool outline{false};
         bool wide_only{false};                    // debug: skip the sharp views
+        bool sharp_only{false};                   // debug: skip the wide views
     };
 
     // Creates a SpriteBatch for the given output format using the compositor's

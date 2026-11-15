@@ -197,6 +197,13 @@ bool QuadViewCompositor::record(ID3D12Device* device, ID3D12GraphicsCommandList*
     cmd->RSSetViewports(1, &viewport);
     cmd->RSSetScissorRects(1, &scissor);
 
+    if (frame.sharp_only) {
+        // The output texture is reused every frame; clear it so the previous
+        // frame's wide views do not remain around the sharp window.
+        const float clear[4]{0.0f, 0.0f, 0.0f, 1.0f};
+        cmd->ClearRenderTargetView(rtv, clear, 0, nullptr);
+    }
+
     ID3D12DescriptorHeap* heaps[] = {m_source->srv_heap->Heap()};
     cmd->SetDescriptorHeaps(1, heaps);
 
@@ -218,7 +225,7 @@ bool QuadViewCompositor::record(ID3D12Device* device, ID3D12GraphicsCommandList*
             DirectX::DX12::SpriteEffects_None, packed);
     };
 
-    for (uint32_t eye = 0; eye < 2; ++eye) {
+    for (uint32_t eye = 0; eye < 2 && !frame.sharp_only; ++eye) {
         draw(frame.layout.views[eye], eye * eye_w, 0.0, eye_w, eye_h, uevr::quadview::FocusShape::RECTANGLE, 0.0f, false);
     }
 
