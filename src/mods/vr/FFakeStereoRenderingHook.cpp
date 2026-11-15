@@ -142,6 +142,7 @@
 #include <sdk/threading/GameThreadWorker.hpp>
 #include <sdk/threading/RenderThreadWorker.hpp>
 #include <sdk/threading/RHIThreadWorker.hpp>
+#include <sdk/AbzuCapture.hpp>
 #include "../VR.hpp"
 #include "../../utility/Logging.hpp"
 #include "../../utility/BuildIdentity.hpp"
@@ -3875,6 +3876,71 @@ sdk::UTexture* create_daysgone_legacy_render_target(
         object_address,
         width,
         height);
+    return texture;
+}
+
+bool abzu_native_fix_requested() {
+    static const bool target = sdk::abzu::target(
+        utility::get_module_pathw(utility::get_executable()).value_or(L""));
+    return target && g_framework != nullptr && g_framework->is_dx11() &&
+        VR::get()->is_using_native_stereo() && VR::get()->is_native_stereo_fix_enabled();
+}
+
+bool abzu_native_fix_runtime() {
+    if (!abzu_native_fix_requested()) { return false; }
+    static const bool validated = [] {
+        const auto memory = sdk::discovery::process_memory();
+        const auto base = reinterpret_cast<uintptr_t>(utility::get_executable());
+        return sdk::abzu::factory(memory, base) && sdk::abzu::viewport_rect_contract(memory, base);
+    }();
+    if (!validated) { SPDLOG_ERROR_ONCE("[ABZU][NativeFix] Capture/viewport ABI did not validate; keeping the ordinary packed eye pair"); }
+    return validated;
+}
+
+sdk::UTexture* create_abzu_legacy_render_target(sdk::UGameplayStatics* gameplay_statics,
+    sdk::UWorld* world, sdk::USceneCaptureComponent2D* component, uint32_t width, uint32_t height)
+{
+    namespace a = sdk::abzu;
+    if (!abzu_native_fix_runtime() || !GameThreadWorker::get().is_same_thread() ||
+        !gameplay_statics || !world || !component || !a::dimensions(width, height)) { return nullptr; }
+    const auto target_class = sdk::find_uobject<sdk::UClass>(L"Class /Script/Engine.TextureRenderTarget2D");
+    if (!target_class || target_class->get_properties_size() != a::texture_size) { return nullptr; }
+    for (const auto& [name, offset] : std::array{
+        std::pair{L"TargetGamma", 0xb8}, std::pair{L"SizeX", 0xc0}, std::pair{L"SizeY", 0xc4},
+        std::pair{L"ClearColor", 0xc8}, std::pair{L"bForceLinearGamma", 0xdc},
+        std::pair{L"bAutoGenerateMips", 0xdc}, std::pair{L"OverrideFormat", 0xe0}}) {
+        const auto property = target_class->find_property(name);
+        if (!property || property->get_offset() != offset) {
+            SPDLOG_ERROR_ONCE("[ABZU][NativeFix] Reflected target layout differs from its native factory");
+            return nullptr;
+        }
+    }
+    const auto memory = sdk::discovery::process_memory();
+    const auto base = reinterpret_cast<uintptr_t>(utility::get_executable());
+    const auto object = gameplay_statics->spawn_object(target_class, world);
+    auto* texture = static_cast<sdk::UTexture*>(object);
+    sdk::UObjectReference keep_identity{texture};
+    const auto address = reinterpret_cast<uintptr_t>(object);
+    if (!keep_identity.valid() || !is_writable_process_range(address, a::texture_size) ||
+        !a::fresh_target(memory, address, base, reinterpret_cast<uintptr_t>(target_class), reinterpret_cast<uintptr_t>(world))) {
+        SPDLOG_ERROR("[ABZU][NativeFix] Refused a nonempty, default or wrongly owned render target");
+        return nullptr;
+    }
+    constexpr std::array<float, 4> clear{0, 0, 0, 1};
+    std::memcpy(reinterpret_cast<void*>(address + 0xc8), clear.data(), sizeof(clear));
+    *reinterpret_cast<float*>(address + 0xb8) = 0;
+    *reinterpret_cast<uint8_t*>(address + 0xbc) &= ~1u; // One target/SRV resource, not a separately resolved copy.
+    *reinterpret_cast<uint32_t*>(address + 0xdc) &= ~4u;
+    // This strong UPROPERTY pins the target before the engine queues InitRHI.
+    component->set_texture_target(texture);
+    if (!component->get_texture_target() || *component->get_texture_target() != texture) { return nullptr; }
+    using InitCustomFormat = void (*)(sdk::UTexture*, uint32_t, uint32_t, uint8_t, bool);
+    reinterpret_cast<InitCustomFormat>(base + a::code::init_custom_format_rva)(texture, width, height, 2, true);
+    if (!keep_identity.valid() || !a::initialized_capture(memory, address, width, height)) {
+        SPDLOG_ERROR("[ABZU][NativeFix] Native initializer did not preserve linear BGRA8, one-mip capture fields");
+        return nullptr;
+    }
+    SPDLOG_INFO("[ABZU][NativeFix] Created owned legacy BGRA8 capture {:x} [{}x{}]; RHI initialization remains engine-queued", address, width, height);
     return texture;
 }
 
@@ -11419,6 +11485,17 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
     uintptr_t direct_callback_return = 0,
     uintptr_t excluded_viewport_draw = 0)
 {
+    if (abzu_native_fix_requested()) {
+        const auto entry = sdk::abzu::renderer_entry(sdk::discovery::process_memory(),
+            reinterpret_cast<uintptr_t>(utility::get_executable()), direct_callback_return, excluded_viewport_draw);
+        if (!entry) {
+            SPDLOG_WARN_ONCE("[ABZU][NativeFix] Renderer vtable/callback contract not validated; refusing Draw/size-based stack fallback");
+            return std::nullopt;
+        }
+        SPDLOG_INFO("[ABZU][NativeFix] Validated singular renderer {:x} from native slot 8 and callback {:x}; excluded Draw {:x}",
+            *entry, direct_callback_return, excluded_viewport_draw);
+        return entry;
+    }
     if (b1_is_supported_renderer_runtime()) {
         const auto candidate = get_b1_callable_renderer_range(direct_callback_return, excluded_viewport_draw);
         if (!candidate) {
@@ -24185,7 +24262,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
         if (!vr->is_using_afr() && true_index == 1 &&
             (!vr->is_native_stereo_fix_enabled() || swgr_ue574_dx12_runtime() || goweday_ue561_dx12_runtime() ||
-             finch_native_fix_runtime())) {
+             finch_native_fix_runtime() || abzu_native_fix_requested())) {
             x += w;
         }
 
@@ -28074,6 +28151,33 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         SPDLOG_INFO_ONCE("[Finch][NativeFix] Using zero-origin rectangles only inside the renderer transaction; restoring packed rectangles before viewport coverage checks");
     }
 
+    sdk::abzu::RightRectOverride abzu_right_rects{};
+    if (abzu_native_fix_runtime()) {
+        const auto as_rect = [](const FIntRect& source) {
+            sdk::abzu::Rect rect{};
+            std::copy_n(source.bounds, 4, rect.begin());
+            return rect;
+        };
+        const auto write_rects = [](void*, uintptr_t view, const sdk::abzu::ViewRects& rects) {
+            if (!sdk::abzu::pointer(view, sdk::abzu::rects_offset + sizeof(rects)) ||
+                !is_writable_process_range(view + sdk::abzu::rects_offset, sizeof(rects))) { return false; }
+            std::memcpy(reinterpret_cast<void*>(view + sdk::abzu::rects_offset), &rects, sizeof(rects));
+            return true;
+        };
+        if (!abzu_right_rects.initialize(sdk::discovery::process_memory(),
+                reinterpret_cast<uintptr_t>(native_left_view), reinterpret_cast<uintptr_t>(native_right_view),
+                as_rect(native_left_metadata.constrained_view_rect), as_rect(native_left_metadata.view_rect),
+                as_rect(native_right_metadata.constrained_view_rect), as_rect(native_right_metadata.view_rect),
+                native_capture_snapshot->width, native_capture_snapshot->height, nullptr, write_rects)) {
+            const bool restored = abzu_right_rects.restore();
+            g_hook->invalidate_native_stereo_frame_packet(NativeStereoFixState::FailedClosed,
+                restored ? "ABZU packed eye rectangles did not validate" : "ABZU eye rectangles could not be restored");
+            if (restored) { call_original(); }
+            return;
+        }
+        SPDLOG_INFO_ONCE("[ABZU][NativeFix] Keeping packed viewport rectangles; rebasing only the renderer's right singleton");
+    }
+
     // Render the proven primary view through the game's complete original
     // family array so auxiliary families keep their normal behavior.
     views.data[0] = native_left_view;
@@ -28236,6 +28340,12 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         g_hook->invalidate_native_stereo_frame_packet(NativeStereoFixState::FailedClosed,
             "Finch packed rectangles were not restored after rendering");
         SPDLOG_ERROR_EVERY_N_SEC(2, "[Finch][NativeFix] Right-eye rendering completed but packed viewport rectangles were not restored");
+        return;
+    }
+    if (!abzu_right_rects.restore()) {
+        g_hook->invalidate_native_stereo_frame_packet(NativeStereoFixState::FailedClosed,
+            "ABZU packed rectangles were not restored after rendering");
+        SPDLOG_ERROR_EVERY_N_SEC(2, "[ABZU][NativeFix] Refusing publication after failed packed-rectangle restoration");
         return;
     }
     stalker_secondary_frame = stalker_family_frame();
@@ -28634,7 +28744,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
                         (farfarwest_ue581_view_extension_layout_is_current_game() ||
                          hifi_rush_native_fix_renderer_is_current_game() ||
                          sifu_native_fix_renderer_is_current_game() ||
-                         b1_is_supported_renderer_runtime())
+                         b1_is_supported_renderer_runtime() || abzu_native_fix_requested())
                             ? g_hook->m_gameviewportclient_draw_hook.target_address()
                             : 0);
             if (!candidate) {
@@ -31569,7 +31679,8 @@ void FFakeStereoRenderingHook::adjust_view_rect(FFakeStereoRendering* stereo, in
         *x = 0;
         *y = 0;
     } else if (!VR::get()->is_native_stereo_fix_enabled() || swgr_ue574_dx12_runtime() ||
-               goweday_ue561_dx12_runtime() || sinking_city_2_native_runtime() || ue58_native_linked_runtime() || finch_native_fix_runtime()) {
+               goweday_ue561_dx12_runtime() || sinking_city_2_native_runtime() || ue58_native_linked_runtime() ||
+               finch_native_fix_runtime() || abzu_native_fix_requested()) {
         *x += *w * true_index;
     }
 }
@@ -43852,7 +43963,8 @@ FRHITexture2D* VRRenderTargetManager_Base::get_scene_capture_render_target() {
     }
 
     // Retired/pending owned targets must not re-enter cached global discovery.
-    if (swgr_ue574_dx12_runtime() || hellraiser_uses_validated_ue561_native_fix_capture_layout()) { return nullptr; }
+    if (swgr_ue574_dx12_runtime() || hellraiser_uses_validated_ue561_native_fix_capture_layout() ||
+        abzu_native_fix_requested()) { return nullptr; }
 
     if (this->in_flight_target != nullptr) {
         return nullptr;
@@ -44135,7 +44247,8 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
         g_framework != nullptr &&
         g_framework->is_dx11();
     const auto use_finch_legacy_target = kismet_rendering == nullptr && finch_native_fix_runtime();
-    if (kismet_rendering == nullptr && !use_daysgone_legacy_target && !use_finch_legacy_target) {
+    const auto use_abzu_legacy_target = kismet_rendering == nullptr && abzu_native_fix_runtime();
+    if (kismet_rendering == nullptr && !use_daysgone_legacy_target && !use_finch_legacy_target && !use_abzu_legacy_target) {
         SPDLOG_ERROR("[VRRenderTargetManager] Failed to get UKismetRenderingLibrary!");
         return false;
     }
@@ -44179,9 +44292,19 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
         return false;
     }
 
-    auto* capture_actor_class = use_finch_legacy_target
+    auto* capture_actor_class = use_finch_legacy_target || use_abzu_legacy_target
         ? sdk::find_uobject<sdk::UClass>(L"Class /Script/Engine.SceneCapture2D") : actor_c;
     if (capture_actor_class == nullptr) { return false; }
+    if (use_abzu_legacy_target) {
+        if (capture_actor_class->get_properties_size() != sdk::abzu::actor_size ||
+            scene_capture_c->get_properties_size() != sdk::abzu::component_size) { return false; }
+        for (const auto& [name, offset] : std::array{
+            std::pair{L"bCaptureEveryFrame", 0x220}, std::pair{L"TextureTarget", 0x288},
+            std::pair{L"bNeedsUpdateContentOnTransformUpdate", 0x644}}) {
+            const auto property = scene_capture_c->find_property(name);
+            if (!property || property->get_offset() != offset) { return false; }
+        }
+    }
     this->scene_capture_actor = ugs->spawn_actor(world, capture_actor_class, glm::vec3{0, 0, 0});
 
     if (this->scene_capture_actor == nullptr) {
@@ -44206,20 +44329,34 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
         is_ue_5_5_dx_backend() || is_ue_5_6_dx_backend() ||
         is_ue_5_7_runtime() || uses_reviewed_modern_stereo_contract();
     const auto component_plan = uevr::scene_capture::component_plan(
-        use_daysgone_legacy_component || use_finch_legacy_target, use_bodycam_passive_capture_holder,
+        use_daysgone_legacy_component || use_finch_legacy_target || use_abzu_legacy_target, use_bodycam_passive_capture_holder,
         supports_deferred_configuration);
-    if (use_finch_legacy_target) {
+    if (use_finch_legacy_target || use_abzu_legacy_target) {
         // This old engine rejects SpawnObject(UActorComponent). Its built-in
         // SceneCapture2D actor constructs and registers the component correctly.
         const auto property = capture_actor_class->find_property(L"CaptureComponent2D");
         auto* actor = this->scene_capture_actor.get();
-        if (!property || property->get_offset() != sdk::finch::capture_component_offset ||
+        const auto expected_offset = use_abzu_legacy_target ? sdk::abzu::component_offset : sdk::finch::capture_component_offset;
+        if (!property || property->get_offset() != expected_offset ||
             !is_readable_process_range(reinterpret_cast<uintptr_t>(actor),
-                sdk::finch::capture_component_offset + sizeof(void*))) { return false; }
+                expected_offset + sizeof(void*))) { return false; }
         auto* component = *property->get_data<sdk::USceneCaptureComponent2D*>(actor);
         if (!component || !is_readable_process_range(reinterpret_cast<uintptr_t>(component),
                 sdk::UObjectBase::get_class_size()) || !component->is_a(scene_capture_c) ||
             component->get_outer() != actor) { return false; }
+        if (use_abzu_legacy_target) {
+            const auto base = reinterpret_cast<uintptr_t>(utility::get_executable());
+            const auto actor_address = reinterpret_cast<uintptr_t>(actor);
+            const auto component_address = reinterpret_cast<uintptr_t>(component);
+            if (!is_readable_process_range(actor_address, sdk::abzu::actor_size) ||
+                !is_writable_process_range(component_address, sdk::abzu::component_size) ||
+                *reinterpret_cast<const uintptr_t*>(actor) != base + sdk::abzu::actor_vtable ||
+                !sdk::abzu::owned_object(sdk::discovery::process_memory(), component_address, base,
+                    sdk::abzu::component_vtable, reinterpret_cast<uintptr_t>(scene_capture_c), actor_address)) { return false; }
+            // ABZU has no bCaptureOnMovement. Disable its independently verified
+            // transform-update boolean, as well as the inherited per-frame flag.
+            *reinterpret_cast<bool*>(component_address + 0x644) = false;
+        }
         this->scene_capture_component = component;
         for (const auto name : {L"bCaptureEveryFrame", L"bCaptureOnMovement"}) {
             if (scene_capture_c->find_property(name)) { component->set_bool_property(name, false); }
@@ -44247,7 +44384,9 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
     const auto target_width = VR::get()->get_hmd_width();
     const auto target_height = VR::get()->get_hmd_height();
     sdk::UTexture* tgt_raw{};
-    if (use_finch_legacy_target) {
+    if (use_abzu_legacy_target) {
+        tgt_raw = create_abzu_legacy_render_target(ugs, world, this->scene_capture_component.get(), target_width, target_height);
+    } else if (use_finch_legacy_target) {
         tgt_raw = create_finch_legacy_render_target(ugs, world, target_width, target_height);
     } else if (sdk::kh3::is_process() && g_framework->is_dx11() && VR::get()->is_native_stereo_fix_enabled()) {
         tgt_raw = create_kh3_native_capture_target(ugs, world, target_width, target_height);
@@ -44347,6 +44486,23 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
         }
     };
 
+    static auto hook_abzu_frt = [](sdk::FRenderTarget* frt) {
+        const auto base = reinterpret_cast<uintptr_t>(utility::get_executable());
+        if (!sdk::abzu::target_accessors(sdk::discovery::process_memory(), base, reinterpret_cast<uintptr_t>(frt)) ||
+            sdk::FRenderTarget::get_display_gamma_index() != sdk::abzu::gamma_slot) { return false; }
+        // Six real FRenderTarget slots, not adjacent resource/deferred vtables.
+        // Immutable process-lifetime storage also survives queued old generations.
+        static const std::array<uintptr_t, 6> table = [base] {
+            std::array<uintptr_t, 6> copy{};
+            std::memcpy(copy.data(), reinterpret_cast<const void*>(base + sdk::abzu::target_vtable), sizeof(copy));
+            copy[sdk::abzu::gamma_slot] = reinterpret_cast<uintptr_t>(gamma_increase_fn);
+            return copy;
+        }();
+        if (!is_writable_process_range(reinterpret_cast<uintptr_t>(frt), sizeof(uintptr_t))) { return false; }
+        *reinterpret_cast<const uintptr_t**>(frt) = table.data();
+        return true;
+    };
+
     static const auto utex_c = sdk::UTexture::static_class();
 
     // All asynchronous publication is tied to this generation. Jobs from a
@@ -44375,6 +44531,8 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
 
     RenderThreadWorker::ConditionalJobFunc render_thread_conditional_task =
         [this, tgt, generation, fail_generation, recognized_stock_layout = false,
+            abzu_owned_generation = use_abzu_legacy_target, abzu_holder = this->scene_capture_component,
+            abzu_stability = sdk::abzu::StableCapture{},
             stability = uevr::ue58_owned_ui::StableResource{},
             hellraiser_owned_generation = hellraiser_uses_validated_ue561_native_fix_capture_layout(),
             hellraiser_stability = uevr::hellraiser_capture::StableResource{}]() mutable -> bool {
@@ -44389,6 +44547,7 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
                 fail_generation();
                 return true;
             }
+            if (abzu_owned_generation && !abzu_native_fix_runtime()) { fail_generation(); return true; }
             if (!tgt.valid()) {
                 SPDLOG_ERROR("Scene capture target was destroyed between threads!");
                 fail_generation();
@@ -44402,6 +44561,7 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
             std::optional<SwgrOwnedTexture> swgr_owned{};
             std::optional<HellraiserOwnedCapture> hellraiser_owned{};
             std::optional<ValidatedNativeFixTextureChain> avowed_owned{};
+            std::optional<sdk::abzu::Chain> abzu_owned{};
             if (swgr_ue574_dx12_runtime()) {
                 swgr_owned = swgr_validate_owned_texture(tgt.get(),
                     static_cast<uint32_t>(VR::get()->get_hmd_width()),
@@ -44457,7 +44617,37 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
             const bool use_hellraiser_capture_layout =
                 hellraiser_owned_generation;
 
-            if (avowed_is_current_game()) {
+            if (abzu_owned_generation) {
+                namespace a = sdk::abzu;
+                uintptr_t pinned_target{};
+                const auto holder = reinterpret_cast<uintptr_t>(abzu_holder.get());
+                if (!a::pointer(holder, a::component_size) ||
+                    !safe_read_value(holder + 0x288, pinned_target) || pinned_target != reinterpret_cast<uintptr_t>(tgt.get())) {
+                    fail_generation(); return true;
+                }
+                const auto base = reinterpret_cast<uintptr_t>(utility::get_executable());
+                abzu_owned = a::capture_chain(sdk::discovery::process_memory(), base,
+                    reinterpret_cast<uintptr_t>(tgt.get()), VR::get()->get_hmd_width(), VR::get()->get_hmd_height());
+                if (!abzu_owned) {
+                    abzu_stability.observe(generation, g_frame_count, std::nullopt);
+                    SPDLOG_INFO_EVERY_N_SEC(2, "[ABZU][NativeFix] Waiting for engine-initialized owned capture; no offset scan or direct RHI initialization");
+                    return false;
+                }
+                if (!native_fix_has_module_owned_vtable(abzu_owned->native)) {
+                    abzu_stability.observe(generation, g_frame_count, std::nullopt);
+                    return false;
+                }
+                if (!abzu_stability.observe(generation, g_frame_count, abzu_owned)) { return false; }
+                rsrc = reinterpret_cast<sdk::FTextureRenderTargetResource*>(abzu_owned->resource);
+                frt = reinterpret_cast<sdk::FRenderTarget*>(abzu_owned->target);
+                rhi_texture = reinterpret_cast<FRHITexture2D*>(abzu_owned->rhi);
+                if (!already_updated &&
+                    (!sdk::FRenderTarget::commit_validated_abzu_capture_indices(frt) ||
+                     !sdk::UTexture::commit_validated_render_resource_offsets_texture2d(tgt.get(), a::private_resource, a::texture_rhi) ||
+                     !sdk::FTextureRenderTargetResource::commit_validated_render_target_vtable_offset(rsrc, a::render_target))) { return false; }
+                if (sdk::FRenderTarget::get_render_target_texture_index() != a::texture_slot ||
+                    sdk::FRenderTarget::get_display_gamma_index() != a::gamma_slot) { return false; }
+            } else if (avowed_is_current_game()) {
                 namespace layout = sdk::avowed_capture;
                 if (g_framework == nullptr || !g_framework->is_dx12()) { return false; }
                 const auto expected_width = static_cast<uint32_t>(VR::get()->get_hmd_width());
@@ -44660,7 +44850,7 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
             // If publication is deferred, restore the stock table so the next
             // observation can prove its code again. Successful captures retain
             // the established viewport-matching gamma hook.
-            const bool restore_pending_table = ue58_owned.has_value() || hellraiser_owned.has_value() || avowed_owned.has_value();
+            const bool restore_pending_table = ue58_owned.has_value() || hellraiser_owned.has_value() || avowed_owned.has_value() || abzu_owned.has_value();
             uintptr_t original_owned_table{};
             if (restore_pending_table && !safe_read_value(reinterpret_cast<uintptr_t>(frt), original_owned_table)) {
                 return false;
@@ -44671,7 +44861,9 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
                     *reinterpret_cast<uintptr_t*>(frt) = original_owned_table;
                 }
             }};
-            hook_frt(frt);
+            if (abzu_owned) {
+                if (!hook_abzu_frt(frt)) { return false; }
+            } else { hook_frt(frt); }
 
             // The RHI worker can be starved on newer parallel-RHI paths. Publish
             // from the render thread, where the FRenderTarget has just proven the
@@ -44683,7 +44875,8 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
                     ue58_owned ? &ue58_owned->identity : nullptr,
                     ue58_owned ? ue58_owned->native.Get() :
                         hellraiser_owned ? hellraiser_owned->chain.native_resource.Get() :
-                            avowed_owned ? avowed_owned->native_resource.Get() : nullptr))
+                            avowed_owned ? avowed_owned->native_resource.Get() :
+                                abzu_owned ? reinterpret_cast<IUnknown*>(abzu_owned->native) : nullptr))
             {
                 SPDLOG_INFO_EVERY_N_SEC(
                     2,
@@ -44692,6 +44885,9 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
                 return false;
             }
             keep_owned_gamma_hook = true;
+            if (abzu_owned) {
+                SPDLOG_INFO("[ABZU][NativeFix] Published owned capture generation {}: Resource+0x60 TextureRHI+0x30 FRenderTarget+0x68; viewport gamma matched after linear RHI creation", generation);
+            }
             if (avowed_owned) {
                 SPDLOG_INFO("[Avowed][NativeStereoFix] Published validated capture generation {}: PrivateResource=0x110, "
                     "TextureRHI=0x10, FRenderTarget=0x50; texture slot 2 / gamma slot 5", generation);
