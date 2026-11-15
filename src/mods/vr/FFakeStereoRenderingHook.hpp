@@ -1169,6 +1169,9 @@ public:
     }
     const char* get_native_stereo_fix_status_text() const;
     bool is_native_stereo_fix_operational() const;
+    bool has_rdg_render_texture_input() const noexcept {
+        return m_render_texture_command_input.load(std::memory_order_acquire) != uevr::paradoxdrive_rhi::Input::LegacyRHI;
+    }
     bool is_hook_provenance_diagnostics_enabled() const noexcept {
         return m_hook_provenance_diagnostics.load(std::memory_order_acquire);
     }
