@@ -5,6 +5,7 @@
 #include <vector>
 #include "mods/vr/UE58NativeFix.hpp"
 #include "mods/vr/NativeStereoCopyExtent.hpp"
+#include "mods/vr/ParadoxDriveRHI.hpp"
 
 namespace ue58_native_tests {
 namespace n = uevr::ue58_native;
@@ -395,6 +396,13 @@ template<class Expect> void shipping_image(const char* path, Expect&& expect) {
         "actual unmodified game code proves projection/rect/stereo identity and linked renderer argument flow");
     if (paradoxdrive) {
         expect(!n::view_layout(memory,constructor), "actual ParadoxDrive code does not broaden the stock UE5.8 proof");
+        namespace p = uevr::paradoxdrive_rhi;
+        expect(p::render_texture_layout(memory,image.base,image.module_size,0x143209630,size) &&
+            p::builder_layout(memory,image.base,image.module_size,0x143261190,size),
+            "actual ParadoxDrive RDG overload and constructor prove the immediate-list reference before unwrapping");
+        expect(!p::render_texture_layout(memory,image.base,image.module_size,0x143209631,size) &&
+            !p::builder_layout(memory,image.base,image.module_size,0x143261191,size),
+            "actual interior RDG code addresses cannot authorize the borrowed reference");
     }
     const auto f=n::family_functions(memory,copy,image.base,image.module_size,size);
     expect(f && f->destroy==destroy && f->vtable==table,
