@@ -69,22 +69,30 @@ static void gaze_tests() {
     const double a[2]{0.10, 0.12}, b[2]{-0.05, -0.04};
     g.update(a, b, 3u, 0.03, 1000, 500);
     expect(g.seeded && near(g.cx[0], 0.10) && near(g.cy[1], -0.04), "first valid gaze seeds both eyes");
-    const double a2[2]{0.11, 0.13};
-    g.update(a2, b, 3u, 0.03, 1010, 500);
-    expect(near(g.cx[0], 0.10), "movement inside the dead zone is ignored");
-    const double a3[2]{0.10, 0.20};
-    g.update(a3, b, 3u, 0.03, 1020, 500);
-    expect(near(g.cx[0], 0.10) && near(g.cx[1], 0.20), "either eye leaving the dead zone moves both");
-    const double a4[2]{0.115, 0.215};   // a small settle inside the dead zone
-    g.update(a4, b, 3u, 0.03, 1030, 500);
-    expect(near(g.cx[0], 0.10), "a small offset does not move the window at once");
-    g.update(a4, b, 3u, 0.03, 1100, 500);
-    expect(near(g.cx[0], 0.10), "nor before it has settled");
-    g.update(a4, b, 3u, 0.03, 1160, 500);
-    expect(near(g.cx[0], 0.115), "a settled offset re-centres the window");
-    g.update(a3, b, 1u, 0.03, 1400, 500);
+
+    // Alternating tracker noise around the fixation must not move the window.
+    for (int i = 0; i < 30; ++i) {
+        const double n[2]{0.10 + (i % 2 ? 0.012 : -0.012), 0.12 + (i % 2 ? -0.010 : 0.010)};
+        const double m[2]{-0.05 + (i % 2 ? 0.010 : -0.010), -0.04 + (i % 2 ? -0.012 : 0.012)};
+        g.update(n, m, 3u, 0.03, 1010 + (uint64_t)i * 10, 500);
+    }
+    expect(near(g.cx[0], 0.10, 0.002) && near(g.cy[1], -0.04, 0.002),
+        "tracker noise inside the dead zone does not move the window");
+
+    // A real change is median-filtered for one sample, then followed smoothly.
+    const double c[2]{0.20, 0.22}, d[2]{-0.15, -0.14};
+    g.update(c, d, 3u, 0.03, 1400, 500);
+    expect(near(g.cx[0], 0.10, 0.01), "the first step sample is filtered");
+    for (int i = 1; i <= 8; ++i) {
+        g.update(c, d, 3u, 0.03, 1400 + (uint64_t)i * 10, 500);
+    }
+    expect(g.cx[0] > 0.18 && g.cx[0] <= 0.20, "the window follows a real gaze change");
+    expect(g.cx[1] > 0.20 && g.cx[1] <= 0.22, "the other eye follows too");
+    expect(g.cy[1] < -0.13 && g.cy[1] >= -0.14, "and the vertical axis follows");
+
+    g.update(c, d, 1u, 0.03, 1700, 500);
     expect(g.seeded, "a short gaze dropout keeps the window");
-    g.update(a3, b, 0u, 0.03, 1700, 500);
+    g.update(c, d, 0u, 0.03, 2300, 500);
     expect(!g.seeded && near(g.cx[0], 0.0) && near(g.cy[1], 0.0), "a long dropout recentres");
 }
 

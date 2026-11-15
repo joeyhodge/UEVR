@@ -161,47 +161,108 @@ inline Tangents focus_window_for(const Tangents& full, const Settings& s, double
         cx + s.offset_x * full.width(), cy + s.offset_y * full.height());
 }
 
-// Keeps the focus windows still against eye-tracker noise: both eyes' centres
-// jump to the new gaze together once either eye's gaze has moved past the dead
-// zone (saccades hide the jump). Without gaze for return_ms, they recentre.
-// Centres are in each eye's tangent space; (0, 0) is straight ahead.
-struct GazeFilter {
-    // A fixation that settles away from the window centre (slow drift or a
-    // small saccade inside the dead zone) re-centres the window after this long,
-    // so the window never trails the eyes for more than a moment.
-    static constexpr uint64_t SETTLE_MS = 120;
-    static constexpr double SETTLE_SHARE = 0.35; // of the dead zone
+// Median of three, used to reject single-frame eye-tracker spikes.
+inline double median3(double a, double b, double c) {
+    return (std::max)((std::min)(a, b), (std::min)((std::max)(a, b), c));
+}
 
-    double cx[2]{0, 0}, cy[2]{0, 0};
+// Keeps the focus windows still against eye-tracker noise. The raw gaze is
+// median-filtered (one-frame spikes) and low-passed with a speed-dependent
+// alpha: small movements are smoothed heavily, saccades pass quickly. The
+// window only starts following once the filtered gaze leaves the dead zone;
+// after that it tracks the filtered target until the target settles, so it does
+// not stop with a permanent dead-zone offset. Without gaze for return_ms, it
+// recentres. Centres are in each eye's tangent space; (0, 0) is straight ahead.
+struct GazeFilter {
+    // Low-pass: 20% per update for a steady gaze, up to 75% when the gaze is
+    // moving fast (a saccade), so noise is damped but saccades are not laggy.
+    static constexpr double MIN_ALPHA = 0.20;
+    static constexpr double ALPHA_PER_TANGENT = 6.0;
+    static constexpr double MAX_ALPHA = 0.75;
+    // Once the filtered gaze has settled this close to the median raw sample,
+    // stop following; the window stays centred on the fixation.
+    static constexpr double SETTLED = 0.004;
+
+    double cx[2]{0, 0}, cy[2]{0, 0}; // window centre
+    double fx[2]{0, 0}, fy[2]{0, 0}; // filtered gaze target
+    double rx[2][3]{}, ry[2][3]{};    // last three raw samples per eye
+    uint32_t ri[2]{0, 0};             // next raw-sample slot
     bool seeded{false};
+    bool following{false};
     uint64_t last_valid_ms{0};
-    uint64_t drift_since_ms{0};
 
     void update(const double gx[2], const double gy[2], uint32_t valid_mask, double dead_zone, uint64_t now_ms,
                 uint64_t return_ms) {
         if ((valid_mask & 3u) == 3u) {
             last_valid_ms = now_ms;
-            bool move = !seeded;
-            bool drifting = false;
-            for (int i = 0; i < 2; ++i) {
-                const double d = std::hypot(gx[i] - cx[i], gy[i] - cy[i]);
-                if (d > dead_zone) move = true;
-                if (d > dead_zone * SETTLE_SHARE) drifting = true;
-            }
-            if (!move && drifting && dead_zone > 0) {
-                if (drift_since_ms == 0) drift_since_ms = now_ms;
-                if (now_ms - drift_since_ms >= SETTLE_MS) move = true;
-            } else if (!drifting) {
-                drift_since_ms = 0;
-            }
-            if (move) {
-                for (int i = 0; i < 2; ++i) { cx[i] = gx[i]; cy[i] = gy[i]; }
+
+            if (!seeded) {
+                for (int i = 0; i < 2; ++i) {
+                    for (int j = 0; j < 3; ++j) {
+                        rx[i][j] = gx[i];
+                        ry[i][j] = gy[i];
+                    }
+                    ri[i] = 0;
+                    fx[i] = gx[i];
+                    fy[i] = gy[i];
+                    cx[i] = gx[i];
+                    cy[i] = gy[i];
+                }
                 seeded = true;
-                drift_since_ms = 0;
+                following = false;
+                return;
+            }
+
+            double mx[2]{}, my[2]{};
+            for (int i = 0; i < 2; ++i) {
+                rx[i][ri[i]] = gx[i];
+                ry[i][ri[i]] = gy[i];
+                ri[i] = (ri[i] + 1) % 3;
+
+                mx[i] = median3(rx[i][0], rx[i][1], rx[i][2]);
+                my[i] = median3(ry[i][0], ry[i][1], ry[i][2]);
+                const double dx = mx[i] - fx[i];
+                const double dy = my[i] - fy[i];
+                const double alpha = std::clamp(MIN_ALPHA + std::hypot(dx, dy) * ALPHA_PER_TANGENT,
+                    MIN_ALPHA, MAX_ALPHA);
+                fx[i] += alpha * dx;
+                fy[i] += alpha * dy;
+            }
+
+            bool move = false;
+            for (int i = 0; i < 2; ++i) {
+                if (std::hypot(fx[i] - cx[i], fy[i] - cy[i]) > dead_zone) {
+                    move = true;
+                }
+            }
+
+            if (move) {
+                following = true;
+            }
+
+            if (following) {
+                bool settled = true;
+                for (int i = 0; i < 2; ++i) {
+                    cx[i] = fx[i];
+                    cy[i] = fy[i];
+                    if (std::hypot(mx[i] - fx[i], my[i] - fy[i]) > SETTLED) {
+                        settled = false;
+                    }
+                }
+                if (settled) {
+                    following = false;
+                }
             }
         } else if (seeded && now_ms - last_valid_ms > return_ms) {
-            for (int i = 0; i < 2; ++i) { cx[i] = 0; cy[i] = 0; }
+            for (int i = 0; i < 2; ++i) {
+                cx[i] = 0;
+                cy[i] = 0;
+                fx[i] = 0;
+                fy[i] = 0;
+                ri[i] = 0;
+            }
             seeded = false;
+            following = false;
         }
     }
 };
