@@ -11,13 +11,14 @@ namespace uevr::prospi::repair {
 
 enum class Reason : uint8_t {
     off, unchanged, protected_controls, unsupported_rig, source_unavailable,
-    source_mismatch, no_safe_endpoint, interview_focus, dugout_focus, dugout_height, release_hold
+    source_mismatch, no_safe_endpoint, interview_focus, dugout_focus, dugout_height, release_hold,
+    home_pan_focus, home_pan_height
 };
 inline const char* reason_name(Reason reason) noexcept {
     switch (reason) {
     case Reason::unchanged: return "Existing framing is safe";
     case Reason::protected_controls: return "Explicit controls / protected camera";
-    case Reason::unsupported_rig: return "Outside evidenced interview/dugout rigs";
+    case Reason::unsupported_rig: return "Outside supported player-camera rigs";
     case Reason::source_unavailable: return "No verified current native source";
     case Reason::source_mismatch: return "Current native source does not match";
     case Reason::no_safe_endpoint: return "No validated pullback endpoint";
@@ -25,6 +26,8 @@ inline const char* reason_name(Reason reason) noexcept {
     case Reason::dugout_focus: return "Dugout authored window recovered";
     case Reason::dugout_height: return "Dugout field-side height recovered";
     case Reason::release_hold: return "Safe pullback retained during recovery";
+    case Reason::home_pan_focus: return "Home/plate authored window recovered";
+    case Reason::home_pan_height: return "Home/plate excess lift recovered";
     default: return "Off / unsupported build";
     }
 }
@@ -33,7 +36,7 @@ struct Request {
     focus_guard::Request camera{};
     float field_floor{}, legacy_floor{}, smoothing{0.25f};
     int32_t rendering_method{};
-    bool ebaseball{}, manual_controls{}, protected_camera{};
+    bool ebaseball{}, manual_controls{}, protected_camera{}, home_pan{};
 };
 struct Decision {
     Reason reason{};
@@ -41,7 +44,16 @@ struct Decision {
     bool applied{};
 };
 
+struct HomePanGates {
+    bool ebaseball{}, presentation{}, pitch_label{}, protected_preset{}, celebration{};
+};
+inline bool admit_home_pan(const trace::Pose& camera, HomePanGates gates) noexcept {
+    return gates.ebaseball && (gates.presentation || gates.pitch_label) &&
+        !gates.protected_preset && !gates.celebration && focus_guard::home_pan_repair_rig(camera);
+}
+
 inline focus_guard::AuthoredScope scope(const Request& r) noexcept {
+    if (r.home_pan) { return focus_guard::AuthoredScope::home_pan_repair; }
     if (focus_guard::near_home_crossing_rig(r.camera.camera)) { return focus_guard::AuthoredScope::interview_repair; }
     return focus_guard::AuthoredScope::dugout_repair;
 }
@@ -57,7 +69,8 @@ inline focus_guard::Request geometry(const Request& r, const trace::Pose& input,
 inline bool candidate(const Request& r) noexcept {
     if (!r.ebaseball || r.manual_controls || r.protected_camera ||
         // FieldFloor / BaselineDugout / a misclassified low StandCrowd rig.
-        (r.camera.zone != 1 && r.camera.zone != 2 && r.camera.zone != 3) ||
+        (r.camera.zone != 1 && r.camera.zone != 2 && r.camera.zone != 3 &&
+            !(r.home_pan && r.camera.zone == 0)) ||
         !std::isfinite(r.field_floor) || r.field_floor < -50 || r.field_floor > 350 ||
         !std::isfinite(r.legacy_floor) || !std::isfinite(r.smoothing)) { return false; }
     const auto c = geometry(r, r.camera.camera, r.camera.now_ns, r.camera.dolly, r.camera.lift);
@@ -110,7 +123,9 @@ inline Decision evaluate(const Request& r, const trace::NativeSource& native, fl
     }
     if (!correction.applied()) { out.reason = Reason::unchanged; return out; }
     out.dolly = correction.dolly; out.lift = correction.lift; out.applied = true;
-    out.reason = selected == focus_guard::AuthoredScope::interview_repair ? Reason::interview_focus :
+    out.reason = selected == focus_guard::AuthoredScope::home_pan_repair ?
+        (r.legacy_floor > 350 && out.lift < r.camera.lift - 1 ? Reason::home_pan_height : Reason::home_pan_focus) :
+        selected == focus_guard::AuthoredScope::interview_repair ? Reason::interview_focus :
         r.legacy_floor > 350 && out.lift < r.camera.lift - 1 ? Reason::dugout_height : Reason::dugout_focus;
     return out;
 }
@@ -125,7 +140,7 @@ public:
         auto result = evaluate(r, native, eye_margin);
         const auto now = r.camera.now_ns;
         const auto change = shot::compare(m_identity, identity);
-        const Context context{r.rendering_method, r.field_floor, r.camera.max_lift, r.camera.base_fov, r.smoothing};
+        const Context context{r.rendering_method, r.field_floor, r.camera.max_lift, r.camera.base_fov, r.smoothing, r.home_pan};
         const bool continuous = m_valid && identity.valid && change == shot::Change::unchanged &&
             context == m_context &&
             now > m_time && now - m_time <= 250'000'000 &&
@@ -179,6 +194,7 @@ private:
     struct Context {
         int32_t rendering_method{};
         float floor{}, max_lift{}, base_fov{}, smoothing{};
+        bool home_pan{};
         bool operator==(const Context&) const = default;
     };
     bool m_valid{};

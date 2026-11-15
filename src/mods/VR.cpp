@@ -13131,9 +13131,20 @@ void VR::update_game_fov() {
                             uevr::prospi::trace::native::Layout{});
                     }
                     // A saved automatic match is not a manual camera override.
-                    // Admit only the evidenced rigs here; fresh native geometry
+                    // Admit only bounded rigs here; fresh native geometry
                     // at view consumption must still prove the framing failure.
                     if (is_ebaseball_pro_spirit && m_match_game_fov_prospi_camera_safety_field_rule->value()) {
+                        // A soft Pitch/Batter label can also describe a player
+                        // pan. Fixed gameplay presets remain protected; the new
+                        // scope still needs a fresh, proved framing failure.
+                        const bool home_pan_presentation = uevr::prospi::repair::admit_home_pan(focus_pose, {
+                            .ebaseball = is_ebaseball_pro_spirit, .presentation = presentation,
+                            .pitch_label = play_mode == ProSpiPlayCameraMode::PitchBatterView,
+                            .protected_preset = prospi_preset == ProSpiCameraPreset::GameplayBehindPlate ||
+                                prospi_preset == ProSpiCameraPreset::HomePlateWaistHigh ||
+                                prospi_preset == ProSpiCameraPreset::HomePlateWaistHighReverse,
+                            .celebration = dugout_celebration_tracking_camera || pre_celebration_line_camera,
+                        });
                         auto repair_camera = current_request;
                         repair_camera.protected_camera = false;
                         repair_camera.sequencer_enabled = m_match_game_fov_prospi_auto_camera_sequencer->value();
@@ -13148,9 +13159,10 @@ void VR::update_game_fov() {
                                 generic_camera_presets_apply_enabled || camera_cut_stabilizer_enabled ||
                                 m_match_game_fov_prospi_actual_clamp->value() || is_decoupled_pitch_enabled() ||
                                 m_match_game_fov_prospi_cinematic_camera_assist->value() || m_prospi_cutscene_segment_active,
-                            .protected_camera = home_plate_pitch_view || third_base_outfield_line_replay_camera ||
+                            .protected_camera = (home_plate_pitch_view && !home_pan_presentation) || third_base_outfield_line_replay_camera ||
                                 play_mode == ProSpiPlayCameraMode::BallFollow || play_mode == ProSpiPlayCameraMode::AerialEstablishing ||
                                 framing_status == uevr::prospi::framing::Status::accepted,
+                            .home_pan = home_pan_presentation,
                         };
                         if (uevr::prospi::repair::candidate(prospi_framing_repair)) {
                             prospi_native_layout = m_prospi_native_focus_probe.validated_native_layout().value_or(
@@ -16673,7 +16685,7 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                                 ImGui::TextWrapped("Current view: %s", uevr::prospi::cut_guard::status_name(
                                     (uevr::prospi::cut_guard::Status)m_prospi_current_view_status.load(std::memory_order_relaxed)));
                                 if (is_ebaseball_pro_spirit_variant()) {
-                                    ImGui::TextWrapped("Validated eBaseball Mode 3 also checks automatically selected calibrations on evidenced interview/low dugout rigs. Only a proved target crossing/clipping permits pullback; explicit camera controls remain protected.");
+                                    ImGui::TextWrapped("Validated eBaseball Mode 3 also checks interview/low dugout rigs and bounded near-plate player pans. Only a fresh authored target proved crossed or offscreen permits pullback. Fixed gameplay presets, high/backstop rigs and explicit camera controls remain protected.");
                                     ImGui::TextWrapped("Final framing: %s", uevr::prospi::repair::reason_name(
                                         (uevr::prospi::repair::Reason)m_prospi_framing_repair_status.load(std::memory_order_relaxed)));
                                 }

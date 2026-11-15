@@ -5,11 +5,12 @@
 namespace uevr::prospi::focus_guard {
 
 enum class AuthoredScope : uint8_t {
-    presentation, near_home_crossing, interview_repair, dugout_repair
+    presentation, near_home_crossing, interview_repair, dugout_repair, home_pan_repair
 };
 
 inline bool repair_scope(AuthoredScope scope) noexcept {
-    return scope == AuthoredScope::interview_repair || scope == AuthoredScope::dugout_repair;
+    return scope == AuthoredScope::interview_repair || scope == AuthoredScope::dugout_repair ||
+        scope == AuthoredScope::home_pan_repair;
 }
 
 inline bool dugout_scope(AuthoredScope scope) noexcept {
@@ -37,14 +38,30 @@ inline bool near_home_crossing_rig(const trace::Pose& p) noexcept {
         yaw >= -175 && yaw <= -65 && p.fov >= 25 && p.fov <= 60;
 }
 
+// Admission is not proof of a bad shot. The current native lens/target and
+// an already-crossed or offscreen endpoint are still required below.
+inline bool home_pan_repair_rig(const trace::Pose& p) noexcept {
+    if (!trace::valid_pose(p)) { return false; }
+    // Keep the existing interview/dugout rigs and authored behind-backstop
+    // cameras outside this new scope; removing their lift needs other proof.
+    return !near_home_crossing_rig(p) && std::abs(p.location[0]) <= 900 &&
+        p.location[1] >= -1000 && p.location[1] <= 1800 &&
+        p.location[2] >= -100 && p.location[2] <= 600 &&
+        std::abs(std::remainder(p.rotation[1] + 90, 360.0f)) <= 40 &&
+        std::remainder(p.rotation[0], 360.0f) >= -25 && std::remainder(p.rotation[0], 360.0f) <= 15 &&
+        std::abs(std::remainder(p.rotation[2], 360.0f)) <= 25 && p.fov >= 5 && p.fov <= 60;
+}
+
 inline bool crossing_candidate(const Request& r, bool presentation_camera,
     AuthoredScope scope = AuthoredScope::presentation) noexcept {
     return presentation_camera && r.enabled && r.prospi && r.mode == 3 && r.dolly_enabled &&
         r.sequencer_enabled && r.safety_enabled && r.automatic_source && !r.protected_camera &&
         (r.zone == 1 || r.zone == 2) && trace::valid_pose(r.camera) && r.camera.fov >= 0.5f &&
-        r.camera.fov <= (scope == AuthoredScope::near_home_crossing || scope == AuthoredScope::interview_repair ? 60.0f : 40.0f) &&
+        r.camera.fov <= (scope == AuthoredScope::near_home_crossing || scope == AuthoredScope::interview_repair ||
+            scope == AuthoredScope::home_pan_repair ? 60.0f : 40.0f) &&
         ((scope != AuthoredScope::near_home_crossing && scope != AuthoredScope::interview_repair) || near_home_crossing_rig(r.camera)) &&
         (!dugout_scope(scope) || dugout_repair_rig(r.camera)) &&
+        (scope != AuthoredScope::home_pan_repair || home_pan_repair_rig(r.camera)) &&
         std::abs(std::remainder(r.camera.rotation[2], 360.0f)) <= (repair_scope(scope) ? 25.0f : 0.01f) &&
         std::isfinite(r.dolly) && r.dolly > 0.0f && r.dolly <= 8000.0f &&
         std::isfinite(r.lift) && r.lift >= 0.0f && r.lift <= 600.0f &&
@@ -65,7 +82,8 @@ inline Decision bound_crossing(const Request& r, const trace::NativeSource& sour
     if (!trace::valid_source(source) || !source.object || !source.camera_actor || !r.camera_manager ||
         !source.pose.aspect_valid || !std::isfinite(source.pose.aspect) || source.pose.aspect < 0.5f || source.pose.aspect > 3.0f ||
         source.focus_distance < 100.0f || source.focus_distance >
-            (dugout_scope(scope) ? 1250.0f : scope == AuthoredScope::near_home_crossing || scope == AuthoredScope::interview_repair ? 1000.0f : 8000.0f) ||
+            (dugout_scope(scope) ? 1250.0f : scope == AuthoredScope::home_pan_repair ? 6000.0f :
+                scope == AuthoredScope::near_home_crossing || scope == AuthoredScope::interview_repair ? 1000.0f : 8000.0f) ||
         !trace::source_matches_input(source, r.camera, r.camera_manager, r.now_ns) ||
         r.now_ns < source.time_ns || r.now_ns - source.time_ns > 50'000'000 ||
         trace::distance(source.pose.location, r.camera.location) > 1.0f ||
@@ -73,6 +91,9 @@ inline Decision bound_crossing(const Request& r, const trace::NativeSource& sour
         trace::angle_delta(source.pose.rotation[1], r.camera.rotation[1]) > 0.1f ||
         trace::angle_delta(source.pose.rotation[2], r.camera.rotation[2]) > 0.01f ||
         std::abs(source.pose.fov - r.camera.fov) > 0.1f) { return out; }
+    if (scope == AuthoredScope::home_pan_repair &&
+        (std::abs(source.look_at[0]) > 1500 || source.look_at[1] < -2000 || source.look_at[1] > 750 ||
+            source.look_at[2] < -50 || source.look_at[2] > 400)) { return out; }
     constexpr double radians = 0.017453292519943295;
     const auto pitch = r.camera.rotation[0] * radians, yaw = r.camera.rotation[1] * radians;
     const auto roll = r.camera.rotation[2] * radians;

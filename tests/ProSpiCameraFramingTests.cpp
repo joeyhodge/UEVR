@@ -3,6 +3,7 @@
 #include "mods/vr/ProSpiAuthoredTargetGuard.hpp"
 #include "ProSpiAuthoredFramingTests.hpp"
 #include "EBaseballFramingRepairTests.hpp"
+#include "EBaseballHomePanFramingTests.hpp"
 #include "mods/vr/ProSpiCameraCutGuard.hpp"
 
 #include <nlohmann/json.hpp>
@@ -1215,6 +1216,7 @@ int main(int argc, char** argv) {
         view_focus_guards(); crossing_focus_guards();
         prospi_authored_framing_tests::run([](bool passed, const char* message) { require(passed, message); });
         ebaseball_framing_tests::run([](bool passed, const char* message) { require(passed, message); });
+        ebaseball_home_pan_tests::run([](bool passed, const char* message) { require(passed, message); });
         std::cout << "eBaseball final framing: automatic-calibration, rolled stereo windows, ownership/cache and 4000 geometry trials passed\n";
         captured_interview_crossings(read_json(std::filesystem::path{argv[1]}.parent_path() / "prospi-20261101-interview-crossing.json"));
         std::cout << "Authored framing: 5000 geometry trials, per-eye margin and shot-identity preservation passed\n";
