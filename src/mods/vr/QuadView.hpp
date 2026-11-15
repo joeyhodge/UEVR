@@ -174,10 +174,11 @@ inline double median3(double a, double b, double c) {
 // not stop with a permanent dead-zone offset. Without gaze for return_ms, it
 // recentres. Centres are in each eye's tangent space; (0, 0) is straight ahead.
 struct GazeFilter {
-    // Low-pass: 20% per update for a steady gaze, up to 75% when the gaze is
-    // moving fast (a saccade), so noise is damped but saccades are not laggy.
-    static constexpr double MIN_ALPHA = 0.20;
-    static constexpr double ALPHA_PER_TANGENT = 6.0;
+    // Low-pass: 8% per update for a steady gaze, up to 75% when the gaze is
+    // moving fast (a saccade), so tracker noise is damped heavily while
+    // saccades still pass quickly.
+    static constexpr double MIN_ALPHA = 0.08;
+    static constexpr double ALPHA_PER_TANGENT = 8.0;
     static constexpr double MAX_ALPHA = 0.75;
     // Once the filtered gaze has settled this close to the median raw sample,
     // stop following; the window stays centred on the fixation.

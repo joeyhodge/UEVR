@@ -4493,5 +4493,12 @@ void OpenXR::update_quad_view_gaze(XrTime display_time, PipelineState& state) {
     this->quad_focus_current_set = true;
     state.quad_focus = this->quad_focus_current;
     state.quad_focus_set = true;
+
+    SPDLOG_INFO_EVERY_N_SEC(1,
+        "[QuadView][Gaze] mask={} raw L({:.3f},{:.3f}) R({:.3f},{:.3f}) filt L({:.3f},{:.3f}) R({:.3f},{:.3f}) "
+        "win L({:.3f},{:.3f}) R({:.3f},{:.3f}) follow={}",
+        mask, gx[0], gy[0], gx[1], gy[1], this->quad_gaze.fx[0], this->quad_gaze.fy[0], this->quad_gaze.fx[1],
+        this->quad_gaze.fy[1], this->quad_gaze.cx[0], this->quad_gaze.cy[0], this->quad_gaze.cx[1],
+        this->quad_gaze.cy[1], this->quad_gaze.following);
 }
 }
