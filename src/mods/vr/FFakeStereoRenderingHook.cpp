@@ -6351,10 +6351,8 @@ bool ue58_native_view_layout() {
         SPDLOG_INFO("[UE5.9][NativeStereoFix] Constructor field-copy contract {} (runtime validation pending)", valid ? "proven" : "unproven; preserving packed eyes");
         return valid;
     }
-    static const bool allow_paradox_drive_layout = uevr::ue58_native::is_paradox_drive(
-        utility::get_module_pathw(utility::get_executable()).value_or(L""));
     static const bool proven = uevr::ue58_native::view_layout(
-        sdk::discovery::process_memory(), constructor, allow_paradox_drive_layout);
+        sdk::discovery::process_memory(), constructor);
     return proven;
 }
 
@@ -18357,8 +18355,8 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
         if (!m_rendertarget_manager_embedded_in_stereo_device) {
             if (!uevr::nascar::is_target()) {
                 namespace p = uevr::paradoxdrive_rhi;
-                if (p::target(utility::get_module_pathw(utility::get_executable()).value_or(L""),
-                        sdk::get_file_version_info().dwFileVersionMS)) {
+                const auto file_version_ms = sdk::get_file_version_info().dwFileVersionMS;
+                if (file_version_ms == ((5u << 16) | 8u)) {
                     const auto module = utility::get_executable();
                     const auto base = reinterpret_cast<uintptr_t>(module);
                     const auto size = utility::get_module_size(module).value_or(0);
@@ -18368,14 +18366,16 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
                         return entry && unwind_base == base && base + entry->BeginAddress == address &&
                             entry->EndAddress > entry->BeginAddress ? entry->EndAddress - entry->BeginAddress : 0;
                     };
-                    const bool verified = p::discover(sdk::discovery::process_memory(), base, size,
+                    const auto input = p::classify_input(sdk::discovery::process_memory(),
+                        utility::get_module_pathw(module).value_or(L""), file_version_ms, base, size,
                         *render_texture_render_thread_func,
                         [](uintptr_t cursor, size_t bytes, const char* signature) { return utility::scan(cursor, bytes, signature); },
                         function_size);
-                    m_render_texture_command_input.store(verified ? p::Input::VerifiedRDG : p::Input::UnverifiedRDG,
-                        std::memory_order_release);
-                    SPDLOG_INFO("[ParadoxDrive][RHICommandList] RenderTexture RDG/constructor contract {}; legacy argument reinterpretation disabled",
-                        verified ? "verified" : "unverified; preserving direct frame assignment");
+                    m_render_texture_command_input.store(input, std::memory_order_release);
+                    if (input != p::Input::LegacyRHI) {
+                        SPDLOG_INFO("[UE5.8][RHICommandList] RenderTexture RDG/constructor contract {}; legacy argument reinterpretation disabled",
+                            input == p::Input::VerifiedRDG ? "verified" : "unverified; preserving direct frame assignment");
+                    }
                 }
                 m_render_texture_render_thread_hook = safetyhook::create_inline((void*)*render_texture_render_thread_func, render_texture_render_thread);
             }
@@ -32410,9 +32410,9 @@ __forceinline void FFakeStereoRenderingHook::render_texture_render_thread(FFakeS
         sdk::discovery::process_memory(), input, reinterpret_cast<uintptr_t>(command_input)));
     if (input != p::Input::LegacyRHI) {
         if (rhi_command_list) {
-            SPDLOG_INFO_ONCE("[ParadoxDrive][RHICommandList] Unwrapped RenderTexture RDG +0xc0; retaining live Root +0x28 ownership validation");
+            SPDLOG_INFO_ONCE("[UE5.8][RHICommandList] Unwrapped RenderTexture RDG +0xc0; retaining live Root +0x28 ownership validation");
         } else {
-            SPDLOG_WARN_ONCE("[ParadoxDrive][RHICommandList] RDG command list unverified/unavailable; using direct frame assignment and retrying next callback");
+            SPDLOG_WARN_ONCE("[UE5.8][RHICommandList] RDG command list unverified/unavailable; using direct frame assignment and retrying next callback");
         }
     }
     g_hook->get_slate_thread_worker()->execute(rhi_command_list);
