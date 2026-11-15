@@ -46,6 +46,7 @@ struct Binding;
 #include "Subnautica2BetaRenderTarget.hpp"
 #include "StupidNeverDiesUI.hpp"
 #include "NativeFrameDiagnostics.hpp"
+#include "ParadoxDriveRHI.hpp"
 #include "Stalker2NativePolicy.hpp"
 #include "UE57SlateSymbols.hpp"
 #include "utility/NascarHookCompatibility.hpp"
@@ -1284,7 +1285,7 @@ private:
     static void calculate_stereo_view_offset(FFakeStereoRendering* stereo, const int32_t view_index, Rotator<float>* view_rotation,
         const float world_to_meters, Vector3f* view_location);
     static Matrix4x4f* calculate_stereo_projection_matrix(FFakeStereoRendering* stereo, Matrix4x4f* out, const int32_t view_index);
-    static void render_texture_render_thread(FFakeStereoRendering* stereo, FRHICommandListImmediate* rhi_command_list,
+    static void render_texture_render_thread(FFakeStereoRendering* stereo, void* command_input,
         FRHITexture2D* backbuffer, FRHITexture2D* src_texture, double window_size);
     static void init_canvas(FFakeStereoRendering* stereo, sdk::FSceneView* view, UCanvas* canvas);
     static uint32_t get_desired_number_of_views_hook(FFakeStereoRendering* stereo, bool is_stereo_enabled);
@@ -1621,6 +1622,7 @@ private:
     std::unique_ptr<PointerHook> m_calculate_stereo_view_offset_hook_ptr{}; // some games have a short jmp which isnt supported by safetyhook right now so we use pointerhook
     safetyhook::InlineHook m_calculate_stereo_projection_matrix_hook{};
     safetyhook::InlineHook m_render_texture_render_thread_hook{};
+    std::atomic<uevr::paradoxdrive_rhi::Input> m_render_texture_command_input{uevr::paradoxdrive_rhi::Input::LegacyRHI};
     safetyhook::InlineHook m_ue418_oculus_pixel_density_hook{};
     safetyhook::InlineHook m_dune_dlss_add_passes_hook{};
     safetyhook::InlineHook m_dune_ffx_register_frame_resources_hook{};
