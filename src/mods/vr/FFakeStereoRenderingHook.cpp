@@ -46,6 +46,7 @@
 #include <sdk/TheSinkingCity2Native.hpp>
 #include "UE58NativeFix.hpp"
 #include "UE59NativeFix.hpp"
+#include "UE584Development.hpp"
 #include "UE59NativeD3D11.hpp"
 #include <sdk/FinalFantasyResonance.hpp>
 #include <sdk/PhantomBladeZeroObjectArray.hpp>
@@ -6352,8 +6353,8 @@ bool ue58_native_view_layout() {
         SPDLOG_INFO("[UE5.9][NativeStereoFix] Constructor field-copy contract {} (runtime validation pending)", valid ? "proven" : "unproven; preserving packed eyes");
         return valid;
     }
-    static const bool proven = uevr::ue58_native::view_layout(
-        sdk::discovery::process_memory(), constructor);
+    static const bool proven = uevr::ue58_native::view_layout(sdk::discovery::process_memory(), constructor) ||
+        uevr::ue584_development::view_layout(sdk::discovery::process_memory(), constructor);
     return proven;
 }
 
@@ -6363,9 +6364,9 @@ bool ue58_native_linked_runtime() {
     if (!is_ue58_dx12_backend() || sinking_city_2_native_runtime()) { return false; }
     static const bool must_fail_closed = uevr::ue58_native::needs_guarded_fallback(
         utility::get_module_pathw(utility::get_executable()).value_or(L""));
-    // Compatible stock builds qualify by original code, not by their advertised
-    // patch number. Changed Fatekeeper/ParadoxDrive builds must not re-enter the crashing path.
-    return must_fail_closed || ue58_native_view_layout();
+    // A recognized RDG callback must not re-enter the legacy split while the
+    // constructor/family proof is pending; its right-only family can reach reflections.
+    return must_fail_closed || (g_hook && g_hook->has_rdg_render_texture_input()) || ue58_native_view_layout();
 }
 
 std::optional<uevr::ue58_native::FamilyFunctions> ue58_native_family_functions() {
@@ -6384,7 +6385,7 @@ std::optional<uevr::ue58_native::FamilyFunctions> ue58_native_family_functions()
         const bool ue59=sdk::ue59::reviewed_runtime();
         for (const auto signature : {
                 "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 54 41 56 41 57 48 83 EC 40 48 8D 71 08 45 33 E4",
-                ue59 ? uevr::ue59_native::development_copy_signature : nullptr}) {
+                uevr::ue584_development::family_copy_signature}) {
             if (!signature) { continue; }
             uintptr_t cursor = base;
             while (size && cursor >= base && cursor - base < size && candidates < 16) {
@@ -6392,9 +6393,13 @@ std::optional<uevr::ue58_native::FamilyFunctions> ue58_native_family_functions()
                 if (!match) { break; }
                 cursor = *match + 1;
                 ++candidates;
-                const auto contract = ue59
+                auto contract = ue59
                     ? uevr::ue59_native::family_functions(sdk::discovery::process_memory(), *match, base, size, function_size)
                     : uevr::ue58_native::family_functions(sdk::discovery::process_memory(), *match, base, size, function_size);
+                if (!ue59 && !contract) {
+                    contract = uevr::ue584_development::family_functions(
+                        sdk::discovery::process_memory(), *match, base, size, function_size);
+                }
                 if (!contract) { continue; }
                 if (found) { return {}; }
                 found = contract;
@@ -27457,7 +27462,8 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         static const bool renderer_proven = sdk::ue59::reviewed_runtime()
             ? g_hook->m_render_module_begin_render_viewfamily_hook.original_bytes().size() <= 0x2a &&
                 uevr::ue59_native::renderer_layout(memory, g_hook->m_render_module_begin_render_viewfamily_hook.target_address())
-            : n::renderer_layout(memory, g_hook->m_render_module_begin_render_viewfamily_hook.target_address());
+            : n::renderer_layout(memory, g_hook->m_render_module_begin_render_viewfamily_hook.target_address()) ||
+                uevr::ue584_development::renderer_layout(memory, g_hook->m_render_module_begin_render_viewfamily_hook.target_address());
         if (!uses_tarrayview || !ue58_native_view_layout() || !layout ||
             layout->views != 8 || layout->render_target != 0x30 || layout->scene_interface != 0x40 ||
             !renderer_proven) {
