@@ -4153,10 +4153,10 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
                 view = projection_layer_views[eye];
                 view.next = nullptr; // no depth for the overlay
                 // Same pose as the wide view of this eye (one sample per frame);
-                // only the field of view narrows to the sharp window.
-                const auto a = uevr::quadview::to_angles(submit_state.quad_focus_set
-                    ? submit_state.quad_focus[eye]
-                    : VR::get()->get_quad_view_focus_tangents(eye));
+                // only the field of view narrows to the sharp window. Use the
+                // focus the frame was rendered with, not a newer pose sample.
+                const auto a = uevr::quadview::to_angles(
+                    VR::get()->get_quad_view_focus_tangents_rendered(eye));
                 view.fov = {a.left, a.right, a.up, a.down};
 
                 const auto& r = quad_layout.views[eye + 2];

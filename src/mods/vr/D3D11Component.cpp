@@ -790,9 +790,9 @@ bool D3D11Component::compose_quad_atlas(ID3D11Texture2D* destination) {
         const uevr::quadview::Tangents rendered{
             (double)xr->rendered_tangents[eye][0], (double)xr->rendered_tangents[eye][1],
             (double)xr->rendered_tangents[eye][2], (double)xr->rendered_tangents[eye][3]};
-        // The live value the renderer used for this frame. The submit packet can
-        // lag a frame on the UE4 path, which makes the sharp window trail the image.
-        const auto focus_tangents = vr->get_quad_view_focus_tangents(eye);
+        // The focus window this frame was rendered with (latched by AdjustViewRect),
+        // so the compose cannot use a newer gaze than the sharp view.
+        const auto focus_tangents = vr->get_quad_view_focus_tangents_rendered(eye);
         return uevr::quadview::focus_dest_rect(rendered, focus_tangents, (double)eye * eye_w, eye_w, eye_h);
     };
 

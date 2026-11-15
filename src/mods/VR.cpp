@@ -10838,3 +10838,34 @@ uevr::quadview::Tangents VR::get_quad_view_focus_tangents(uint32_t eye) const {
     const auto s = get_quad_view_settings();
     return uevr::quadview::focus_window_for(full, s, 0.0, 0.0);
 }
+
+void VR::latch_quad_view_focus(uint64_t frame) const {
+    if (!is_using_quad_view()) {
+        return;
+    }
+
+    std::scoped_lock _{m_quad_focus_render_mtx};
+    if (m_quad_focus_render_set && m_quad_focus_render_frame == frame) {
+        return;
+    }
+
+    for (uint32_t eye = 0; eye < 2; ++eye) {
+        m_quad_focus_render[eye] = get_quad_view_focus_tangents(eye);
+    }
+
+    m_quad_focus_render_set = true;
+    m_quad_focus_render_frame = frame;
+}
+
+uevr::quadview::Tangents VR::get_quad_view_focus_tangents_rendered(uint32_t eye) const {
+    eye = std::min<uint32_t>(eye, 1);
+
+    {
+        std::scoped_lock _{m_quad_focus_render_mtx};
+        if (m_quad_focus_render_set) {
+            return m_quad_focus_render[eye];
+        }
+    }
+
+    return get_quad_view_focus_tangents(eye);
+}

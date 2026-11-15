@@ -31122,6 +31122,9 @@ void FFakeStereoRenderingHook::adjust_view_rect(FFakeStereoRendering* stereo, in
     }
 
     if (quad_view) {
+        // One gaze snapshot per rendered frame: the four view projections and
+        // the compose must agree even if a pose update lands in between.
+        VR::get()->latch_quad_view_focus(g_frame_count);
         const auto layout = VR::get()->get_quad_view_layout();
         const auto slot = uevr::quadview::slot_for_view(quad_index, false, VR::get()->is_quad_view_sharp_first());
         const auto& r = layout.views[slot.index()];
@@ -31870,7 +31873,7 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
             // near plane and reversed-Z form as the eye's own projection.
             float m[16]{};
             uevr::quadview::projection_from_tangents(
-                VR::get()->get_quad_view_focus_tangents(quad_slot.eye), VR::get()->m_nearz, m);
+                VR::get()->get_quad_view_focus_tangents_rendered(quad_slot.eye), VR::get()->m_nearz, m);
             Matrix4x4f fmat{};
             std::memcpy(&fmat, m, sizeof(m));
 
