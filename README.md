@@ -20,7 +20,7 @@ Universal Unreal Engine VR Mod (4/5)
 - Native UE4/UE5 stereo rendering system
 - Frontend GUI for easy process injection
 - Supports OpenVR and OpenXR runtimes
-- 3 rendering modes: Native Stereo, Synchronized Sequential, and Alternating/AFR
+- 4 rendering modes: Native Stereo, Synchronized Sequential, Alternating/AFR, and experimental Quad View (four views with a gaze-following sharp window, OpenXR)
 - Automatic handling of most in-game UI so it is projected into 3D space
 - Optional 3DOF motion controls out of the box in many games, essentially emulating a semi-native VR experience
 - Optional roomscale movement in many games, moving the player character itself in 3D space along with the headset
