@@ -10860,6 +10860,16 @@ void VR::latch_quad_view_focus(uint64_t frame) const {
 uevr::quadview::Tangents VR::get_quad_view_focus_tangents_rendered(uint32_t eye) const {
     eye = std::min<uint32_t>(eye, 1);
 
+    // The submit state is per render frame, so the sharp-view projection and
+    // the compose that runs a moment later both read the same focus even when
+    // the next frame has already started. The latch is only the fallback for
+    // frames where no submit state was captured (e.g. startup).
+    if (m_openxr != nullptr) {
+        if (const auto focus = m_openxr->peek_submit_quad_focus()) {
+            return (*focus)[eye];
+        }
+    }
+
     {
         std::scoped_lock _{m_quad_focus_render_mtx};
         if (m_quad_focus_render_set) {
