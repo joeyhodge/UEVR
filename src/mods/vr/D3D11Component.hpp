@@ -78,6 +78,7 @@ private:
         const RECT& src_rect);
 
     bool ensure_ui_invert_resources();
+    bool ensure_quad_compose_resources();
     bool compose_quad_atlas(ID3D11Texture2D* destination);
     void render_ui_invert_to_rt(ID3D11Texture2D* render_target, TextureContext& srv, float invert_amount);
     bool ensure_daysgone_ui_key_resources();
@@ -212,6 +213,12 @@ private:
     ComPtr<ID3D11RenderTargetView> m_quad_compose_rtv{};
     ComPtr<ID3D11Texture2D> m_quad_outline_tex{};
     ComPtr<ID3D11ShaderResourceView> m_quad_outline_srv{};
+    ComPtr<ID3D11PixelShader> m_quad_compose_ps{};
+    ComPtr<ID3D11Buffer> m_quad_compose_cb{};
+    ComPtr<ID3D11BlendState> m_quad_compose_alpha_blend{};
+    ComPtr<ID3D11ShaderResourceView> m_quad_source_srv{};
+    ID3D11Texture2D* m_quad_source_tex{};
+    bool m_quad_compose_ps_ready{false};
     uint32_t m_quad_compose_width{};
     uint32_t m_quad_compose_height{};
     DXGI_FORMAT m_quad_compose_format{DXGI_FORMAT_UNKNOWN};

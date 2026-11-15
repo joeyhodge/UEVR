@@ -538,6 +538,7 @@ public:
     bool is_quad_view_sharp_first() const { return m_quad_view_sharp_first->value(); }
     float get_quad_view_wide_lod_scale() const { return m_quad_view_wide_lod_scale->value(); }
     bool is_quad_view_shared_exposure_enabled() const { return m_quad_view_shared_exposure->value(); }
+    float get_quad_view_exposure_bias() const { return m_quad_view_exposure_bias->value(); }
     float get_quad_view_edge_blend() const { return m_quad_view_edge_blend->value(); }
     uevr::quadview::FocusShape get_quad_view_focus_shape() const {
         return (uevr::quadview::FocusShape)std::clamp(m_quad_view_focus_shape->value(), 0, 2);
@@ -1671,6 +1672,7 @@ private:
     const ModSlider::Ptr m_quad_view_gaze_dead_zone{ ModSlider::create(generate_name("QuadViewGazeDeadZone"), 0.0f, 0.15f, 0.03f) };
     const ModSlider::Ptr m_quad_view_wide_lod_scale{ ModSlider::create(generate_name("QuadViewWideLODScale"), 0.1f, 1.0f, 0.5f) };
     const ModToggle::Ptr m_quad_view_shared_exposure{ ModToggle::create(generate_name("QuadViewSharedExposure"), true) };
+    const ModSlider::Ptr m_quad_view_exposure_bias{ ModSlider::create(generate_name("QuadViewExposureBias"), 0.5f, 2.0f, 1.0f) };
     const ModSlider::Ptr m_quad_view_edge_blend{ ModSlider::create(generate_name("QuadViewEdgeBlend"), 0.0f, 0.5f, 0.2f) };
     const ModToggle::Ptr m_quad_view_show_outline{ ModToggle::create(generate_name("QuadViewShowOutline"), false) };
     const ModToggle::Ptr m_quad_view_compose{ ModToggle::create(generate_name("QuadViewCompose"), true) };
@@ -2025,6 +2027,7 @@ public:
             *m_quad_view_gaze_dead_zone,
             *m_quad_view_wide_lod_scale,
             *m_quad_view_shared_exposure,
+            *m_quad_view_exposure_bias,
             *m_quad_view_edge_blend,
             *m_quad_view_show_outline,
             *m_quad_view_compose,

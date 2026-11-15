@@ -7554,6 +7554,13 @@ QuadViewCVarOverride g_quad_ue4_occlusion_queries{L"r.AllowOcclusionQueries"};
 // ...and still died seconds later on another query read: the GPU timing
 // queries (GPU stats) are the other query users in UE4's D3D11 renderer.
 QuadViewCVarOverride g_quad_ue4_gpu_stats{L"r.GPUStatsEnabled"};
+// Quad View: four views mean four view states, and Unreal adapts exposure per
+// view state. The sharp window sees a small slice of the scene, so it settles
+// on a different brightness than the wide view around it. With the share
+// exposure option on, both adaptation cvars are frozen while Quad View runs so
+// all four views use one exposure (0 = fixed, no histogram adaptation).
+QuadViewCVarOverride g_quad_shared_exposure{L"r.DefaultFeature.AutoExposure"};
+QuadViewCVarOverride g_quad_eye_adaptation_quality{L"r.EyeAdaptationQuality"};
 }
 
 void VR::update_hmd_state(bool from_view_extensions, uint32_t frame_count) {
@@ -7651,6 +7658,11 @@ void VR::update_hmd_state(bool from_view_extensions, uint32_t frame_count) {
             m_fake_stereo_hook != nullptr && !m_fake_stereo_hook->has_double_precision();
         g_quad_ue4_occlusion_queries.update(ue4_quad_wanted ? std::optional<float>{0.0f} : std::nullopt);
         g_quad_ue4_gpu_stats.update(ue4_quad_wanted ? std::optional<float>{0.0f} : std::nullopt);
+
+        // Share exposure across the four views (see the cvar comments above).
+        const bool share_exposure = quad && m_quad_view_shared_exposure->value();
+        g_quad_shared_exposure.update(share_exposure ? std::optional<float>{0.0f} : std::nullopt);
+        g_quad_eye_adaptation_quality.update(share_exposure ? std::optional<float>{0.0f} : std::nullopt);
         if (!ue4_quad_wanted) {
             m_quad_view_ue4_settle_frames = 0;
         } else if (g_quad_ue4_occlusion_queries.applied || g_quad_ue4_occlusion_queries.missing()) {
@@ -10777,12 +10789,16 @@ void VR::draw_quad_view_ui() {
         }
         m_quad_view_debug_sharp_only->draw("Debug: submit the sharp layer only (wide layer off)");
         m_quad_view_disable_vignette->draw("Remove vignette (otherwise each sharp view gets its own dark edges)");
+        m_quad_view_shared_exposure->draw("Share exposure across the four views (freezes auto-exposure)");
+        if (m_quad_view_shared_exposure->value()) {
+            m_quad_view_exposure_bias->draw("Brightness (composed image)");
+        }
         m_quad_view_sharp_first->draw("Render sharp views first (experimental)");
         ImGui::TextDisabled("For games whose hair (Groom) only draws in the first two views. The left sharp view then drives\nexposure and shadows, which may look different. Takes effect on the next frame.");
         const bool composed = m_openxr->quad_composed.load();
         ImGui::TextDisabled(composed ? "Output: composed by UEVR (wide + sharp, blended)"
                                      : "Output: sharp views sent to the headset as an overlay layer (hard edge)");
-        ImGui::TextDisabled("Exposure is shared automatically: all views use the left wide view's exposure.");
+        ImGui::TextDisabled("Each view adapts exposure to its own field of view; sharing freezes that so the sharp\nwindow and the wide periphery keep the same brightness.");
         ImGui::TreePop();
     }
 
