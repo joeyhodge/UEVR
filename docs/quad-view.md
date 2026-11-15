@@ -62,10 +62,13 @@ stereo layout the runtime would reproject with).
 | Pixel density | 1.0 | Sharp window resolution relative to the headset's native density. |
 | Offset left/right, down/up | 0 | Moves the window for trackers that sit slightly off-centre. |
 | Follow gaze | on | Use `XR_EXT_eye_gaze_interaction` to place the window. |
-| Gaze dead zone | 0.03 | Tangent units (~1.7°) the gaze must move before the window follows. |
+| Gaze smoothing | 15 ms | Low-pass time constant that averages eye-tracker noise. `0` follows the raw gaze. |
+| Gaze dead zone | 0 (off) | Tangent units (~1.7°) the gaze must move before the window follows. |
 
-The gaze filter keeps the window still against tracker noise, jumps both eyes
-together on a saccade, and recentres it after 500 ms without valid gaze.
+The gaze filter averages the eye-tracker signal over the smoothing time (with a
+median of three to reject single-frame spikes), so tracking noise is smoothed
+without the window trailing a saccade. A dead zone can hold the window for small
+movements, and the window recentres after 500 ms without valid gaze.
 
 ### Wide views (periphery cost)
 
@@ -118,7 +121,7 @@ The settings are stored in `config.txt` like other UEVR options:
 
 `VR_RenderingMethod=3`, `QuadViewWideScale`, `QuadViewFocusWidth`,
 `QuadViewFocusHeight`, `QuadViewFocusDensity`, `QuadViewFollowGaze`,
-`QuadViewGazeDeadZone`, `QuadViewWideLODScale`, `QuadViewSharedExposure`,
+`QuadViewGazeDeadZone`, `QuadViewGazeSmoothingMs`, `QuadViewWideLODScale`, `QuadViewSharedExposure`,
 `QuadViewExposureBias`, `QuadViewEdgeBlend`, `QuadViewShowOutline`,
 `QuadViewCompose`, `QuadViewFocusShape`, `QuadViewOffsetX`, `QuadViewOffsetY`,
 `QuadViewWideMinPixels`, `QuadViewCullSmallActors`, `QuadViewCPUParticles`,

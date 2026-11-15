@@ -4481,7 +4481,8 @@ void OpenXR::update_quad_view_gaze(XrTime display_time, PipelineState& state) {
     if (!follow) {
         this->quad_gaze = {};
     } else {
-        this->quad_gaze.update(gx, gy, mask, settings.dead_zone, now_ms, settings.gaze_return_ms);
+        this->quad_gaze.update(gx, gy, mask, settings.dead_zone, settings.gaze_smoothing_ms, now_ms,
+            settings.gaze_return_ms);
     }
 
     this->quad_gaze_tracking = mask == 3u;

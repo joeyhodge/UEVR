@@ -34,7 +34,8 @@ struct Settings {
     double focus_width{0.30};   // focus window, share of the eye's full tangent width
     double focus_height{0.30};  // and height
     double focus_density{1.0};  // focus pixel density relative to the headset's native density
-    double dead_zone{0.03};     // tangent units (~1.7 deg) the gaze must move before the window follows
+    double dead_zone{0.0};      // tangent units (~1.7 deg) the gaze must move before the window follows
+    double gaze_smoothing_ms{15.0}; // low-pass time constant that averages eye-tracker noise
     uint64_t gaze_return_ms{500}; // without gaze for this long, the window recentres
     double offset_x{0.0};       // sharp window shift, share of the eye's tangent width (+ = right)
     double offset_y{0.0};       // and height (+ = up), for trackers that sit slightly off
@@ -166,29 +167,17 @@ inline double median3(double a, double b, double c) {
     return (std::max)((std::min)(a, b), (std::min)((std::max)(a, b), c));
 }
 
-// Keeps the focus windows still against eye-tracker noise. The raw gaze is
-// median-filtered (one-frame spikes) and low-passed with a speed-dependent
-// alpha: small movements are smoothed heavily, saccades pass quickly. The
-// window only starts following once the filtered gaze leaves the dead zone;
-// after that it tracks the filtered target until the target settles, so it does
-// not stop with a permanent dead-zone offset. Without gaze for return_ms, it
-// recentres. Centres are in each eye's tangent space; (0, 0) is straight ahead.
+// Keeps the focus windows together with the gaze. The raw gaze is
+// median-filtered (one-frame spikes never pass) and then low-passed with the
+// user's smoothing time, which averages the remaining tracker noise over a few
+// milliseconds. The window follows the filtered gaze directly, so it matches
+// what the eyes are looking at; an optional dead zone holds it for small
+// movements. Without gaze for return_ms, it recentres. Centres are in each
+// eye's tangent space; (0, 0) is straight ahead.
 struct GazeFilter {
-    // Low-pass: 30% per update for a steady gaze, up to 90% when the gaze is
-    // moving fast (a saccade). The median still rejects one-frame tracker
-    // spikes and the dead zone holds small noise, while a real saccade reaches
-    // the window within a few frames (about 50 ms at 90 Hz).
-    static constexpr double MIN_ALPHA = 0.30;
-    static constexpr double ALPHA_PER_TANGENT = 6.0;
-    static constexpr double MAX_ALPHA = 0.90;
     // Once the filtered gaze has settled this close to the median raw sample,
     // stop following; the window stays centred on the fixation.
     static constexpr double SETTLED = 0.004;
-    // The window closes 60% of the remaining distance per update, so it keeps
-    // up with the gaze instead of gliding behind it. The cap only limits what a
-    // single update can do, as a guard against persistent tracker outliers.
-    static constexpr double FOLLOW_FRACTION = 0.60;
-    static constexpr double MAX_STEP = 0.12;
 
     double cx[2]{0, 0}, cy[2]{0, 0}; // window centre
     double fx[2]{0, 0}, fy[2]{0, 0}; // filtered gaze target
@@ -197,11 +186,23 @@ struct GazeFilter {
     bool seeded{false};
     bool following{false};
     uint64_t last_valid_ms{0};
+    uint64_t last_update_ms{0};
 
-    void update(const double gx[2], const double gy[2], uint32_t valid_mask, double dead_zone, uint64_t now_ms,
-                uint64_t return_ms) {
+    // smoothing_ms is the low-pass time constant: how many milliseconds of gaze
+    // are averaged. 0 follows the median sample immediately. The frame time is
+    // used as dt, so the feel does not change with the frame rate.
+    void update(const double gx[2], const double gy[2], uint32_t valid_mask, double dead_zone,
+                double smoothing_ms, uint64_t now_ms, uint64_t return_ms) {
         if ((valid_mask & 3u) == 3u) {
             last_valid_ms = now_ms;
+
+            const uint64_t dt_ms = last_update_ms != 0 && now_ms > last_update_ms
+                ? std::clamp<uint64_t>(now_ms - last_update_ms, 1, 100)
+                : 11;
+            last_update_ms = now_ms;
+            const double alpha = smoothing_ms <= 0.0
+                ? 1.0
+                : 1.0 - std::exp(-double(dt_ms) / smoothing_ms);
 
             if (!seeded) {
                 for (int i = 0; i < 2; ++i) {
@@ -228,12 +229,8 @@ struct GazeFilter {
 
                 mx[i] = median3(rx[i][0], rx[i][1], rx[i][2]);
                 my[i] = median3(ry[i][0], ry[i][1], ry[i][2]);
-                const double dx = mx[i] - fx[i];
-                const double dy = my[i] - fy[i];
-                const double alpha = std::clamp(MIN_ALPHA + std::hypot(dx, dy) * ALPHA_PER_TANGENT,
-                    MIN_ALPHA, MAX_ALPHA);
-                fx[i] += alpha * dx;
-                fy[i] += alpha * dy;
+                fx[i] += alpha * (mx[i] - fx[i]);
+                fy[i] += alpha * (my[i] - fy[i]);
             }
 
             bool move = false;
@@ -250,16 +247,11 @@ struct GazeFilter {
             if (following) {
                 bool settled = true;
                 for (int i = 0; i < 2; ++i) {
-                    const double dx = fx[i] - cx[i];
-                    const double dy = fy[i] - cy[i];
-                    const double d = std::hypot(dx, dy);
-                    if (d > 0) {
-                        const double step = (std::min)(d * FOLLOW_FRACTION, MAX_STEP);
-                        cx[i] += dx / d * step;
-                        cy[i] += dy / d * step;
-                    }
-                    if (std::hypot(mx[i] - fx[i], my[i] - fy[i]) > SETTLED ||
-                        std::hypot(fx[i] - cx[i], fy[i] - cy[i]) > dead_zone * 0.25) {
+                    // The window goes straight to the filtered gaze, which is
+                    // already smooth: it never trails behind a saccade.
+                    cx[i] = fx[i];
+                    cy[i] = fy[i];
+                    if (std::hypot(mx[i] - fx[i], my[i] - fy[i]) > SETTLED) {
                         settled = false;
                     }
                 }

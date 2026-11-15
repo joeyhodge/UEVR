@@ -10733,6 +10733,7 @@ void VR::draw_quad_view_ui() {
         m_quad_view_offset_y->draw("Offset down/up (+ = up)");
         m_quad_view_follow_gaze->draw("Follow gaze (eye tracking)");
         if (m_quad_view_follow_gaze->value()) {
+            m_quad_view_gaze_smoothing_ms->draw("Gaze smoothing (ms, 0 = raw)");
             m_quad_view_gaze_dead_zone->draw("Gaze dead zone");
 
             if (!m_openxr->eye_gaze_supported) {
