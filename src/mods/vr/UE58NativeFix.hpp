@@ -53,8 +53,7 @@ bool matches(const sdk::discovery::Memory& memory, uintptr_t address,
     return sdk::sinking_city_2::native::matches(memory, address, code, mask);
 }
 
-inline bool view_layout(const sdk::discovery::Memory& memory, uintptr_t constructor,
-    bool allow_paradox_drive_layout = false) {
+inline bool view_layout(const sdk::discovery::Memory& memory, uintptr_t constructor) {
     using namespace contract;
     if (!sdk::discovery::relative_address(constructor, 0x5d2)) { return false; }
     if (matches(memory, constructor + 0x30, view_identity_code, view_identity_mask) &&
@@ -62,9 +61,9 @@ inline bool view_layout(const sdk::discovery::Memory& memory, uintptr_t construc
         matches(memory, constructor + 0x49f, view_projection_code, view_projection_mask) &&
         matches(memory, constructor + 0x547, view_stereo_code, view_stereo_mask)) { return true; }
 
-    // ParadoxDrive retains these exact member/control-flow contracts at different code offsets.
-    return allow_paradox_drive_layout &&
-        matches(memory, constructor + 0x39, view_identity_code, view_identity_mask) &&
+    // Stock UE5.8.4 Shipping and ParadoxDrive independently match this placement.
+    // The complete field/control-flow proof, not an executable name, authorizes it.
+    return matches(memory, constructor + 0x39, view_identity_code, view_identity_mask) &&
         matches(memory, constructor + 0x3af, view_rects_code, view_rects_mask) &&
         matches(memory, constructor + 0x495, view_projection_code, view_projection_mask) &&
         matches(memory, constructor + 0x53d, view_stereo_code, view_stereo_mask);

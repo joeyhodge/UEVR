@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mods/vr/ParadoxDriveRHI.hpp"
+#include "fixtures/UE584StockABI.hpp"
 
 namespace paradoxdrive_rhi_tests {
 namespace p = uevr::paradoxdrive_rhi;
@@ -58,6 +59,40 @@ template<class Expect> void run(Expect&& expect) {
         return cursor <= builder ? std::optional<uintptr_t>{builder} : std::nullopt;
     };
     expect(discover(unique), "the native RDG overload and unique constructor reference store authorize unwrapping");
+    const auto classify = [&](std::wstring_view path, uint32_t version = 0x50008u) {
+        return p::classify_input(memory.view(), path, version, memory.base, 0x4000, render, unique, size);
+    };
+    for (const auto name : {L"ParadoxDrive-Win64-Shipping.exe", L"UnrealGame-Win64-Shipping.exe",
+            L"D:/Games/Other-Win64-Shipping.exe"}) {
+        expect(classify(name) == p::Input::VerifiedRDG,
+            "the same fully proven Shipping RDG ABI is reusable without a title-name allowlist");
+    }
+    for (const auto version : {0u, 0x4001bu, 0x50007u, 0x50009u, 0x60000u}) {
+        memory.reads = 0;
+        expect(classify(L"UnrealGame-Win64-Shipping.exe", version) == p::Input::LegacyRHI && memory.reads == 0,
+            "other engine intervals retain their original argument path with no new memory reads");
+    }
+    memory.bytes[render - memory.base] ^= 1;
+    expect(classify(L"UnrealGame-Win64-Shipping.exe") == p::Input::LegacyRHI,
+        "an unrecognized callback cannot authorize new stock argument handling");
+    expect(classify(L"ParadoxDrive-Win64-Shipping.exe") == p::Input::UnverifiedRDG,
+        "a changed known RDG title preserves its existing fail-closed protection");
+    memory.bytes[render - memory.base] ^= 1;
+    memory.bytes[builder - memory.base] ^= 1;
+    expect(classify(L"UnrealGame-Win64-Shipping.exe") == p::Input::UnverifiedRDG,
+        "a proven RDG callback with an unproven builder is never reinterpreted as a legacy command list");
+    memory.bytes[builder - memory.base] ^= 1;
+    {
+        const auto saved = memory;
+        memory.put(render, uevr::tests::ue584_stock::render_texture);
+        memory.put(builder, uevr::tests::ue584_stock::builder_prefix);
+        expect(classify(L"UnrealGame-Win64-Shipping.exe") == p::Input::VerifiedRDG,
+            "independent stock UE5.8.4 EXE/PDB bytes satisfy the unchanged callback/constructor proof");
+        memory.bytes[builder - memory.base + p::contract::builder_prefix_code.size() - 4] ^= 1;
+        expect(classify(L"UnrealGame-Win64-Shipping.exe") == p::Input::UnverifiedRDG,
+            "changing the independently captured builder reference store rejects stock unwrapping");
+        memory = saved;
+    }
     const auto mutate = [&](uintptr_t address, const auto& code, const auto& mask, auto&& check) {
         for (size_t i = 0; i < code.size(); ++i) {
             memory.bytes[address - memory.base + i] ^= 1;

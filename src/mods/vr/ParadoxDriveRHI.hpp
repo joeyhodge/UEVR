@@ -77,6 +77,20 @@ bool discover(const sdk::discovery::Memory& memory, uintptr_t base, size_t size,
     return false;
 }
 
+template<class Scan, class FunctionSize>
+Input classify_input(const sdk::discovery::Memory& memory, std::wstring_view path, uint32_t file_version_ms,
+    uintptr_t base, size_t size, uintptr_t render_texture, Scan&& scan, FunctionSize&& function_size) {
+    const bool guarded_title = target(path, file_version_ms);
+    if (!guarded_title && file_version_ms != ((5u << 16) | 8u)) { return Input::LegacyRHI; }
+    // The stock UE5.8.4 Shipping callback independently matches this exact RDG
+    // contract. Never probe the constructor or reinterpret arguments on a guess.
+    if (!render_texture_layout(memory, base, size, render_texture, function_size)) {
+        return guarded_title ? Input::UnverifiedRDG : Input::LegacyRHI;
+    }
+    return discover(memory, base, size, render_texture, scan, function_size)
+        ? Input::VerifiedRDG : Input::UnverifiedRDG;
+}
+
 inline uintptr_t command_list(const sdk::discovery::Memory& memory, Input input, uintptr_t argument) {
     if (input == Input::LegacyRHI) { return argument; }
     if (input != Input::VerifiedRDG || argument < 0x10000 || argument % alignof(uintptr_t) != 0) { return 0; }
