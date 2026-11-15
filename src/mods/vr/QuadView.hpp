@@ -183,6 +183,9 @@ struct GazeFilter {
     // Once the filtered gaze has settled this close to the median raw sample,
     // stop following; the window stays centred on the fixation.
     static constexpr double SETTLED = 0.004;
+    // Largest window movement per update. A large gaze jump then glides over a
+    // few frames instead of snapping the sharp window across the wide image.
+    static constexpr double MAX_STEP = 0.02;
 
     double cx[2]{0, 0}, cy[2]{0, 0}; // window centre
     double fx[2]{0, 0}, fy[2]{0, 0}; // filtered gaze target
@@ -244,9 +247,16 @@ struct GazeFilter {
             if (following) {
                 bool settled = true;
                 for (int i = 0; i < 2; ++i) {
-                    cx[i] = fx[i];
-                    cy[i] = fy[i];
-                    if (std::hypot(mx[i] - fx[i], my[i] - fy[i]) > SETTLED) {
+                    const double dx = fx[i] - cx[i];
+                    const double dy = fy[i] - cy[i];
+                    const double d = std::hypot(dx, dy);
+                    if (d > 0) {
+                        const double step = (std::min)(d, MAX_STEP);
+                        cx[i] += dx / d * step;
+                        cy[i] += dy / d * step;
+                    }
+                    if (std::hypot(mx[i] - fx[i], my[i] - fy[i]) > SETTLED ||
+                        std::hypot(fx[i] - cx[i], fy[i] - cy[i]) > dead_zone * 0.25) {
                         settled = false;
                     }
                 }
