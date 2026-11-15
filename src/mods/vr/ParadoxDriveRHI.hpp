@@ -5,6 +5,7 @@
 
 #include <sdk/BoundedDiscovery.hpp>
 #include "ParadoxDriveRHIContracts.hpp"
+#include "UE584DevelopmentContracts.hpp"
 
 namespace uevr::paradoxdrive_rhi {
 
@@ -13,6 +14,9 @@ inline constexpr size_t command_list_offset = 0xc0;
 inline constexpr size_t builder_function_size = 0x63f;
 inline constexpr const char* builder_signature =
     "48 89 5C 24 10 48 89 6C 24 18 48 89 74 24 20 57 41 54 41 55 41 56 41 57 48 83 EC 50 0F B7 AC 24 A0 00 00 00 48 8B F1";
+inline constexpr size_t development_builder_function_size = 0x881;
+inline constexpr const char* development_builder_signature =
+    "48 89 5C 24 10 55 56 57 41 54 41 55 41 56 41 57 48 83 EC 50 0F B7 B4 24 B0 00 00 00 48 8B F9";
 
 inline bool target(std::wstring_view path, uint32_t file_version_ms) {
     if (file_version_ms != ((5u << 16) | 8u)) { return false; }
@@ -78,6 +82,29 @@ bool discover(const sdk::discovery::Memory& memory, uintptr_t base, size_t size,
 }
 
 template<class Scan, class FunctionSize>
+bool discover_development(const sdk::discovery::Memory& memory, uintptr_t base, size_t size,
+    uintptr_t render_texture, Scan&& scan, FunctionSize&& function_size) {
+    namespace d = ue584_development::contract;
+    if (!contains(base, size, render_texture, d::render_texture_code.size()) ||
+        function_size(render_texture) != d::render_texture_code.size() ||
+        !matches(memory, render_texture, d::render_texture_code, d::render_texture_mask)) { return false; }
+    uintptr_t cursor = base;
+    bool found{};
+    for (size_t candidates = 0; candidates < 4 && cursor - base < size; ++candidates) {
+        const auto candidate = scan(cursor, size - (cursor - base), development_builder_signature);
+        if (!candidate) { return found; }
+        if (*candidate < cursor || !contains(base, size, *candidate, 1)) { return false; }
+        cursor = *candidate + 1;
+        if (!contains(base, size, *candidate, development_builder_function_size) ||
+            function_size(*candidate) != development_builder_function_size ||
+            !matches(memory, *candidate, d::builder_prefix_code, d::builder_prefix_mask)) { continue; }
+        if (found) { return false; }
+        found = true;
+    }
+    return false;
+}
+
+template<class Scan, class FunctionSize>
 Input classify_input(const sdk::discovery::Memory& memory, std::wstring_view path, uint32_t file_version_ms,
     uintptr_t base, size_t size, uintptr_t render_texture, Scan&& scan, FunctionSize&& function_size) {
     const bool guarded_title = target(path, file_version_ms);
@@ -85,7 +112,13 @@ Input classify_input(const sdk::discovery::Memory& memory, std::wstring_view pat
     // The stock UE5.8.4 Shipping callback independently matches this exact RDG
     // contract. Never probe the constructor or reinterpret arguments on a guess.
     if (!render_texture_layout(memory, base, size, render_texture, function_size)) {
-        return guarded_title ? Input::UnverifiedRDG : Input::LegacyRHI;
+        namespace d = ue584_development::contract;
+        const bool development_callback = contains(base, size, render_texture, d::render_texture_code.size()) &&
+            function_size(render_texture) == d::render_texture_code.size() &&
+            matches(memory, render_texture, d::render_texture_code, d::render_texture_mask);
+        if (!development_callback) { return guarded_title ? Input::UnverifiedRDG : Input::LegacyRHI; }
+        return discover_development(memory, base, size, render_texture, scan, function_size)
+            ? Input::VerifiedRDG : Input::UnverifiedRDG;
     }
     return discover(memory, base, size, render_texture, scan, function_size)
         ? Input::VerifiedRDG : Input::UnverifiedRDG;
