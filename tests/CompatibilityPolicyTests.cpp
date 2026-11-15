@@ -2577,6 +2577,7 @@ void test_ktjl_hook_contracts() {
 #include "Pre57SlateDiscoveryTests.hpp"
 #include "Pre57UIResourceTests.hpp"
 #include "UE58NativeFixTests.hpp"
+#include "ParadoxDriveRHITests.hpp"
 #include "UE59BinaryTests.hpp"
 #include "UE59NativeFamilyTests.hpp"
 
@@ -2584,6 +2585,7 @@ int main(int argc, char** argv) {
     ue59_render_tests::run(expect);
     ue521_view_extension_tests::run(expect);
     ue58_native_tests::run(expect);
+    paradoxdrive_rhi_tests::run(expect);
     ue59_family_tests::run(expect);
     if (argc == 4 && std::string_view{argv[1]} == "--ue59-image") { ue59_binary_tests::image(argv[2],argv[3],expect); }
     if (argc == 3 && std::string_view{argv[1]} == "--ue58-native-image") { ue58_native_tests::shipping_image(argv[2], expect); }
