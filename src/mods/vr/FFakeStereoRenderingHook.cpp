@@ -18279,6 +18279,27 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
         // so it's not feasible to just detour it, we need to replace the pointer in the vtable.
         if (!m_rendertarget_manager_embedded_in_stereo_device) {
             if (!uevr::nascar::is_target()) {
+                namespace p = uevr::paradoxdrive_rhi;
+                if (p::target(utility::get_module_pathw(utility::get_executable()).value_or(L""),
+                        sdk::get_file_version_info().dwFileVersionMS)) {
+                    const auto module = utility::get_executable();
+                    const auto base = reinterpret_cast<uintptr_t>(module);
+                    const auto size = utility::get_module_size(module).value_or(0);
+                    const auto function_size = [base](uintptr_t address) -> size_t {
+                        DWORD64 unwind_base{};
+                        const auto entry = RtlLookupFunctionEntry(address, &unwind_base, nullptr);
+                        return entry && unwind_base == base && base + entry->BeginAddress == address &&
+                            entry->EndAddress > entry->BeginAddress ? entry->EndAddress - entry->BeginAddress : 0;
+                    };
+                    const bool verified = p::discover(sdk::discovery::process_memory(), base, size,
+                        *render_texture_render_thread_func,
+                        [](uintptr_t cursor, size_t bytes, const char* signature) { return utility::scan(cursor, bytes, signature); },
+                        function_size);
+                    m_render_texture_command_input.store(verified ? p::Input::VerifiedRDG : p::Input::UnverifiedRDG,
+                        std::memory_order_release);
+                    SPDLOG_INFO("[ParadoxDrive][RHICommandList] RenderTexture RDG/constructor contract {}; legacy argument reinterpretation disabled",
+                        verified ? "verified" : "unverified; preserving direct frame assignment");
+                }
                 m_render_texture_render_thread_hook = safetyhook::create_inline((void*)*render_texture_render_thread_func, render_texture_render_thread);
             }
 
@@ -29521,6 +29542,11 @@ void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExte
                 once_slate = false;
             }
 
+            if (command_list == nullptr) {
+                vr->get_runtime()->enqueue_render_poses(frame_count + compensation);
+                return;
+            }
+
             static size_t actual_offset = 0;
 
             if (swgr_ue574_dx12_runtime()) {
@@ -32247,7 +32273,7 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
     return out;
 }
 
-__forceinline void FFakeStereoRenderingHook::render_texture_render_thread(FFakeStereoRendering* stereo, FRHICommandListImmediate* rhi_command_list,
+__forceinline void FFakeStereoRenderingHook::render_texture_render_thread(FFakeStereoRendering* stereo, void* command_input,
     FRHITexture2D* backbuffer, FRHITexture2D* src_texture, double window_size) 
 {
     if (!g_framework->is_game_data_intialized()) {
@@ -32268,6 +32294,17 @@ __forceinline void FFakeStereoRenderingHook::render_texture_render_thread(FFakeS
         g_hook->attempt_hook_slate_thread(return_address);
     }
 
+    namespace p = uevr::paradoxdrive_rhi;
+    const auto input = g_hook->m_render_texture_command_input.load(std::memory_order_acquire);
+    auto* rhi_command_list = reinterpret_cast<FRHICommandListImmediate*>(p::command_list(
+        sdk::discovery::process_memory(), input, reinterpret_cast<uintptr_t>(command_input)));
+    if (input != p::Input::LegacyRHI) {
+        if (rhi_command_list) {
+            SPDLOG_INFO_ONCE("[ParadoxDrive][RHICommandList] Unwrapped RenderTexture RDG +0xc0; retaining live Root +0x28 ownership validation");
+        } else {
+            SPDLOG_WARN_ONCE("[ParadoxDrive][RHICommandList] RDG command list unverified/unavailable; using direct frame assignment and retrying next callback");
+        }
+    }
     g_hook->get_slate_thread_worker()->execute(rhi_command_list);
 
     /*const auto return_address = (uintptr_t)_ReturnAddress();
