@@ -2573,6 +2573,7 @@ void test_ktjl_hook_contracts() {
 #include "ShippingSceneViewTests.hpp"
 #include "FrameworkInitializationTests.hpp"
 #include "FinchNativeFixTests.hpp"
+#include "AbzuNativeFixTests.hpp"
 #include "FinchAimTests.hpp"
 #include "Pre57SlateDiscoveryTests.hpp"
 #include "Pre57UIResourceTests.hpp"
@@ -2582,6 +2583,8 @@ void test_ktjl_hook_contracts() {
 #include "UE59NativeFamilyTests.hpp"
 
 int main(int argc, char** argv) {
+    abzu_tests::run(expect);
+    if (argc == 3 && std::string_view{argv[1]} == "--abzu-image") { abzu_tests::shipping_image(argv[2],expect); }
     ue59_render_tests::run(expect);
     ue521_view_extension_tests::run(expect);
     ue58_native_tests::run(expect);
