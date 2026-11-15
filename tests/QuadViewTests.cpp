@@ -90,17 +90,25 @@ static void gaze_tests() {
     expect(g.cx[1] > 0.20 && g.cx[1] <= 0.22, "the other eye follows too");
     expect(g.cy[1] < -0.13 && g.cy[1] >= -0.14, "and the vertical axis follows");
 
-    // A large jump is rate-limited instead of snapping the window across.
+    // A large jump reaches the window within a few frames, while a one-frame
+    // spike is still rejected by the median.
     q::GazeFilter jump{};
     const double zero[2]{0.0, 0.0};
     jump.update(zero, zero, 3u, 0.03, 0, 500);
     const double bigx[2]{0.5, 0.0}, bigy[2]{0.0, 0.0};
     jump.update(bigx, bigy, 3u, 0.03, 10, 500);
-    expect(jump.cx[0] <= 0.03, "a large gaze jump is rate-limited, not snapped");
-    for (int i = 0; i < 30; ++i) {
+    for (int i = 0; i < 6; ++i) {
         jump.update(bigx, bigy, 3u, 0.03, 20 + (uint64_t)i * 10, 500);
     }
-    expect(jump.cx[0] > 0.49, "the window catches up after a large gaze jump");
+    expect(jump.cx[0] > 0.45, "a large gaze jump reaches the window within a few frames");
+
+    q::GazeFilter spike{};
+    spike.update(zero, zero, 3u, 0.03, 0, 500);
+    for (int i = 0; i < 20; ++i) {
+        const double sx[2]{(i == 10) ? 0.4 : 0.0, 0.0};
+        spike.update(sx, bigy, 3u, 0.03, 10 + (uint64_t)i * 10, 500);
+    }
+    expect(near(spike.cx[0], 0.0, 0.002), "a one-frame gaze spike is rejected");
 
     g.update(c, d, 1u, 0.03, 1700, 500);
     expect(g.seeded, "a short gaze dropout keeps the window");

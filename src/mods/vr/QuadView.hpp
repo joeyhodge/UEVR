@@ -174,18 +174,21 @@ inline double median3(double a, double b, double c) {
 // not stop with a permanent dead-zone offset. Without gaze for return_ms, it
 // recentres. Centres are in each eye's tangent space; (0, 0) is straight ahead.
 struct GazeFilter {
-    // Low-pass: 8% per update for a steady gaze, up to 75% when the gaze is
-    // moving fast (a saccade), so tracker noise is damped heavily while
-    // saccades still pass quickly.
-    static constexpr double MIN_ALPHA = 0.08;
-    static constexpr double ALPHA_PER_TANGENT = 8.0;
-    static constexpr double MAX_ALPHA = 0.75;
+    // Low-pass: 30% per update for a steady gaze, up to 90% when the gaze is
+    // moving fast (a saccade). The median still rejects one-frame tracker
+    // spikes and the dead zone holds small noise, while a real saccade reaches
+    // the window within a few frames (about 50 ms at 90 Hz).
+    static constexpr double MIN_ALPHA = 0.30;
+    static constexpr double ALPHA_PER_TANGENT = 6.0;
+    static constexpr double MAX_ALPHA = 0.90;
     // Once the filtered gaze has settled this close to the median raw sample,
     // stop following; the window stays centred on the fixation.
     static constexpr double SETTLED = 0.004;
-    // Largest window movement per update. A large gaze jump then glides over a
-    // few frames instead of snapping the sharp window across the wide image.
-    static constexpr double MAX_STEP = 0.02;
+    // The window closes 60% of the remaining distance per update, so it keeps
+    // up with the gaze instead of gliding behind it. The cap only limits what a
+    // single update can do, as a guard against persistent tracker outliers.
+    static constexpr double FOLLOW_FRACTION = 0.60;
+    static constexpr double MAX_STEP = 0.12;
 
     double cx[2]{0, 0}, cy[2]{0, 0}; // window centre
     double fx[2]{0, 0}, fy[2]{0, 0}; // filtered gaze target
@@ -251,7 +254,7 @@ struct GazeFilter {
                     const double dy = fy[i] - cy[i];
                     const double d = std::hypot(dx, dy);
                     if (d > 0) {
-                        const double step = (std::min)(d, MAX_STEP);
+                        const double step = (std::min)(d * FOLLOW_FRACTION, MAX_STEP);
                         cx[i] += dx / d * step;
                         cy[i] += dy / d * step;
                     }
