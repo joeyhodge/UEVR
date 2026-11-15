@@ -473,6 +473,245 @@ bool D3D11Component::TextureContext::clear_rtv(float* color) {
     return true;
 }
 
+// Quad View on D3D11: the runtime stacks the wide and sharp projection layers,
+// and on Pimax the wide layer keeps showing through the sharp one. Compose the
+// atlas into a plain stereo image here instead (what the D3D12 compositor does)
+// and let the normal single-layer submit send it.
+bool D3D11Component::compose_quad_atlas(ID3D11Texture2D* destination) {
+    auto vr = VR::get();
+    auto* const xr = vr != nullptr ? vr->get_openxr_runtime() : nullptr;
+    auto& hook = g_framework->get_d3d11_hook();
+    auto device = hook->get_device();
+
+    if (destination == nullptr || xr == nullptr || device == nullptr ||
+        !FFakeStereoRenderingHook::is_quad_view_active() ||
+        !vr->is_quad_view_compositor_enabled() || !m_engine_tex_ref.has_srv() ||
+        m_backbuffer_batch == nullptr) {
+        SPDLOG_INFO_EVERY_N_SEC(2,
+            "[QuadView][D3D11] compose skipped: destination={} xr={} device={} quad={} enabled={} srv={} batch={}",
+            destination != nullptr, xr != nullptr, device != nullptr,
+            FFakeStereoRenderingHook::is_quad_view_active(),
+            vr != nullptr && vr->is_quad_view_compositor_enabled(),
+            m_engine_tex_ref.has_srv(), m_backbuffer_batch != nullptr);
+        return false;
+    }
+
+    D3D11_TEXTURE2D_DESC desc{};
+    destination->GetDesc(&desc);
+
+    if (desc.Width < 16 || desc.Height < 16) {
+        return false;
+    }
+
+    if (m_quad_compose_blend == nullptr) {
+        D3D11_BLEND_DESC blend_desc{};
+        blend_desc.RenderTarget[0].BlendEnable = FALSE;
+        blend_desc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+        if (FAILED(device->CreateBlendState(&blend_desc, &m_quad_compose_blend))) {
+            return false;
+        }
+    }
+
+    ComPtr<ID3D11RenderTargetView> render_target{};
+    if (m_quad_compose_tex == nullptr || m_quad_compose_width != desc.Width ||
+        m_quad_compose_height != desc.Height || m_quad_compose_format != desc.Format) {
+        D3D11_TEXTURE2D_DESC compose_desc = desc;
+        compose_desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+        compose_desc.Usage = D3D11_USAGE_DEFAULT;
+        compose_desc.CPUAccessFlags = 0;
+        compose_desc.MiscFlags = 0;
+        compose_desc.MipLevels = 1;
+        compose_desc.ArraySize = 1;
+        compose_desc.SampleDesc.Count = 1;
+        compose_desc.SampleDesc.Quality = 0;
+
+        // The destination format decides CopyResource compatibility; the view
+        // format must be concrete, since swapchain images can be typeless.
+        DXGI_FORMAT rtv_format = desc.Format;
+        switch (desc.Format) {
+        case DXGI_FORMAT_B8G8R8A8_TYPELESS: rtv_format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB; break;
+        case DXGI_FORMAT_R8G8B8A8_TYPELESS: rtv_format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB; break;
+        case DXGI_FORMAT_R10G10B10A2_TYPELESS: rtv_format = DXGI_FORMAT_R10G10B10A2_UNORM; break;
+        case DXGI_FORMAT_R16G16B16A16_TYPELESS: rtv_format = DXGI_FORMAT_R16G16B16A16_FLOAT; break;
+        default: break;
+        }
+
+        m_quad_compose_rtv.Reset();
+        m_quad_compose_tex.Reset();
+
+        const auto texture_hr = device->CreateTexture2D(&compose_desc, nullptr, &m_quad_compose_tex);
+        if (FAILED(texture_hr)) {
+            SPDLOG_INFO_EVERY_N_SEC(2, "[QuadView][D3D11] compose failed: CreateTexture2D hr=0x{:x} fmt={} {}x{}",
+                (uint32_t)texture_hr, (int)desc.Format, desc.Width, desc.Height);
+            return false;
+        }
+
+        D3D11_RENDER_TARGET_VIEW_DESC rtv_desc{};
+        rtv_desc.Format = rtv_format;
+        rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+
+        const auto rtv_hr = device->CreateRenderTargetView(m_quad_compose_tex.Get(), &rtv_desc, &m_quad_compose_rtv);
+        if (FAILED(rtv_hr)) {
+            SPDLOG_INFO_EVERY_N_SEC(2, "[QuadView][D3D11] compose failed: CreateRenderTargetView hr=0x{:x} fmt={} rtv_fmt={} bind=0x{:x}",
+                (uint32_t)rtv_hr, (int)desc.Format, (int)rtv_format, compose_desc.BindFlags);
+            return false;
+        }
+
+        m_quad_compose_width = desc.Width;
+        m_quad_compose_height = desc.Height;
+        m_quad_compose_format = desc.Format;
+
+        SPDLOG_INFO("[QuadView][D3D11] compose target created {}x{} fmt {} rtv {} bind 0x{:x}",
+            desc.Width, desc.Height, (int)desc.Format, (int)rtv_format, compose_desc.BindFlags);
+    }
+
+    if (m_quad_compose_rtv != nullptr) {
+        render_target = m_quad_compose_rtv;
+    }
+
+    ComPtr<ID3D11DeviceContext> context{};
+    device->GetImmediateContext(&context);
+    if (context == nullptr) {
+        return false;
+    }
+
+    const auto layout = vr->get_quad_view_layout();
+    const auto focus = xr->peek_submit_quad_focus();
+    const bool sharp_only = vr->is_quad_view_sharp_only_debug();
+    const bool wide_only = vr->is_quad_view_wide_only_debug();
+
+    const auto hmd_w = (double)(std::max<int32_t>)(vr->get_hmd_width(), 1);
+    const auto hmd_h = (double)(std::max<int32_t>)(vr->get_hmd_height(), 1);
+    const auto scale_x = (double)desc.Width / (2.0 * hmd_w);
+    const auto scale_y = (double)desc.Height / hmd_h;
+
+    DX11StateBackup backup{context.Get()};
+
+    ID3D11RenderTargetView* views[] = { render_target.Get() };
+    context->OMSetRenderTargets(1, views, nullptr);
+    context->OMSetBlendState(m_quad_compose_blend.Get(), nullptr, 0xffffffff);
+
+    D3D11_VIEWPORT viewport{};
+    viewport.Width = (float)desc.Width;
+    viewport.Height = (float)desc.Height;
+    viewport.MaxDepth = 1.0f;
+    context->RSSetViewports(1, &viewport);
+
+    D3D11_RECT scissor{0, 0, (LONG)desc.Width, (LONG)desc.Height};
+    context->RSSetScissorRects(1, &scissor);
+
+    const auto eye_w = (double)desc.Width / 2.0;
+    const auto eye_h = (double)desc.Height;
+
+    const auto outline = vr->is_quad_view_outline_enabled();
+
+    if (sharp_only) {
+        // The compose target is reused every frame; without this the previous
+        // frame's wide views stay visible around the sharp window.
+        const float clear[4]{0.0f, 0.0f, 0.0f, 1.0f};
+        context->ClearRenderTargetView(m_quad_compose_rtv.Get(), clear);
+    }
+
+    if (outline && m_quad_outline_srv == nullptr) {
+        // 1x1 white so the outline is four tinted rectangles through the batch.
+        D3D11_TEXTURE2D_DESC white_desc{};
+        white_desc.Width = 1;
+        white_desc.Height = 1;
+        white_desc.MipLevels = 1;
+        white_desc.ArraySize = 1;
+        white_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        white_desc.SampleDesc.Count = 1;
+        white_desc.Usage = D3D11_USAGE_IMMUTABLE;
+        white_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+        const uint32_t white = 0xffffffff;
+        const D3D11_SUBRESOURCE_DATA white_data{&white, sizeof(white), 0};
+
+        ComPtr<ID3D11Texture2D> white_tex{};
+        if (SUCCEEDED(device->CreateTexture2D(&white_desc, &white_data, &white_tex))) {
+            if (SUCCEEDED(device->CreateShaderResourceView(white_tex.Get(), nullptr, &m_quad_outline_srv))) {
+                m_quad_outline_tex = white_tex;
+            }
+        }
+    }
+
+    const auto draw_atlas_rect = [&](const uevr::quadview::Rect& r, double x, double y, double w, double h) {
+        RECT dest{};
+        dest.left = (LONG)std::lround(x);
+        dest.top = (LONG)std::lround(y);
+        dest.right = (LONG)std::lround(x + w);
+        dest.bottom = (LONG)std::lround(y + h);
+
+        RECT src{};
+        src.left = (LONG)std::lround(r.x * scale_x);
+        src.top = (LONG)std::lround(r.y * scale_y);
+        src.right = (LONG)std::lround((r.x + r.w) * scale_x);
+        src.bottom = (LONG)std::lround((r.y + r.h) * scale_y);
+
+        if (dest.right <= dest.left || dest.bottom <= dest.top ||
+            src.right <= src.left || src.bottom <= src.top) {
+            return;
+        }
+
+        m_backbuffer_batch->Draw(m_engine_tex_ref, dest, &src, DirectX::Colors::White);
+    };
+
+    const auto draw_outline_rect = [&](double x, double y, double w, double h) {
+        if (m_quad_outline_srv == nullptr || w < 1.0 || h < 1.0) {
+            return;
+        }
+
+        RECT dest{};
+        dest.left = (LONG)std::lround(x);
+        dest.top = (LONG)std::lround(y);
+        dest.right = (LONG)std::lround(x + w);
+        dest.bottom = (LONG)std::lround(y + h);
+
+        const RECT src{0, 0, 1, 1};
+        m_backbuffer_batch->Draw(m_quad_outline_srv.Get(), dest, &src, DirectX::XMVectorSet(0.1f, 1.0f, 0.3f, 1.0f));
+    };
+
+    m_backbuffer_batch->Begin(DirectX::DX11::SpriteSortMode_Deferred, m_quad_compose_blend.Get());
+    m_backbuffer_batch->SetViewport(viewport);
+
+    for (uint32_t eye = 0; eye < 2; ++eye) {
+        const auto x0 = (double)eye * eye_w;
+
+        if (!sharp_only) {
+            draw_atlas_rect(layout.views[eye], x0, 0.0, eye_w, eye_h);
+        }
+
+        const uevr::quadview::Tangents rendered{
+            (double)xr->rendered_tangents[eye][0], (double)xr->rendered_tangents[eye][1],
+            (double)xr->rendered_tangents[eye][2], (double)xr->rendered_tangents[eye][3]};
+        const auto focus_tangents = focus ? (*focus)[eye] : vr->get_quad_view_focus_tangents(eye);
+        const auto d = uevr::quadview::focus_dest_rect(rendered, focus_tangents, x0, eye_w, eye_h);
+
+        if (!wide_only) {
+            draw_atlas_rect(layout.views[eye + 2], d.x, d.y, d.w, d.h);
+        }
+
+        if (outline && !wide_only) {
+            // Same 3-pixel green border as the D3D12 compose shader.
+            constexpr double thickness = 3.0;
+            draw_outline_rect(d.x, d.y, d.w, thickness);
+            draw_outline_rect(d.x, d.y + d.h - thickness, d.w, thickness);
+            draw_outline_rect(d.x, d.y, thickness, d.h);
+            draw_outline_rect(d.x + d.w - thickness, d.y, thickness, d.h);
+        }
+    }
+
+    m_backbuffer_batch->End();
+
+    {
+        ID3D11RenderTargetView* null_views[1]{nullptr};
+        context->OMSetRenderTargets(1, null_views, nullptr);
+        context->CopyResource(destination, m_quad_compose_tex.Get());
+    }
+
+    return true;
+}
+
 bool D3D11Component::ue59_native_fix_mode_supported(VR* vr) {
     if (!sdk::ue59::reviewed_runtime() || vr == nullptr || !vr->is_native_stereo_fix_enabled()) { return false; }
     const auto runtime = vr->get_runtime();
@@ -1405,7 +1644,29 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                 }
             } else {
                 // Copy over the entire double wide back buffer instead
-                if (ue59_dx11_split) {
+                const bool quad_compose_wanted =
+                    FFakeStereoRenderingHook::is_quad_view_active() && vr->is_quad_view_compositor_enabled();
+
+                if (!quad_compose_wanted && vr->m_openxr != nullptr) {
+                    vr->m_openxr->quad_composed.store(false, std::memory_order_release);
+                }
+
+                if (quad_compose_wanted) {
+                    // Compose the atlas into plain stereo so the headset gets one
+                    // layer (see compose_quad_atlas).
+                    constexpr auto index = (uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE;
+                    bool composed = false;
+                    m_openxr.copy(index, nullptr, nullptr, [&](ID3D11Texture2D* destination) {
+                        composed = compose_quad_atlas(destination);
+                        if (!composed) {
+                            context->CopyResource(destination, backbuffer.Get());
+                        }
+                    });
+
+                    if (vr->m_openxr != nullptr) {
+                        vr->m_openxr->quad_composed.store(composed, std::memory_order_release);
+                    }
+                } else if (ue59_dx11_split) {
                     constexpr auto index = (uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE;
                     if (vr->m_openxr->frame_state.shouldRender == XR_TRUE && vr->m_openxr->frame_began &&
                         ue59_dx11_packet && ue59_dx11_binding == native_stereo_packet->ue59_dx11_binding) {

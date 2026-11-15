@@ -10775,6 +10775,7 @@ void VR::draw_quad_view_ui() {
         if (m_quad_view_compose->value()) {
             m_quad_view_focus_shape->draw("Sharp area shape");
         }
+        m_quad_view_debug_sharp_only->draw("Debug: submit the sharp layer only (wide layer off)");
         m_quad_view_disable_vignette->draw("Remove vignette (otherwise each sharp view gets its own dark edges)");
         m_quad_view_sharp_first->draw("Render sharp views first (experimental)");
         ImGui::TextDisabled("For games whose hair (Groom) only draws in the first two views. The left sharp view then drives\nexposure and shadows, which may look different. Takes effect on the next frame.");

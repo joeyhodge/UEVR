@@ -545,6 +545,7 @@ public:
     bool is_quad_view_outline_enabled() const { return m_quad_view_show_outline->value(); }
     bool is_quad_view_compositor_enabled() const { return m_quad_view_compose->value(); }
     bool is_quad_view_wide_only_debug() const { return m_quad_view_debug_wide_only->value(); }
+    bool is_quad_view_sharp_only_debug() const { return m_quad_view_debug_sharp_only->value(); }
 
     // Where the four views sit in the render target. Hooks (render side) and
     // the OpenXR submit both call this, so they always agree on the rects.
@@ -1674,6 +1675,7 @@ private:
     const ModToggle::Ptr m_quad_view_show_outline{ ModToggle::create(generate_name("QuadViewShowOutline"), false) };
     const ModToggle::Ptr m_quad_view_compose{ ModToggle::create(generate_name("QuadViewCompose"), true) };
     const ModToggle::Ptr m_quad_view_debug_wide_only{ ModToggle::create(generate_name("QuadViewDebugWideOnly"), false) };
+    const ModToggle::Ptr m_quad_view_debug_sharp_only{ ModToggle::create(generate_name("QuadViewDebugSharpOnly"), false) };
     const ModToggle::Ptr m_quad_view_disable_vignette{ ModToggle::create(generate_name("QuadViewDisableVignette"), true) };
     std::optional<int> m_quad_view_saved_tonemapper_quality{};
     const ModSlider::Ptr m_quad_view_offset_x{ ModSlider::create(generate_name("QuadViewOffsetX"), -0.25f, 0.25f, 0.0f) };
@@ -2027,6 +2029,7 @@ public:
             *m_quad_view_show_outline,
             *m_quad_view_compose,
             *m_quad_view_debug_wide_only,
+            *m_quad_view_debug_sharp_only,
             *m_quad_view_disable_vignette,
             *m_quad_view_focus_shape,
             *m_quad_view_offset_x,

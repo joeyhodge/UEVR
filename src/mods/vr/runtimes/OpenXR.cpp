@@ -4040,6 +4040,7 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
             !is_afr && !has_native_stereo_array && !stalker_pair &&
             projection_layer_views.size() == 2;
         const auto quad_layout = quad_submit ? VR::get()->get_quad_view_layout() : uevr::quadview::Layout{};
+        const bool quad_focus_only = quad_submit && VR::get()->is_quad_view_sharp_only_debug();
         // The layout is in render-target pixels (two eyes wide, one eye high);
         // scale it in case the swapchain was sized differently.
         const auto quad_scale = [&](const Swapchain& sc) {
@@ -4171,6 +4172,22 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
             focus_layer.viewCount = (uint32_t)quad_focus_views.size();
             focus_layer.views = quad_focus_views.data();
             focus_layer.layerFlags = 0;
+
+            SPDLOG_INFO_EVERY_N_SEC(2,
+                "[QuadView][OpenXR] atlas {}x{} | wide L {}x{}@{},{} base rect {}x{}@{},{} | focus L {}x{}@{},{} rect {}x{}@{},{} fov {:.3f},{:.3f},{:.3f},{:.3f}",
+                quad_layout.atlas_w, quad_layout.atlas_h,
+                quad_layout.views[0].w, quad_layout.views[0].h, quad_layout.views[0].x, quad_layout.views[0].y,
+                projection_layer_views[0].subImage.imageRect.extent.width,
+                projection_layer_views[0].subImage.imageRect.extent.height,
+                projection_layer_views[0].subImage.imageRect.offset.x,
+                projection_layer_views[0].subImage.imageRect.offset.y,
+                quad_layout.views[2].w, quad_layout.views[2].h, quad_layout.views[2].x, quad_layout.views[2].y,
+                quad_focus_views[0].subImage.imageRect.extent.width,
+                quad_focus_views[0].subImage.imageRect.extent.height,
+                quad_focus_views[0].subImage.imageRect.offset.x,
+                quad_focus_views[0].subImage.imageRect.offset.y,
+                quad_focus_views[0].fov.angleLeft, quad_focus_views[0].fov.angleRight,
+                quad_focus_views[0].fov.angleUp, quad_focus_views[0].fov.angleDown);
         }
 
         if (should_push_dummy && !movie_override) {
@@ -4179,6 +4196,11 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
 
         if (!movie_override) {
             for (auto& l : projection_layer_cache) {
+                // Debug: drop the wide layer so the sharp layer can be judged on
+                // its own (does the low-res wide image live in the sharp view?).
+                if (quad_focus_only && &l == &projection_layer_cache.front()) {
+                    continue;
+                }
                 layers.push_back((XrCompositionLayerBaseHeader*)&l);
             }
         }
