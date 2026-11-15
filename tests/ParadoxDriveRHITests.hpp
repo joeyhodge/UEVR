@@ -1,7 +1,9 @@
 #pragma once
 
+#include <span>
 #include "mods/vr/ParadoxDriveRHI.hpp"
 #include "fixtures/UE584StockABI.hpp"
+#include "fixtures/UE584DevelopmentABI.hpp"
 
 namespace paradoxdrive_rhi_tests {
 namespace p = uevr::paradoxdrive_rhi;
@@ -91,6 +93,47 @@ template<class Expect> void run(Expect&& expect) {
         memory.bytes[builder - memory.base + p::contract::builder_prefix_code.size() - 4] ^= 1;
         expect(classify(L"UnrealGame-Win64-Shipping.exe") == p::Input::UnverifiedRDG,
             "changing the independently captured builder reference store rejects stock unwrapping");
+        memory = saved;
+    }
+    {
+        namespace d = uevr::ue584_development::contract;
+        namespace f = uevr::tests::ue584_development;
+        const auto saved = memory;
+        memory.put(render, f::render_texture); memory.put(builder, f::builder_prefix); memory.put(other, f::builder_prefix);
+        const auto development_size = [&](uintptr_t address) -> size_t {
+            return address == render ? f::render_texture.size() :
+                address == builder || address == other ? p::development_builder_function_size : 0;
+        };
+        const auto classify_development = [&] {
+            return p::classify_input(memory.view(), L"UnrealGame.exe", 0x50008,
+                memory.base, 0x4000, render, unique, development_size);
+        };
+        expect(classify_development() == p::Input::VerifiedRDG,
+            "independent Development callback and constructor bytes authorize the separately proven immediate-list reference");
+        const auto before = memory;
+        for (const auto part : {0, 1}) {
+            const auto address = part ? builder : render;
+            const auto mask = part ? std::span<const uint8_t>{d::builder_prefix_mask} : std::span<const uint8_t>{d::render_texture_mask};
+            for (size_t i = 0; i < mask.size(); ++i) {
+                if (!mask[i]) { continue; }
+                memory = before; memory.bytes[address - memory.base + i] ^= 1;
+                expect(classify_development() != p::Input::VerifiedRDG,
+                    "changed Development argument flow, member offset or control flow cannot authorize RDG unwrapping");
+            }
+        }
+        memory = before; memory.bytes[builder-memory.base] ^= 1;
+        expect(classify_development() == p::Input::UnverifiedRDG,
+            "recognized Development RDG input never falls back to interpreting the graph as a command list");
+        memory = before;
+        expect(!p::discover_development(memory.view(), memory.base, 0x4000, render,
+            [&](uintptr_t cursor, size_t, const char*) -> std::optional<uintptr_t> {
+                return cursor <= builder ? std::optional<uintptr_t>{builder} :
+                    cursor <= other ? std::optional<uintptr_t>{other} : std::nullopt;
+            }, development_size), "ambiguous Development constructor ownership rejects");
+        size_t candidates{};
+        expect(!p::discover_development(memory.view(), memory.base, 0x4000, render,
+            [&](uintptr_t, size_t, const char*) { ++candidates; return std::optional<uintptr_t>{render+candidates}; }, development_size) &&
+            candidates == 4, "Development discovery also has a strict bounded candidate count");
         memory = saved;
     }
     const auto mutate = [&](uintptr_t address, const auto& code, const auto& mask, auto&& check) {
