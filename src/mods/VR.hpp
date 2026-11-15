@@ -1680,7 +1680,7 @@ private:
     const ModSlider::Ptr m_quad_view_gaze_dead_zone{ ModSlider::create(generate_name("QuadViewGazeDeadZone"), 0.0f, 0.15f, 0.0f) };
     // Low-pass time constant for the gaze, in milliseconds. A few ms averages
     // tracker noise without making the sharp window lag behind the eyes.
-    const ModSlider::Ptr m_quad_view_gaze_smoothing_ms{ ModSlider::create(generate_name("QuadViewGazeSmoothingMs"), 0.0f, 100.0f, 15.0f) };
+    const ModSlider::Ptr m_quad_view_gaze_smoothing_ms{ ModSlider::create(generate_name("QuadViewGazeSmoothingMs"), 0.0f, 100.0f, 8.0f) };
     const ModSlider::Ptr m_quad_view_wide_lod_scale{ ModSlider::create(generate_name("QuadViewWideLODScale"), 0.1f, 1.0f, 0.5f) };
     const ModToggle::Ptr m_quad_view_shared_exposure{ ModToggle::create(generate_name("QuadViewSharedExposure"), true) };
     const ModSlider::Ptr m_quad_view_exposure_bias{ ModSlider::create(generate_name("QuadViewExposureBias"), 0.5f, 2.0f, 1.0f) };

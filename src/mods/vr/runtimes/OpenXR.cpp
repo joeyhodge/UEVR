@@ -4450,6 +4450,7 @@ void OpenXR::update_quad_view_gaze(XrTime display_time, PipelineState& state) {
 
     double gx[2]{}, gy[2]{};
     uint32_t mask = 0;
+    double gaze_sample_age_ms = 0.0;
 
     if (follow && this->eye_gaze_space != XR_NULL_HANDLE && this->view_space != XR_NULL_HANDLE) {
         XrEyeGazeSampleTimeEXT sample_time{XR_TYPE_EYE_GAZE_SAMPLE_TIME_EXT};
@@ -4461,6 +4462,15 @@ void OpenXR::update_quad_view_gaze(XrTime display_time, PipelineState& state) {
         if (xrLocateSpace(this->eye_gaze_space, this->view_space, display_time, &gaze) == XR_SUCCESS &&
             (gaze.locationFlags & wanted) == wanted)
         {
+            // How old the eye-tracker sample is at the predicted display time.
+            // This is the tracker + runtime latency that no amount of smoothing
+            // can remove; it tells us whether a slow-feeling window is us or
+            // the headset.
+            if (sample_time.time != 0 && display_time > sample_time.time) {
+                gaze_sample_age_ms = (double)(display_time - sample_time.time) / 1'000'000.0;
+                gaze_sample_age_ms = std::clamp(gaze_sample_age_ms, 0.0, 1000.0);
+            }
+
             const auto& o = gaze.pose.orientation;
             const q::Quat g{o.x, o.y, o.z, o.w};
 
@@ -4497,9 +4507,9 @@ void OpenXR::update_quad_view_gaze(XrTime display_time, PipelineState& state) {
     state.quad_focus_set = true;
 
     SPDLOG_INFO_EVERY_N_SEC(1,
-        "[QuadView][Gaze] mask={} raw L({:.3f},{:.3f}) R({:.3f},{:.3f}) filt L({:.3f},{:.3f}) R({:.3f},{:.3f}) "
+        "[QuadView][Gaze] mask={} age={:.1f}ms raw L({:.3f},{:.3f}) R({:.3f},{:.3f}) filt L({:.3f},{:.3f}) R({:.3f},{:.3f}) "
         "win L({:.3f},{:.3f}) R({:.3f},{:.3f}) follow={}",
-        mask, gx[0], gy[0], gx[1], gy[1], this->quad_gaze.fx[0], this->quad_gaze.fy[0], this->quad_gaze.fx[1],
+        mask, gaze_sample_age_ms, gx[0], gy[0], gx[1], gy[1], this->quad_gaze.fx[0], this->quad_gaze.fy[0], this->quad_gaze.fx[1],
         this->quad_gaze.fy[1], this->quad_gaze.cx[0], this->quad_gaze.cy[0], this->quad_gaze.cx[1],
         this->quad_gaze.cy[1], this->quad_gaze.following);
 }

@@ -62,7 +62,7 @@ stereo layout the runtime would reproject with).
 | Pixel density | 1.0 | Sharp window resolution relative to the headset's native density. |
 | Offset left/right, down/up | 0 | Moves the window for trackers that sit slightly off-centre. |
 | Follow gaze | on | Use `XR_EXT_eye_gaze_interaction` to place the window. |
-| Gaze smoothing | 15 ms | Low-pass time constant that averages eye-tracker noise. `0` follows the raw gaze. |
+| Gaze smoothing | 8 ms | Low-pass time constant that averages eye-tracker noise. `0` follows the raw gaze. |
 | Gaze dead zone | 0 (off) | Tangent units (~1.7°) the gaze must move before the window follows. |
 
 The gaze filter averages the eye-tracker signal over the smoothing time (with a

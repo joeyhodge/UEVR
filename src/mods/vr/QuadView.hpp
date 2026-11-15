@@ -35,7 +35,7 @@ struct Settings {
     double focus_height{0.30};  // and height
     double focus_density{1.0};  // focus pixel density relative to the headset's native density
     double dead_zone{0.0};      // tangent units (~1.7 deg) the gaze must move before the window follows
-    double gaze_smoothing_ms{15.0}; // low-pass time constant that averages eye-tracker noise
+    double gaze_smoothing_ms{8.0};  // low-pass time constant that averages eye-tracker noise
     uint64_t gaze_return_ms{500}; // without gaze for this long, the window recentres
     double offset_x{0.0};       // sharp window shift, share of the eye's tangent width (+ = right)
     double offset_y{0.0};       // and height (+ = up), for trackers that sit slightly off
