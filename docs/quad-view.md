@@ -106,7 +106,7 @@ place for 500 ms, then eases back to the centre over 150 ms instead of jumping.
 | Show sharp area outline | off | Green outline for tuning the window. |
 | Remove vignette | on | Sets `r.Tonemapper.Quality` while Quad View runs so each sharp view does not get its own dark edges. |
 | Share exposure across the four views | on | Freezes `r.DefaultFeature.AutoExposure` and `r.EyeAdaptationQuality` so the wide and sharp views keep the same brightness. |
-| Brightness | 1.0 | Multiplier for the D3D11 composed image; only shown when exposure is shared. |
+| Brightness | 1.0 | Multiplier for the composed image (D3D11 and D3D12); shown and applied only when exposure is shared. |
 | Render sharp views first | off | Renders the sharp pair as views 0/1. Workaround for games whose Groom hair only draws in the first two views. |
 
 ### Debug

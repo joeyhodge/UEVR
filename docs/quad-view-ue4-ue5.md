@@ -400,6 +400,13 @@ Gaze that returns during the ease starts again from where the eyes are.
 Without eye tracking the window now has its own, larger size
 (`QuadViewFixedWidth/Height`, 0.5 x 0.45), chosen once per session.
 
+### 25. Brightness only worked on D3D11, and was applied without shared exposure
+
+**Fix.** The D3D12 compose shader takes the multiplier as a root constant
+(`b1`, root parameter 2); D3D12Component builds the compose SpriteBatch with
+the shader's own root signature. Both paths apply it only while shared
+exposure is on, which is when the panel shows it (`fc5eeb1`).
+
 ## Choosing the UE4 or UE5 path
 
 The path is selected by `FFakeStereoRenderingHook::has_double_precision()`.
@@ -428,7 +435,8 @@ returns `eSSP_FULL` for it, which is what later UE5 versions do themselves.
 ## What is still unsupported
 
 - **UE4 + D3D11 with four views.** It still crashes in `D3D11Query`; use
-  D3D12, or use Native Stereo on D3D11.
+  D3D12, or use Native Stereo on D3D11. See *Next steps* below for how to
+  narrow it down.
 - **UE4 support is experimental and thinly verified.** The bring-up title was
   UE4.26 on D3D11, where the four-view path failed. Treat UE4 + D3D12 as the
   intended path and validate per game.
@@ -440,15 +448,60 @@ returns `eSSP_FULL` for it, which is what later UE5 versions do themselves.
 - **Foveated plugins.** They are skipped when Quad View is selected; switch
   rendering method and restart to use them.
 - **Conflicting modes.** Quad View turns itself off while Extreme
-  Compatibility Mode, Native Stereo Fix, SceneView compatibility, Splitscreen
-  compatibility, stereo emulation, AFR or 2D screen is active.
+  Compatibility Mode, SceneView compatibility, Splitscreen compatibility,
+  stereo emulation, AFR or 2D screen is active.
+- **Games that need Native Stereo Fix.** The fix only runs with the Native
+  Stereo method, so it is never active with Quad View; see *Next steps*.
 - **CPU particles.** `r.EmitterSpawnRateScale` is a whole-image setting, so
   lowering it also thins particles inside the sharp window.
 - **Shared exposure.** It freezes the engine's auto-exposure and eye
-  adaptation. The D3D11 compose has a brightness multiplier to compensate; the
-  D3D12 compositor does not use that slider yet.
+  adaptation. Both composes apply the *Brightness* multiplier to compensate
+  (D3D12 through a root constant, since `fc5eeb1`).
 - **Sharp-first order.** The left sharp view drives exposure and shadows, so
   lighting can differ from the default order.
+- **Per-view post-processing.** The wide views run the same post-processing
+  as the sharp ones. Unreal applies post-process settings after the
+  FSceneView constructor UEVR hooks, so a per-view trim (ambient occlusion,
+  reflections, motion blur in the periphery) would need version-specific
+  FSceneView offsets; cvars would change all four views.
+
+## Next steps
+
+### Games that need Native Stereo Fix
+
+`VR::is_native_stereo_fix_enabled()` requires Rendering Method = Native Stereo,
+so with Quad View selected the fix never runs, whatever its checkbox says. The
+fix is about fifty title- and version-guarded paths in
+`FFakeStereoRenderingHook.cpp` (same stereo pass, preserved secondary pass,
+texture-array submit, per-title render-target adoption) built around exactly
+two views. Making Quad View work on top of it means auditing each path for a
+view count of four, per title, with the game running; it cannot be done
+blind without risking the titles the fix exists for. Start with one title
+that needs the fix, enable Quad View, and follow the first broken view in
+the log. The UEVR-Quad-Views-Mono project (two views from one mono camera)
+shows the infrastructure can host foveated views.
+
+### UE4 + D3D11 crash
+
+Occlusion queries and GPU stats are already off and the four views start
+after a 60-frame settle, yet `D3D11Query` still fails. The remaining query
+users in UE4's D3D11 RHI are the frame-timing queries of the GPU profiler,
+the event queries used for frame pacing (`r.OneFrameThreadLag`,
+`r.FinishCurrentFrame`) and per-view-state queries that a view state
+allocated for two views may still hold. To narrow it down with the game:
+
+1. Try `r.OneFrameThreadLag 0` and `r.HZBOcclusion 0` before switching to Quad
+   View.
+2. Run with `-d3ddebug` to get the D3D11 debug layer's message for the bad
+   `GetData` call (which query type, which resource).
+3. Check whether the crash follows the view-state swap: with *Render sharp
+   views first* the swap order changes.
+
+### OpenVR
+
+The compose does not depend on the runtime: OpenVR could receive the composed
+image too, but OpenVR has no eye gaze, so it would only ever be fixed
+foveation.
 
 ## Verification
 
