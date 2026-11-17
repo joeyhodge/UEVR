@@ -557,8 +557,10 @@ public:
     float get_quad_view_sharpen() const { return std::clamp(m_quad_view_sharpen->value(), 0.0f, 1.0f); }
     bool is_quad_view_wide_bicubic() const { return m_quad_view_wide_bicubic->value(); }
 
-    // Where the four views sit in the render target. Hooks (render side) and
-    // the OpenXR submit both call this, so they always agree on the rects.
+    // Where the four views sit in the render target, from the current settings.
+    // Rendering code should use the per-frame snapshot instead
+    // (get_quad_view_frame_game / _render); this is what the snapshot is
+    // captured from, and what the panel shows.
     uevr::quadview::Layout get_quad_view_layout() const {
         return uevr::quadview::make_fitted_layout(get_quad_view_settings(), get_hmd_width(), get_hmd_height());
     }

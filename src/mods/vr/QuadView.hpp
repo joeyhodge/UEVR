@@ -30,9 +30,10 @@ inline constexpr uint32_t VIEW_COUNT = 4;
 
 struct Settings {
     bool enabled{false};
-    double wide_scale{0.5};     // wide view size, share of the headset's per-eye resolution (linear)
-    double focus_width{0.30};   // focus window, share of the eye's full tangent width
-    double focus_height{0.30};  // and height
+    // Defaults match the UEVR settings (VR.hpp).
+    double wide_scale{0.2};     // wide view size, share of the headset's per-eye resolution (linear)
+    double focus_width{0.25};   // focus window, share of the eye's full tangent width
+    double focus_height{0.25};  // and height
     double focus_density{1.0};  // focus pixel density relative to the headset's native density
     double dead_zone{0.0};      // tangent units (~1.7 deg) the gaze must move before the window follows
     double gaze_smoothing_ms{8.0};  // low-pass time constant that averages eye-tracker noise

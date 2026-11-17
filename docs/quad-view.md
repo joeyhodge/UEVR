@@ -26,8 +26,10 @@ in [Quad View on UE4 and UE5](quad-view-ue4-ue5.md).
 - **OpenXR.** OpenVR receives only the wide views, so Quad View is not useful
   there.
 - **D3D12 (preferred) or D3D11.** In both cases UEVR composes the atlas into a
-  normal stereo image, so the runtime gets one layer per eye. The composed
-  image supports edge blending and an optional sharp-area outline.
+  normal stereo image, so the runtime gets one layer per eye. Both use the
+  same compose shader: bicubic wide views, sharpening, edge blending, the
+  sharp-area shapes and an optional outline. On D3D12 the compose draws
+  straight into the headset's swapchain image.
 - **Eye tracking is optional.** When the runtime exposes
   `XR_EXT_eye_gaze_interaction` (for example Pimax Crystal), the sharp window
   follows the gaze. Without it the window stays centred, or where the offset
@@ -68,7 +70,8 @@ stereo layout the runtime would reproject with).
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| Width / Height | 0.25 | Share of the eye's field of view covered by the sharp window. |
+| Width / Height with eye tracking | 0.25 | Share of the eye's field of view covered by the sharp window while it follows the gaze. |
+| Width / Height without eye tracking | 0.5 / 0.45 | Used when the runtime started without eye tracking (or *Follow gaze* is off). The window cannot follow the eyes, so it is larger. Chosen once per session, so a blink never resizes the views. |
 | Pixel density | 1.0 | Sharp window resolution relative to the headset's native density. |
 | Offset left/right, down/up | 0 | Moves the window for trackers that sit slightly off-centre. |
 | Follow gaze | on | Use `XR_EXT_eye_gaze_interaction` to place the window. |
@@ -78,7 +81,8 @@ stereo layout the runtime would reproject with).
 The gaze filter averages the eye-tracker signal over the smoothing time (with a
 median of three to reject single-frame spikes), so tracking noise is smoothed
 without the window trailing a saccade. A dead zone can hold the window for small
-movements, and the window recentres after 500 ms without valid gaze.
+movements. When the gaze is lost (a blink, a dropout) the window holds its
+place for 500 ms, then eases back to the centre over 150 ms instead of jumping.
 
 ### Wide views (periphery cost)
 
@@ -96,7 +100,9 @@ movements, and the window recentres after 500 ms without valid gaze.
 | --- | --- | --- |
 | Compose into one image | on | Compose the atlas into one stereo image and send the normal single-layer submit. |
 | Edge blend | 0.2 | Share of the sharp window that fades into the wide view. |
-| Sharp area shape | Rounded rectangle | Rectangle, rounded rectangle or ellipse (D3D12 only; D3D11 uses a rectangle). |
+| Sharp area shape | Rounded rectangle | Rectangle, rounded rectangle or ellipse. |
+| Sharpen the sharp views | 0.5 | Contrast-adaptive sharpening of the sharp window, 0 to 1. `0` turns it off. |
+| Smooth wide-view upscaling | on | Bicubic (Catmull-Rom) upscaling of the wide views. They are stretched about five times at the default resolution, and bilinear filtering shimmers. |
 | Show sharp area outline | off | Green outline for tuning the window. |
 | Remove vignette | on | Sets `r.Tonemapper.Quality` while Quad View runs so each sharp view does not get its own dark edges. |
 | Share exposure across the four views | on | Freezes `r.DefaultFeature.AutoExposure` and `r.EyeAdaptationQuality` so the wide and sharp views keep the same brightness. |
@@ -117,8 +123,6 @@ movements, and the window recentres after 500 ms without valid gaze.
 - UE4 support is opt-in and should use D3D12; UE4 + D3D11 crashes with four
   views. See [Quad View on UE4 and UE5](quad-view-ue4-ue5.md) for the full
   engine-specific list.
-- D3D11 composes with a rectangular sharp area; the rounded and ellipse shapes
-  need D3D12.
 - Foveated rendering plugins (for example Cheeky Foveated DLSS) fight Quad View
   over the views and render targets. When Quad View is the selected Rendering
   Method, UEVR skips plugins whose file name contains `foveat`.
@@ -132,10 +136,12 @@ movements, and the window recentres after 500 ms without valid gaze.
 The settings are stored in `config.txt` like other UEVR options:
 
 `VR_RenderingMethod=3`, `QuadViewWideScale`, `QuadViewFocusWidth`,
-`QuadViewFocusHeight`, `QuadViewFocusDensity`, `QuadViewFollowGaze`,
+`QuadViewFocusHeight`, `QuadViewFixedWidth`, `QuadViewFixedHeight`,
+`QuadViewFocusDensity`, `QuadViewFollowGaze`,
 `QuadViewGazeDeadZone`, `QuadViewGazeSmoothingMs`, `QuadViewWideLODScale`, `QuadViewSharedExposure`,
 `QuadViewExposureBias`, `QuadViewEdgeBlend`, `QuadViewShowOutline`,
 `QuadViewCompose`, `QuadViewFocusShape`, `QuadViewOffsetX`, `QuadViewOffsetY`,
 `QuadViewWideMinPixels`, `QuadViewCullSmallActors`, `QuadViewCPUParticles`,
 `QuadViewSharpFirst`, `QuadViewAllowUE4`, `QuadViewDisableVignette`,
-`QuadViewDebugWideOnly`, `QuadViewDebugSharpOnly`.
+`QuadViewDebugWideOnly`, `QuadViewDebugSharpOnly`, `QuadViewSharpen`,
+`QuadViewWideBicubic`.

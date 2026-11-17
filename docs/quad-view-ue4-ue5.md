@@ -39,10 +39,12 @@ The portable slot table is in `src/mods/vr/QuadView.hpp`:
 one-based indices for callers that already have them. Quad View passes
 zero-based indices on both engines; UE4 recovers them from call order.
 `QuadViewSharpFirst` swaps the two pairs so the sharp views are rendered first.
-Every view of a frame uses one head-pose sample, and the sharp-view projection,
-the compositor and the OpenXR submit all read one focus snapshot. That is what
-keeps the sharp image and its window together when a pose or gaze update lands
-between render and submit.
+Every view of a frame uses one head-pose sample. The atlas layout and both
+sharp windows are captured with that sample and stored with the frame; the
+game thread (view rects and projections) and the render thread (compose and
+submit) look them up by frame number. That is what keeps the sharp image and
+its window together when a pose or gaze update, or a slider change, lands
+between render and submit (see issue 21).
 
 ## Issues and fixes
 
@@ -91,9 +93,9 @@ two eye passes (left for view 0, right for the rest), and its view-pass hook is
 not present in this vtable. The slot after `GetDesiredNumberOfViews` is not that
 function on UE4.
 
-**Fix.** Map the position of the call in the frame to the view index. Each
-stereo hook keeps its own `QuadViewCallOrder` counter, reset when the engine
-frame changes. Do not install the `GetViewPassForIndex` hook on engines without
+**Fix.** Map the position of the call to the view index. Each stereo hook
+keeps its own `quadview::CallOrder` counter, reset at the start of every
+viewport draw (see issue 22). Do not install the `GetViewPassForIndex` hook on engines without
 double precision; it is only valid on the UE5-side vtable. Fixed in `68084a2`
 and `e348c91`.
 
@@ -192,10 +194,9 @@ the optional outline was missing.
 
 **Fix.** A compose pixel shader fades the sharp view into the wide image over
 the *Edge blend* share, using the same blend range as the D3D12 compositor, and
-draws the same 3-pixel green outline. D3D11 keeps a rectangular sharp area;
-rounded and ellipse shapes remain D3D12-only. The D3D12 shape options were added
-in `5fe8b7e`, and the panel's D3D11 labels were corrected in `ef2dacd`. Fixed
-in `eb29844`.
+draws the same 3-pixel green outline. Fixed in `eb29844`. The two composes
+now share one shader (issue 23), so D3D11 also has the rounded and ellipse
+shapes that D3D12 gained in `5fe8b7e`.
 
 ### 11. Shared exposure made the D3D11 image darker
 
@@ -234,10 +235,10 @@ frame or two.
 UE4 those can see different pose samples. A global per-frame latch could also
 be overwritten by the next frame's `AdjustViewRect` before the compose ran.
 
-**Fix.** Latch the focus once per rendered frame, then use the frame's submit
-focus (`peek_submit_quad_focus`) for the sharp projection and the compose. The
-OpenXR overlay uses the same submit state. The latch remains as a startup
-fallback. Fixed in `396b8e9`, `eb29844` and `d84f567`.
+**Fix.** First a per-frame latch, then the frame's submit focus, fixed in
+`396b8e9`, `eb29844` and `d84f567`. The submit focus still let the game thread
+read the render thread's frame; issue 21 replaced both with a per-frame
+snapshot.
 
 ### 14. Groom hair only drew in the first two views
 
@@ -299,11 +300,12 @@ disagreed.
 spikes never pass) followed by a low-pass whose time constant is exposed as
 *Gaze smoothing* (`QuadViewGazeSmoothingMs`, default 8 ms, 0–100 ms). It uses
 the frame clock as `dt`, so the feel does not change with frame rate. The dead
-zone is optional and off by default (`QuadViewGazeDeadZone`); the window
-recentres after 500 ms without valid gaze. `QuadViewOffsetX/Y` shifts the
+zone is optional and off by default (`QuadViewGazeDeadZone`). When the gaze
+is lost the window holds for 500 ms, then eases to the centre over 150 ms
+instead of jumping (issue 24). `QuadViewOffsetX/Y` shifts the
 window for a tracker that sits slightly off-centre, applied wherever the window
-is placed (`a9ed075`). The window is latched once per rendered frame, so the
-sharp projection, compose and overlay all use the same focus. A once-per-second
+is placed (`a9ed075`). The window is stored with each frame, so the sharp
+projection, compose and overlay all use the same focus (issue 21). A once-per-second
 `[QuadView][Gaze]` line logs the raw and filtered gaze, the window centres and
 the age of the tracker sample at the predicted display time, which separates
 UEVR's smoothing from headset latency.
@@ -343,6 +345,61 @@ says so. Fixed in `50f3eae`.
   showed as *Not Run*. The target is now built with the other offline tests
   (`ecbab71`).
 
+### 21. The sharp view could be rendered and composed from different frames
+
+**Symptom.** None reported once smoothing was added; found in review. The
+same "sharp content offset from the wide image" as issue 13, whenever the
+render thread runs a frame behind the game thread.
+
+**Cause.** The sharp-view projection runs on the game thread for frame N, but
+it read the focus of the render thread's current frame, which can still be
+N-1. The compose then used frame N's focus for an image rendered with N-1's.
+The layout was also recomputed from the live sliders at every call site.
+
+**Fix.** `update_quad_view_gaze` stores the layout and both sharp windows in
+the frame's pipeline state (`quadview::FrameSnapshot`). The game thread reads
+the snapshot of the frame whose pose it is using (`get_quad_view_frame_game`),
+the compose and submit read the frame they present
+(`get_quad_view_frame_render`). A slot that no longer belongs to the frame is
+ignored. The latch is gone; live values are only a startup fallback.
+
+### 22. UE4 view counting could shift or never reset
+
+**Symptom.** None reported; found in review. Would show as the sharp view
+jumping, or as Quad View falling back to plain views, on some UE4 games.
+
+**Cause.** The call-order counters reset when `g_frame_count` changed, but
+`g_frame_count` only advances on the view-extension path. Without it the
+counters never reset after the first frame. A stereo-pass call earlier in the
+frame would also shift the four views by one.
+
+**Fix.** The counters reset at the start of every `UGameViewportClient::Draw`
+(the engine frame is the fallback without a draw hook). The three copies of
+the index resolution are one helper, `resolve_quad_view_index`, and the
+counter is `quadview::CallOrder`, unit tested.
+
+### 23. The D3D11 and D3D12 composes drifted apart
+
+**Symptom.** Different edge fades (linear on D3D11, smoothstep on D3D12),
+shapes only on D3D12, and a runtime-compiled D3D11 shader.
+
+**Fix.** One shader, `quad_view_compose.hlsli`, compiled by DXC for D3D12 and
+by FXC (`ps_5_0`) for D3D11. It also upscales the wide views bicubically
+(`QuadViewWideBicubic`), sharpens the sharp views (`QuadViewSharpen`) and
+clamps every tap to the sprite's own atlas rect so filtering never pulls in
+the neighbouring view. On D3D12 the compose draws straight into the swapchain
+image, saving a full-size copy per frame.
+
+### 24. Losing the gaze made the window jump to the centre
+
+**Symptom.** A long blink or a tracking dropout made the sharp window hop to
+the centre in one frame.
+
+**Fix.** The window holds for 500 ms, then eases to the centre over 150 ms.
+Gaze that returns during the ease starts again from where the eyes are.
+Without eye tracking the window now has its own, larger size
+(`QuadViewFixedWidth/Height`, 0.5 x 0.45), chosen once per session.
+
 ## Choosing the UE4 or UE5 path
 
 The path is selected by `FFakeStereoRenderingHook::has_double_precision()`.
@@ -379,8 +436,6 @@ returns `eSSP_FULL` for it, which is what later UE5 versions do themselves.
   composed image are OpenXR features.
 - **Depth.** Quad View does not submit depth because the atlas layout is not
   the stereo layout the runtime would reproject with.
-- **D3D11 sharp shape.** D3D11 always uses a blended rectangle; rounded and
-  ellipse shapes need D3D12.
 - **Nanite.** Nanite meshes ignore the wide-view LOD scale.
 - **Foveated plugins.** They are skipped when Quad View is selected; switch
   rendering method and restart to use them.
@@ -423,8 +478,9 @@ titles still need the opt-in box and should be tried on D3D12.
 | --- | --- |
 | `src/mods/vr/FFakeStereoRenderingHook.cpp` | View count, pass/index mapping, call order, view states, projection, UE4 query workarounds, LOD. |
 | `src/mods/vr/QuadView.hpp` | Portable slot/layout/gaze/projection/compose math and the LOD offset finder. |
-| `src/mods/vr/D3D11Component.cpp` | D3D11 offscreen compose, edge blend, outline, sRGB handling. |
-| `src/mods/vr/d3d12/QuadViewCompositor.cpp` | D3D12 atlas compositor and swapchain copy. |
+| `src/mods/vr/D3D11Component.cpp` | D3D11 offscreen compose and sRGB handling. |
+| `src/mods/vr/d3d12/QuadViewCompositor.cpp` | D3D12 atlas compositor, drawing straight into the swapchain image (copy fallback). |
+| `src/mods/vr/shaders/quad_view_compose.hlsli` | The compose pixel logic shared by D3D11 and D3D12: bicubic wide views, sharpening, shapes, edge blend, outline. |
 | `src/mods/vr/runtimes/OpenXR.cpp` | Gaze sampling, the per-frame focus state, wide/sharp layer submission. |
 | `src/mods/VR.cpp` | Settings, cvars, UE4 settle gate, panel. |
 | `src/mods/PluginLoader.cpp` | Foveated-plugin skip. |
