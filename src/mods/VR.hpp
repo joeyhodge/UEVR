@@ -555,15 +555,17 @@ public:
         return uevr::quadview::make_fitted_layout(get_quad_view_settings(), get_hmd_width(), get_hmd_height());
     }
 
-    // The sharp window of one eye, in tangents, inside that eye's real field of view.
-    uevr::quadview::Tangents get_quad_view_focus_tangents(uint32_t eye) const;
-
-    // Quad View: latch the gaze window once per rendered frame. The sharp-view
-    // projection, the compose and the overlay submit all read this snapshot, so
-    // a gaze update landing between them cannot shift the sharp content against
-    // its own window. Falls back to the live value until the first latch.
-    void latch_quad_view_focus(uint64_t frame) const;
-    uevr::quadview::Tangents get_quad_view_focus_tangents_rendered(uint32_t eye) const;
+    // Quad View: the layout and sharp windows of one frame. The OpenXR runtime
+    // captures them with each pose sample. The game thread (view rects and
+    // projections) reads the frame it is building; the compose and submit read
+    // the frame they present. Both are the same snapshot for the same frame, so
+    // the sharp content cannot land offset from its window even when the render
+    // thread runs a frame behind. Without a snapshot (startup, OpenVR) the live
+    // values are used.
+    uevr::quadview::FrameSnapshot get_quad_view_frame_game() const;
+    uevr::quadview::FrameSnapshot get_quad_view_frame_render() const;
+    uevr::quadview::FrameSnapshot get_quad_view_frame_live() const;
+    bool has_quad_view_openxr() const;
 
     bool is_using_quad_view() const {
         return m_rendering_method->value() == RenderingMethod::QUAD_VIEW && !is_using_afr() &&
@@ -1704,13 +1706,6 @@ private:
     const ModToggle::Ptr m_quad_view_allow_ue4{ ModToggle::create(generate_name("QuadViewAllowUE4"), false) };
     const ModToggle::Ptr m_quad_view_cull_actors{ ModToggle::create(generate_name("QuadViewCullSmallActors"), false) };
     const ModSlider::Ptr m_quad_view_cpu_particles{ ModSlider::create(generate_name("QuadViewCPUParticles"), 0.1f, 1.0f, 1.0f) };
-    // Quad View: the gaze window the current render frame was built with. The
-    // sharp-view projections and the compose both read this snapshot, so a pose
-    // update between them cannot move the window against the rendered content.
-    mutable std::mutex m_quad_focus_render_mtx{};
-    mutable std::array<uevr::quadview::Tangents, 2> m_quad_focus_render{};
-    mutable bool m_quad_focus_render_set{false};
-    mutable uint64_t m_quad_focus_render_frame{0};
     const ModToggle::Ptr m_native_stereo_fix_preserve_secondary_pass{ ModToggle::create(generate_name("NativeStereoFixPreserveSecondaryPass"), true) };
     const ModToggle::Ptr m_native_stereo_fix_texture_array_submit{ ModToggle::create(generate_name("NativeStereoFixTextureArraySubmit"), false) };
     const ModToggle::Ptr m_native_stereo_fix_async_openxr_wait{ ModToggle::create(generate_name("NativeStereoFixAsyncOpenXRWait"), false) };

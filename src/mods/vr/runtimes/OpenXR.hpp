@@ -263,14 +263,15 @@ public:
     XrSpace eye_gaze_space{XR_NULL_HANDLE};
     mutable std::mutex quad_mtx{};
     uevr::quadview::GazeFilter quad_gaze{};
-    std::array<uevr::quadview::Tangents, 2> quad_focus_current{};
-    bool quad_focus_current_set{false};
+    uevr::quadview::FrameSnapshot quad_current{};
+    bool quad_current_set{false};
     bool quad_gaze_tracking{false};
 
-    std::optional<uevr::quadview::Tangents> get_quad_focus_current(uint32_t eye) const {
+    // The latest snapshot, whatever frame it belongs to (startup fallback).
+    std::optional<uevr::quadview::FrameSnapshot> get_quad_current() const {
         std::scoped_lock _{quad_mtx};
-        if (!quad_focus_current_set || eye > 1) return std::nullopt;
-        return quad_focus_current[eye];
+        if (!quad_current_set) return std::nullopt;
+        return quad_current;
     }
     bool is_quad_gaze_tracking() const {
         std::scoped_lock _{quad_mtx};
@@ -319,10 +320,11 @@ public:
         std::chrono::steady_clock::time_point coherent_capture_time{};
         bool coherent_complete{};
         bool coherent_matches_render{};
-        // Quad View: the sharp windows this frame was rendered with, so the
-        // submit uses exactly them even when gaze moved since.
-        std::array<uevr::quadview::Tangents, 2> quad_focus{};
-        bool quad_focus_set{};
+        // Quad View: the layout and sharp windows this frame is rendered with.
+        // The game thread reads them by the frame it builds, the compose and
+        // the submit by the frame they present (see get_quad_snapshot).
+        uevr::quadview::FrameSnapshot quad{};
+        bool quad_set{};
     };
 
     // Called with each new pose sample: reads the gaze, filters it and
@@ -423,17 +425,32 @@ public:
     PipelineState last_submit_state{};
     PipelineState get_submit_state();
 
-    // The sharp windows of the frame that is about to be submitted, without
-    // the side effects of get_submit_state() (for the compositor).
-    std::optional<std::array<uevr::quadview::Tangents, 2>> peek_submit_quad_focus() {
+    // Quad View snapshot of one frame, looked up by its frame number. The slot
+    // must still belong to that frame (the queue is reused every QUEUE_SIZE
+    // frames); otherwise nothing is returned rather than another frame's data.
+    std::optional<uevr::quadview::FrameSnapshot> get_quad_snapshot(uint32_t frame) {
         std::scoped_lock _{this->sync_assignment_mtx};
-        if (this->has_render_frame_count) {
-            const auto& s = this->pipeline_states[this->internal_render_frame_count % QUEUE_SIZE];
-            if (s.quad_focus_set) return s.quad_focus;
-        }
-        std::scoped_lock __{this->quad_mtx};
-        if (this->quad_focus_current_set) return this->quad_focus_current;
+        const auto& s = this->pipeline_states[frame % QUEUE_SIZE];
+        if (s.quad_set && s.frame_count == frame) return s.quad;
         return std::nullopt;
+    }
+
+    // Game thread: the frame whose pose was sampled last, which is the frame
+    // the views are being built for (the same sample the eye poses use).
+    std::optional<uevr::quadview::FrameSnapshot> get_game_quad_snapshot() {
+        return get_quad_snapshot(this->internal_frame_count);
+    }
+
+    // Render thread: the frame about to be presented, without the side effects
+    // of get_submit_state() (for the compositors).
+    std::optional<uevr::quadview::FrameSnapshot> get_render_quad_snapshot() {
+        uint32_t frame{};
+        {
+            std::scoped_lock _{this->sync_assignment_mtx};
+            if (!this->has_render_frame_count) return std::nullopt;
+            frame = this->internal_render_frame_count;
+        }
+        return get_quad_snapshot(frame);
     }
     struct Stalker2PairSubmit {
         std::array<XrView, 2> views{};

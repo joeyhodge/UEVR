@@ -685,7 +685,10 @@ bool D3D11Component::compose_quad_atlas(ID3D11Texture2D* destination) {
         return false;
     }
 
-    const auto layout = vr->get_quad_view_layout();
+    // The presented frame's own layout and sharp windows, the same snapshot
+    // its views were rendered with.
+    const auto snapshot = vr->get_quad_view_frame_render();
+    const auto& layout = snapshot.layout;
     const bool sharp_only = vr->is_quad_view_sharp_only_debug();
     const bool wide_only = vr->is_quad_view_wide_only_debug();
 
@@ -790,10 +793,7 @@ bool D3D11Component::compose_quad_atlas(ID3D11Texture2D* destination) {
         const uevr::quadview::Tangents rendered{
             (double)xr->rendered_tangents[eye][0], (double)xr->rendered_tangents[eye][1],
             (double)xr->rendered_tangents[eye][2], (double)xr->rendered_tangents[eye][3]};
-        // The focus window this frame was rendered with (latched by AdjustViewRect),
-        // so the compose cannot use a newer gaze than the sharp view.
-        const auto focus_tangents = vr->get_quad_view_focus_tangents_rendered(eye);
-        return uevr::quadview::focus_dest_rect(rendered, focus_tangents, (double)eye * eye_w, eye_w, eye_h);
+        return uevr::quadview::focus_dest_rect(rendered, snapshot.focus[eye], (double)eye * eye_w, eye_w, eye_h);
     };
 
     // The sharp window, with the destination rectangle in the sprite colour so

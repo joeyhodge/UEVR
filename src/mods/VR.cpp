@@ -10817,66 +10817,60 @@ void VR::draw_quad_view_ui() {
     ImGui::Unindent();
 }
 
-uevr::quadview::Tangents VR::get_quad_view_focus_tangents(uint32_t eye) const {
-    eye = std::min<uint32_t>(eye, 1);
+bool VR::has_quad_view_openxr() const {
+    const auto runtime = get_runtime();
+    return m_openxr != nullptr && runtime != nullptr && runtime->is_openxr();
+}
 
+uevr::quadview::FrameSnapshot VR::get_quad_view_frame_live() const {
     // OpenXR places the window with each pose sample (gaze-following).
-    if (m_openxr != nullptr && get_runtime() != nullptr && get_runtime()->is_openxr()) {
-        if (const auto t = m_openxr->get_quad_focus_current(eye)) {
-            return *t;
+    if (has_quad_view_openxr()) {
+        if (const auto current = m_openxr->get_quad_current()) {
+            return *current;
         }
     }
+
+    uevr::quadview::FrameSnapshot f{};
+    f.layout = get_quad_view_layout();
 
     const auto runtime = get_runtime();
-    // raw_projections holds the eye's real field of view as tangents: left, right, top, bottom.
-    uevr::quadview::Tangents full{};
-    if (runtime != nullptr) {
-        const auto& p = runtime->raw_projections[eye];
-        if (p[1] > p[0] && p[2] > p[3]) {
-            full = {p[0], p[1], p[2], p[3]};
-        }
-    }
     const auto s = get_quad_view_settings();
-    return uevr::quadview::focus_window_for(full, s, 0.0, 0.0);
-}
-
-void VR::latch_quad_view_focus(uint64_t frame) const {
-    if (!is_using_quad_view()) {
-        return;
-    }
-
-    std::scoped_lock _{m_quad_focus_render_mtx};
-    if (m_quad_focus_render_set && m_quad_focus_render_frame == frame) {
-        return;
-    }
-
     for (uint32_t eye = 0; eye < 2; ++eye) {
-        m_quad_focus_render[eye] = get_quad_view_focus_tangents(eye);
+        // raw_projections holds the eye's real field of view as tangents: left, right, top, bottom.
+        uevr::quadview::Tangents full{};
+        if (runtime != nullptr) {
+            const auto& p = runtime->raw_projections[eye];
+            if (p[1] > p[0] && p[2] > p[3]) {
+                full = {p[0], p[1], p[2], p[3]};
+            }
+        }
+        f.focus[eye] = uevr::quadview::focus_window_for(full, s, 0.0, 0.0);
     }
 
-    m_quad_focus_render_set = true;
-    m_quad_focus_render_frame = frame;
+    return f;
 }
 
-uevr::quadview::Tangents VR::get_quad_view_focus_tangents_rendered(uint32_t eye) const {
-    eye = std::min<uint32_t>(eye, 1);
-
-    // The submit state is per render frame, so the sharp-view projection and
-    // the compose that runs a moment later both read the same focus even when
-    // the next frame has already started. The latch is only the fallback for
-    // frames where no submit state was captured (e.g. startup).
-    if (m_openxr != nullptr) {
-        if (const auto focus = m_openxr->peek_submit_quad_focus()) {
-            return (*focus)[eye];
+uevr::quadview::FrameSnapshot VR::get_quad_view_frame_game() const {
+    // The frame whose pose the game thread is building views with. The render
+    // thread may still be presenting an older frame, so this must not use the
+    // render frame's snapshot.
+    if (has_quad_view_openxr()) {
+        if (const auto snapshot = m_openxr->get_game_quad_snapshot()) {
+            return *snapshot;
         }
     }
 
-    {
-        std::scoped_lock _{m_quad_focus_render_mtx};
-        if (m_quad_focus_render_set) {
-            return m_quad_focus_render[eye];
+    return get_quad_view_frame_live();
+}
+
+uevr::quadview::FrameSnapshot VR::get_quad_view_frame_render() const {
+    // The frame being composed and presented: the same snapshot its views
+    // were rendered with on the game thread.
+    if (has_quad_view_openxr()) {
+        if (const auto snapshot = m_openxr->get_render_quad_snapshot()) {
+            return *snapshot;
         }
     }
 
-    return get_quad_view_focus_tangents(eye);
+    return get_quad_view_frame_live();
 }

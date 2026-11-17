@@ -4509,8 +4509,10 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                             return false;
                         }
 
+                        // The presented frame's own layout and sharp windows.
+                        const auto snapshot = vr->get_quad_view_frame_render();
                         d3d12::QuadViewCompositor::Frame frame{};
-                        frame.layout = vr->get_quad_view_layout();
+                        frame.layout = snapshot.layout;
                         frame.edge_blend = vr->get_quad_view_edge_blend();
                         frame.shape = vr->get_quad_view_focus_shape();
                         frame.outline = vr->is_quad_view_outline_enabled();
@@ -4519,7 +4521,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                         for (uint32_t eye = 0; eye < 2; ++eye) {
                             const auto* t = xr->rendered_tangents[eye];
                             frame.rendered[eye] = {t[0], t[1], t[2], t[3]};
-                            frame.focus[eye] = vr->get_quad_view_focus_tangents_rendered(eye);
+                            frame.focus[eye] = snapshot.focus[eye];
                         }
 
                         bool recorded = false;

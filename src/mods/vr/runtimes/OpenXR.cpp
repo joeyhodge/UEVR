@@ -4039,7 +4039,11 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
             !this->quad_composed.load(std::memory_order_acquire) &&
             !is_afr && !has_native_stereo_array && !stalker_pair &&
             projection_layer_views.size() == 2;
-        const auto quad_layout = quad_submit ? VR::get()->get_quad_view_layout() : uevr::quadview::Layout{};
+        // The submitted frame's own snapshot, so the rects match what was rendered.
+        const auto quad_frame = quad_submit
+            ? (submit_state.quad_set ? submit_state.quad : VR::get()->get_quad_view_frame_render())
+            : uevr::quadview::FrameSnapshot{};
+        const auto& quad_layout = quad_frame.layout;
         const bool quad_focus_only = quad_submit && VR::get()->is_quad_view_sharp_only_debug();
         // The layout is in render-target pixels (two eyes wide, one eye high);
         // scale it in case the swapchain was sized differently.
@@ -4155,9 +4159,7 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
                 // Same pose as the wide view of this eye (one sample per frame);
                 // only the field of view narrows to the sharp window. Use the
                 // frame's submit state so the overlay matches the rendered view.
-                const auto a = uevr::quadview::to_angles(submit_state.quad_focus_set
-                    ? submit_state.quad_focus[eye]
-                    : VR::get()->get_quad_view_focus_tangents_rendered(eye));
+                const auto a = uevr::quadview::to_angles(quad_frame.focus[eye]);
                 view.fov = {a.left, a.right, a.up, a.down};
 
                 const auto& r = quad_layout.views[eye + 2];
@@ -4427,9 +4429,9 @@ void OpenXR::update_quad_view_gaze(XrTime display_time, PipelineState& state) {
     const auto& vr = VR::get();
 
     if (!vr->is_using_quad_view() || this->views.size() < 2) {
-        state.quad_focus_set = false;
+        state.quad_set = false;
         std::scoped_lock _{this->quad_mtx};
-        this->quad_focus_current_set = false;
+        this->quad_current_set = false;
         this->quad_gaze_tracking = false;
         return;
     }
@@ -4497,14 +4499,17 @@ void OpenXR::update_quad_view_gaze(XrTime display_time, PipelineState& state) {
 
     this->quad_gaze_tracking = mask == 3u;
 
+    // The frame's layout is captured here too, so a slider drag cannot give
+    // AdjustViewRect, the compose and the submit different rects.
+    this->quad_current.layout = vr->get_quad_view_layout();
     for (uint32_t eye = 0; eye < 2; ++eye) {
-        this->quad_focus_current[eye] = q::focus_window_for(full[eye], settings,
+        this->quad_current.focus[eye] = q::focus_window_for(full[eye], settings,
             this->quad_gaze.cx[eye], this->quad_gaze.cy[eye]);
     }
 
-    this->quad_focus_current_set = true;
-    state.quad_focus = this->quad_focus_current;
-    state.quad_focus_set = true;
+    this->quad_current_set = true;
+    state.quad = this->quad_current;
+    state.quad_set = true;
 
     SPDLOG_INFO_EVERY_N_SEC(1,
         "[QuadView][Gaze] mask={} age={:.1f}ms raw L({:.3f},{:.3f}) R({:.3f},{:.3f}) filt L({:.3f},{:.3f}) R({:.3f},{:.3f}) "

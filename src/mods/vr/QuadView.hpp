@@ -375,6 +375,16 @@ struct FrameViews {
     Tangents tangents[VIEW_COUNT]{};  // indexed by Slot::index()
 };
 
+// Everything that must agree between the game thread (view rects and
+// projections) and the render thread (compose and submit) for one frame: the
+// atlas layout and the two sharp windows. It is captured once, with the frame's
+// pose sample, and both threads look it up by that frame's number, so a slider
+// drag or a gaze update between render and compose can never split them.
+struct FrameSnapshot {
+    Layout layout{};
+    Tangents focus[2]{};
+};
+
 inline FrameViews make_frame_views(uint64_t pose_id, const Tangents eye_full[2], const GazeFilter& gaze,
                                    const Settings& s) {
     FrameViews f{};
