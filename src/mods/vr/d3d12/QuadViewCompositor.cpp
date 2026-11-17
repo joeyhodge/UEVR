@@ -97,7 +97,12 @@ bool QuadViewCompositor::ensure_batch(DXGI_FORMAT view_format, const BatchFactor
         return true;
     }
 
-    m_batch = make_batch(view_format);
+    try {
+        m_batch = make_batch(view_format);
+    } catch (const std::exception& e) {
+        spdlog::error("[QuadView][D3D12] Compose pipeline creation failed: {}", e.what());
+        m_batch.reset();
+    }
     m_batch_format = m_batch != nullptr ? view_format : DXGI_FORMAT_UNKNOWN;
 
     if (m_batch == nullptr) {
@@ -251,6 +256,10 @@ bool QuadViewCompositor::record(ID3D12Device* device, ID3D12GraphicsCommandList*
 
     m_batch->SetViewport(viewport);
     m_batch->Begin(cmd, DirectX::DX12::SpriteSortMode::SpriteSortMode_Immediate); // keep draw order: wide, then sharp
+    // Immediate mode has set the root signature in Begin; the compose constants
+    // (root parameter 2, b1) stay bound for every draw of this batch.
+    const float constants[4]{std::clamp(frame.brightness, 0.1f, 4.0f), 0.0f, 0.0f, 0.0f};
+    cmd->SetGraphicsRoot32BitConstants(2, 4, constants, 0);
 
     const DirectX::XMUINT2 atlas_size{(uint32_t)atlas_desc.Width, (uint32_t)atlas_desc.Height};
 

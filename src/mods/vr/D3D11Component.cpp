@@ -740,7 +740,10 @@ bool D3D11Component::compose_quad_atlas(ID3D11Texture2D* destination) {
     };
 
     const bool custom_ready = ensure_quad_compose_resources();
-    const float brightness = (float)std::clamp(vr->get_quad_view_exposure_bias(), 0.1f, 4.0f);
+    // The brightness slider compensates shared exposure; it is shown and applied only then.
+    const float brightness = vr->is_quad_view_shared_exposure_enabled()
+        ? (float)std::clamp(vr->get_quad_view_exposure_bias(), 0.1f, 4.0f)
+        : 1.0f;
 
     uevr::quadview::SpriteSettings wide{};
     wide.wide = vr->is_quad_view_wide_bicubic();

@@ -4518,6 +4518,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                         frame.outline = vr->is_quad_view_outline_enabled();
                         frame.sharpen = vr->get_quad_view_sharpen();
                         frame.wide_bicubic = vr->is_quad_view_wide_bicubic();
+                        frame.brightness = vr->is_quad_view_shared_exposure_enabled() ? vr->get_quad_view_exposure_bias() : 1.0f;
                         frame.wide_only = vr->is_quad_view_wide_only_debug();
                         frame.sharp_only = vr->is_quad_view_sharp_only_debug();
                         for (uint32_t eye = 0; eye < 2; ++eye) {
@@ -4527,8 +4528,18 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                         }
 
                         bool recorded = false;
-                        const auto make_batch = [this](DXGI_FORMAT format) {
+                        const auto make_batch = [this, device](DXGI_FORMAT format) -> std::unique_ptr<DirectX::DX12::SpriteBatch> {
+                            // The compose shader's root signature is SpriteBatch's
+                            // plus the compose root constants (brightness), so the
+                            // batch must be built with it instead of its own.
+                            ComPtr<ID3D12RootSignature> root_signature{};
+                            if (FAILED(device->CreateRootSignature(0, quad_view_compose_SpritePixelShader,
+                                    sizeof(quad_view_compose_SpritePixelShader), IID_PPV_ARGS(&root_signature)))) {
+                                spdlog::error("[QuadView][D3D12] Could not create the compose root signature");
+                                return nullptr;
+                            }
                             DirectX::SpriteBatchPipelineStateDescription pd{DirectX::RenderTargetState{format, DXGI_FORMAT_UNKNOWN}};
+                            pd.customRootSignature = root_signature.Get(); // the batch keeps its own reference
                             auto& rt = pd.blendDesc.RenderTarget[0];
                             rt.BlendEnable = TRUE; // non-premultiplied: the sharp views fade by their alpha
                             rt.SrcBlend = D3D12_BLEND_SRC_ALPHA;

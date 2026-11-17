@@ -40,6 +40,7 @@ public:
         bool outline{false};
         float sharpen{0.0f};                      // contrast-adaptive sharpening of the sharp views, 0..1
         bool wide_bicubic{true};                  // bicubic upscaling of the wide views
+        float brightness{1.0f};                   // shared-exposure brightness multiplier
         bool wide_only{false};                    // debug: skip the sharp views
         bool sharp_only{false};                   // debug: skip the wide views
     };
