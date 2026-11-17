@@ -14,8 +14,8 @@ atlas into one normal stereo image. The point is to spend pixels where the eye
 can resolve them: the periphery is cheap and low resolution, while the sharp
 window keeps text and detail crisp.
 
-With the default settings (wide 0.2, focus 0.25, density 1.0) the atlas costs
-about 11% of the pixels of native stereo at 3840×3552. The panel prints the
+With the default settings (wide 0.2, focus 0.35, density 1.0) the atlas costs
+about 16% of the pixels of native stereo at 3840×3552. The panel prints the
 atlas size and its share of native stereo pixels for the current headset.
 
 The engine-specific workarounds and the issues that needed them are recorded
@@ -70,12 +70,12 @@ stereo layout the runtime would reproject with).
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| Width / Height with eye tracking | 0.25 | Share of the eye's field of view covered by the sharp window while it follows the gaze. |
+| Width / Height with eye tracking | 0.35 | Share of the eye's field of view covered by the sharp window while it follows the gaze. |
 | Width / Height without eye tracking | 0.5 / 0.45 | Used when the runtime started without eye tracking (or *Follow gaze* is off). The window cannot follow the eyes, so it is larger. Chosen once per session, so a blink never resizes the views. |
 | Pixel density | 1.0 | Sharp window resolution relative to the headset's native density. |
 | Offset left/right, down/up | 0 | Moves the window for trackers that sit slightly off-centre. |
 | Follow gaze | on | Use `XR_EXT_eye_gaze_interaction` to place the window. |
-| Gaze smoothing | 8 ms | Low-pass time constant that averages eye-tracker noise. `0` follows the raw gaze. |
+| Gaze smoothing | 0.15 ms | Low-pass time constant for the gaze. The default is close to raw (a median of three still rejects spikes); raise it to a few ms for a noisy tracker. `0` follows the raw gaze. |
 | Gaze dead zone | 0 (off) | Tangent units (~1.7°) the gaze must move before the window follows. |
 
 The gaze filter averages the eye-tracker signal over the smoothing time (with a

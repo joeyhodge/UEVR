@@ -1,6 +1,5 @@
 #pragma once
 
-// (std::min)/(std::max) are parenthesised so Windows.h min/max macros cannot break them.
 // Quad view foveated rendering: the portable, engine-independent parts.
 //
 // Unreal renders four views per frame instead of two:
@@ -17,6 +16,19 @@
 //
 // The gaze window and dead-zone filter are ported from BeamNG-VRS
 // (src/triple_view.hpp, MIT, Letrange-g), where they run on a Pimax Dream Air.
+//
+// Contents, in order:
+//   Settings and view slots   Settings, Tangents, Slot, slot_for_view, CallOrder
+//   Atlas layout              Rect, Layout, make_layout, fit_layout
+//   Sharp window              focus_window, focus_window_for
+//   Gaze filter               median3, GazeFilter
+//   Eye tracking              Quat, gaze_to_eye_tangent
+//   Wide-view LOD             find_lod_factor_offset, LodOffsetLatch
+//   Per-frame state           FrameSnapshot, projection_from_tangents, to_angles
+//   Composition               focus_dest_rect, shapes, SpriteSettings packing
+//
+// Where the rest lives: docs/quad-view-integration.md.
+// (std::min)/(std::max) are parenthesised so Windows.h min/max macros cannot break them.
 
 #include <algorithm>
 #include <cmath>
@@ -28,15 +40,17 @@ namespace uevr::quadview {
 
 inline constexpr uint32_t VIEW_COUNT = 4;
 
+// --- Settings and view slots -------------------------------------------------
+
 struct Settings {
     bool enabled{false};
     // Defaults match the UEVR settings (VR.hpp).
     double wide_scale{0.2};     // wide view size, share of the headset's per-eye resolution (linear)
-    double focus_width{0.25};   // focus window, share of the eye's full tangent width
-    double focus_height{0.25};  // and height
+    double focus_width{0.35};   // focus window, share of the eye's full tangent width
+    double focus_height{0.35};  // and height
     double focus_density{1.0};  // focus pixel density relative to the headset's native density
     double dead_zone{0.0};      // tangent units (~1.7 deg) the gaze must move before the window follows
-    double gaze_smoothing_ms{8.0};  // low-pass time constant that averages eye-tracker noise
+    double gaze_smoothing_ms{0.15};  // low-pass time constant that averages eye-tracker noise
     uint64_t gaze_return_ms{500}; // without gaze for this long, the window recentres
     double offset_x{0.0};       // sharp window shift, share of the eye's tangent width (+ = right)
     double offset_y{0.0};       // and height (+ = up), for trackers that sit slightly off
@@ -101,6 +115,8 @@ struct CallOrder {
 // Only the first view drives the frame (shadows, exposure, history setup);
 // every other view is a secondary of it.
 inline bool is_primary_view(int32_t view_index) { return view_index == 0; }
+
+// --- Atlas layout ------------------------------------------------------------
 
 struct Rect {
     uint32_t x{0}, y{0}, w{0}, h{0};
@@ -168,6 +184,8 @@ inline Layout make_fitted_layout(const Settings& s, uint32_t eye_w, uint32_t eye
     return fit_layout(make_layout(s, eye_w, eye_h), 2 * eye_w, eye_h);
 }
 
+// --- Sharp window ------------------------------------------------------------
+
 // A window of the given share of `full`, centred on (cx, cy) in tangent space
 // and slid back inside `full` where it would cross an edge.
 inline Tangents focus_window(const Tangents& full, double share_x, double share_y, double cx, double cy) {
@@ -190,6 +208,8 @@ inline Tangents focus_window_for(const Tangents& full, const Settings& s, double
     return focus_window(full, s.focus_width, s.focus_height,
         cx + s.offset_x * full.width(), cy + s.offset_y * full.height());
 }
+
+// --- Gaze filter -------------------------------------------------------------
 
 // Median of three, used to reject single-frame eye-tracker spikes.
 inline double median3(double a, double b, double c) {
@@ -428,13 +448,7 @@ struct LodOffsetLatch {
     }
 };
 
-// One frame's view set. Every view is filled from the SAME head-pose sample
-// (pose_id), and the compositor later uses exactly these tangents, so what was
-// rendered and what is composed/submitted can never disagree (the BeamNG drift).
-struct FrameViews {
-    uint64_t pose_id{0};
-    Tangents tangents[VIEW_COUNT]{};  // indexed by Slot::index()
-};
+// --- Per-frame state and projection ------------------------------------------
 
 // Everything that must agree between the game thread (view rects and
 // projections) and the render thread (compose and submit) for one frame: the
@@ -445,17 +459,6 @@ struct FrameSnapshot {
     Layout layout{};
     Tangents focus[2]{};
 };
-
-inline FrameViews make_frame_views(uint64_t pose_id, const Tangents eye_full[2], const GazeFilter& gaze,
-                                   const Settings& s) {
-    FrameViews f{};
-    f.pose_id = pose_id;
-    for (uint32_t eye = 0; eye < 2; ++eye) {
-        f.tangents[eye] = eye_full[eye];
-        f.tangents[eye + 2] = focus_window_for(eye_full[eye], s, gaze.cx[eye], gaze.cy[eye]);
-    }
-    return f;
-}
 
 // Unreal's reversed-Z, infinite far plane, off-axis projection for a view
 // whose edges sit at the given tangents (the same form UEVR's OpenXR runtime

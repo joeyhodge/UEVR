@@ -425,14 +425,6 @@ public:
     PipelineState last_submit_state{};
     PipelineState get_submit_state();
 
-    // Quad View snapshot of one frame, looked up by its frame number. The slot
-    // must still belong to that frame (the queue is reused every QUEUE_SIZE
-    // frames); otherwise nothing is returned rather than another frame's data.
-    std::optional<uevr::quadview::FrameSnapshot> get_quad_snapshot(uint32_t frame) {
-        std::scoped_lock _{this->sync_assignment_mtx};
-        return get_quad_snapshot_locked(frame);
-    }
-
     // Game thread: the frame whose pose was sampled last, which is the frame
     // the views are being built for (the same sample the eye poses use).
     std::optional<uevr::quadview::FrameSnapshot> get_game_quad_snapshot() {
@@ -449,6 +441,10 @@ public:
     }
 
 private:
+    // Quad View snapshot of one frame, looked up by its frame number (caller
+    // holds sync_assignment_mtx). The slot must still belong to that frame (the
+    // queue is reused every QUEUE_SIZE frames); otherwise nothing is returned
+    // rather than another frame's data.
     std::optional<uevr::quadview::FrameSnapshot> get_quad_snapshot_locked(uint32_t frame) const {
         const auto& s = this->pipeline_states[frame % QUEUE_SIZE];
         if (s.quad_set && s.frame_count == frame) return s.quad;

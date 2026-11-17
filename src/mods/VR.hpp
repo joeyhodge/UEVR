@@ -536,7 +536,10 @@ public:
         return s;
     }
 
+    // Implemented in vr/QuadViewVR.cpp, with the rest of the Quad View glue.
     void draw_quad_view_ui();
+    void update_quad_view_cvars();   // once per frame, from update_hmd_state
+    void update_quad_view_culling(sdk::UGameEngine* engine, const VRRuntime* letterbox_runtime); // once per engine tick
     bool is_quad_view_gaze_enabled() const { return m_quad_view_follow_gaze->value(); }
     // Follow gaze is on and the runtime started with eye tracking.
     bool is_quad_view_gaze_available() const;
@@ -1685,8 +1688,8 @@ private:
 
     // Quad View (RenderingMethod::QUAD_VIEW). Shown under the Rendering Method combo when selected.
     const ModSlider::Ptr m_quad_view_wide_scale{ ModSlider::create(generate_name("QuadViewWideScale"), 0.1f, 1.0f, 0.2f) };
-    const ModSlider::Ptr m_quad_view_focus_width{ ModSlider::create(generate_name("QuadViewFocusWidth"), 0.1f, 0.8f, 0.25f) };
-    const ModSlider::Ptr m_quad_view_focus_height{ ModSlider::create(generate_name("QuadViewFocusHeight"), 0.1f, 0.8f, 0.25f) };
+    const ModSlider::Ptr m_quad_view_focus_width{ ModSlider::create(generate_name("QuadViewFocusWidth"), 0.1f, 0.8f, 0.35f) };
+    const ModSlider::Ptr m_quad_view_focus_height{ ModSlider::create(generate_name("QuadViewFocusHeight"), 0.1f, 0.8f, 0.35f) };
     // Sharp window size without eye tracking (fixed foveation): it has to cover
     // where the eyes may look, so it is larger (Quad-Views-Foveated uses 0.5 x 0.45).
     const ModSlider::Ptr m_quad_view_fixed_width{ ModSlider::create(generate_name("QuadViewFixedWidth"), 0.1f, 0.8f, 0.5f) };
@@ -1694,9 +1697,11 @@ private:
     const ModSlider::Ptr m_quad_view_focus_density{ ModSlider::create(generate_name("QuadViewFocusDensity"), 0.5f, 2.0f, 1.0f) };
     const ModToggle::Ptr m_quad_view_follow_gaze{ ModToggle::create(generate_name("QuadViewFollowGaze"), true) };
     const ModSlider::Ptr m_quad_view_gaze_dead_zone{ ModSlider::create(generate_name("QuadViewGazeDeadZone"), 0.0f, 0.15f, 0.0f) };
-    // Low-pass time constant for the gaze, in milliseconds. A few ms averages
-    // tracker noise without making the sharp window lag behind the eyes.
-    const ModSlider::Ptr m_quad_view_gaze_smoothing_ms{ ModSlider::create(generate_name("QuadViewGazeSmoothingMs"), 0.0f, 100.0f, 8.0f) };
+    // Low-pass time constant for the gaze, in milliseconds. The default is
+    // close to raw: the median of three already rejects spikes, and the eye
+    // tracker itself is tens of milliseconds late, so extra smoothing only
+    // adds lag. Raise it (a few ms) for a noisy tracker.
+    const ModSlider::Ptr m_quad_view_gaze_smoothing_ms{ ModSlider::create(generate_name("QuadViewGazeSmoothingMs"), 0.0f, 100.0f, 0.15f) };
     const ModSlider::Ptr m_quad_view_wide_lod_scale{ ModSlider::create(generate_name("QuadViewWideLODScale"), 0.1f, 1.0f, 0.5f) };
     const ModToggle::Ptr m_quad_view_shared_exposure{ ModToggle::create(generate_name("QuadViewSharedExposure"), true) };
     const ModSlider::Ptr m_quad_view_exposure_bias{ ModSlider::create(generate_name("QuadViewExposureBias"), 0.5f, 2.0f, 1.0f) };

@@ -147,19 +147,6 @@ static void gaze_tests() {
     expect(!ease.seeded && near(ease.cx[0], 0.0), "the ease ends exactly at the centre");
 }
 
-static void frame_tests() {
-    q::Settings s{};
-    const q::Tangents eyes[2]{{-1.1, 0.9, 1.0, -1.0}, {-0.9, 1.1, 1.0, -1.0}};
-    q::GazeFilter g{};
-    const auto f = q::make_frame_views(42, eyes, g, s);
-    expect(f.pose_id == 42, "all views carry the pose sample they were built from");
-    for (uint32_t eye = 0; eye < 2; ++eye) {
-        expect(near(f.tangents[eye].left, eyes[eye].left), "wide views keep the full eye field of view");
-        const auto& w = f.tangents[eye + 2];
-        expect(w.left >= eyes[eye].left && w.right <= eyes[eye].right, "focus view lies inside its eye");
-    }
-}
-
 static void fit_tests() {
     q::Settings s{};
     s.wide_scale = 1.0; s.focus_width = 0.4; s.focus_height = 0.4; s.focus_density = 2.0;
@@ -351,7 +338,6 @@ int main() {
         layout_tests();
         window_tests();
         gaze_tests();
-        frame_tests();
         fit_tests();
         projection_tests();
         gaze_direction_tests();

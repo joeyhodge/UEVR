@@ -298,7 +298,7 @@ disagreed.
 
 **Fix.** The final filter is a median of the last three samples (one-frame
 spikes never pass) followed by a low-pass whose time constant is exposed as
-*Gaze smoothing* (`QuadViewGazeSmoothingMs`, default 8 ms, 0–100 ms). It uses
+*Gaze smoothing* (`QuadViewGazeSmoothingMs`, default 0.15 ms, 0–100 ms). It uses
 the frame clock as `dt`, so the feel does not change with frame rate. The dead
 zone is optional and off by default (`QuadViewGazeDeadZone`). When the gaze
 is lost the window holds for 500 ms, then eases to the centre over 150 ms
@@ -527,6 +527,9 @@ titles still need the opt-in box and should be tried on D3D12.
 
 ## Source map
 
+The full list of touch points, per function, is in
+[quad-view-integration.md](quad-view-integration.md).
+
 | File | Responsibility |
 | --- | --- |
 | `src/mods/vr/FFakeStereoRenderingHook.cpp` | View count, pass/index mapping, call order, view states, projection, UE4 query workarounds, LOD. |
@@ -535,7 +538,8 @@ titles still need the opt-in box and should be tried on D3D12.
 | `src/mods/vr/d3d12/QuadViewCompositor.cpp` | D3D12 atlas compositor, drawing straight into the swapchain image (copy fallback). |
 | `src/mods/vr/shaders/quad_view_compose.hlsli` | The compose pixel logic shared by D3D11 and D3D12: bicubic wide views, sharpening, shapes, edge blend, outline. |
 | `src/mods/vr/runtimes/OpenXR.cpp` | Gaze sampling, the per-frame focus state, wide/sharp layer submission. |
-| `src/mods/VR.cpp` | Settings, cvars, UE4 settle gate, panel. |
+| `src/mods/vr/QuadViewVR.cpp` | Cvar overrides, UE4 settle gate, culling driver, frame snapshot accessors, panel. |
+| `src/mods/VR.hpp` | Settings and accessors. |
 | `src/mods/PluginLoader.cpp` | Foveated-plugin skip. |
 | `src/mods/vr/QuadViewCulling.cpp` | Experimental wide-view actor culling. |
 | `tests/QuadViewTests.cpp` | Offline coverage for the portable parts. |
