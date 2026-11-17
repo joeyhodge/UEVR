@@ -74,13 +74,13 @@ struct QuadViewCVarOverride {
             if (!current) {
                 return;
             }
-            if (applied && std::abs(*current - *target) <= 1e-9f + std::abs(*target) * 1e-4f) {
+            if (applied && same(*current, *target)) {
                 return;
             }
             if (!saved) {
                 saved = *current;
             }
-            if (std::abs(*current - *target) <= 1e-9f + std::abs(*target) * 1e-4f) {
+            if (same(*current, *target)) {
                 applied = *target; // the game already has this value: nothing to set or log
                 return;
             }
@@ -89,12 +89,22 @@ struct QuadViewCVarOverride {
                 spdlog::info("[QuadView] {} {} -> {}", utility::narrow(name), *current, *target);
             }
         } else if (saved && variable != nullptr) {
-            set(*saved);
-            spdlog::info("[QuadView] {} restored to {}", utility::narrow(name), *saved);
+            // Give the value back only while it is still ours: if the game, a
+            // plugin or the user changed it in the meantime, theirs stays.
+            const auto current = variable->TryGetFloat();
+            const bool still_ours = current && applied && same(*current, *applied);
+            if (!still_ours) {
+                spdlog::info("[QuadView] {} was changed by someone else; leaving it", utility::narrow(name));
+            } else if (!same(*current, *saved)) {
+                set(*saved);
+                spdlog::info("[QuadView] {} restored to {}", utility::narrow(name), *saved);
+            }
             saved.reset();
             applied.reset();
         }
     }
+
+    static bool same(float a, float b) { return std::abs(a - b) <= 1e-9f + std::abs(b) * 1e-4f; }
 
     // Looked up and not there (after the first lookup attempt).
     bool missing() const { return variable == nullptr && lookups > 0; }
@@ -157,8 +167,14 @@ void VR::update_quad_view_cvars() {
                 spdlog::info("[QuadView] Vignette off: r.Tonemapper.Quality {} -> 1", *quality);
             }
         } else if (m_quad_view_saved_tonemapper_quality) {
-            sdk::set_cvar_int(L"Renderer", L"r.Tonemapper.Quality", *m_quad_view_saved_tonemapper_quality);
-            spdlog::info("[QuadView] Vignette restored: r.Tonemapper.Quality -> {}", *m_quad_view_saved_tonemapper_quality);
+            // Restore only while the value is still the 1 we set.
+            const auto quality = sdk::get_cvar_int(L"Renderer", L"r.Tonemapper.Quality");
+            if (quality && *quality == 1) {
+                sdk::set_cvar_int(L"Renderer", L"r.Tonemapper.Quality", *m_quad_view_saved_tonemapper_quality);
+                spdlog::info("[QuadView] Vignette restored: r.Tonemapper.Quality -> {}", *m_quad_view_saved_tonemapper_quality);
+            } else {
+                spdlog::info("[QuadView] r.Tonemapper.Quality was changed by someone else; leaving it");
+            }
             m_quad_view_saved_tonemapper_quality.reset();
         }
     }
@@ -247,7 +263,7 @@ void VR::draw_quad_view_ui() {
         ImGui::TextColored(warn, "Quad View is off: Extreme Compatibility Mode renders one view at a time.");
     }
     if (get_runtime() != nullptr && !get_runtime()->is_openxr()) {
-        ImGui::TextColored(warn, "Quad View needs the OpenXR runtime; OpenVR only shows the wide views.");
+        ImGui::TextColored(warn, "Quad View needs the OpenXR runtime. On OpenVR this game renders plain Native Stereo.");
     }
     if (is_sceneview_compatibility_enabled() || is_splitscreen_compatibility_enabled()) {
         ImGui::TextColored(warn, "Quad View is off while SceneView or Splitscreen compatibility is on.");
@@ -318,6 +334,7 @@ void VR::draw_quad_view_ui() {
         case 0: ImGui::TextDisabled("LOD: learning this game's view layout..."); break;
         case 1: ImGui::TextColored(good, "LOD: active on the wide views"); break;
         case 2: ImGui::TextColored(warn, "LOD: not available in this game (view layout not recognised)"); break;
+        case 4: ImGui::TextDisabled("LOD: off (LOD scale is 1.0)"); break;
         default: ImGui::TextDisabled("LOD: waiting for the first quad view frame"); break;
         }
         ImGui::TextDisabled("Nanite meshes ignore LOD; their detail already drops with the wide views' resolution.");

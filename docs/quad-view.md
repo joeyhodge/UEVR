@@ -23,8 +23,8 @@ in [Quad View on UE4 and UE5](quad-view-ue4-ue5.md).
 
 ## Requirements
 
-- **OpenXR.** OpenVR receives only the wide views, so Quad View is not useful
-  there.
+- **OpenXR.** On OpenVR Quad View does not start: the game renders plain
+  Native Stereo and the panel says so.
 - **D3D12 (preferred) or D3D11.** In both cases UEVR composes the atlas into a
   normal stereo image, so the runtime gets one layer per eye. Both use the
   same compose shader: bicubic wide views, sharpening, edge blending, the
@@ -119,7 +119,7 @@ place for 500 ms, then eases back to the centre over 150 ms instead of jumping.
 ## Known limitations
 
 - The feature is experimental and is not enabled by default.
-- OpenVR shows only the wide views.
+- OpenVR is not supported; it falls back to Native Stereo.
 - UE4 support is opt-in and should use D3D12; UE4 + D3D11 crashes with four
   views. See [Quad View on UE4 and UE5](quad-view-ue4-ue5.md) for the full
   engine-specific list.

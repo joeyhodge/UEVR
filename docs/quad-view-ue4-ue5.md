@@ -22,7 +22,8 @@ compatibility is covered by the other pages in `docs/`.
 | Depth submission | Off. The atlas is not the stereo layout the runtime would reproject with. | Off, same reason. |
 
 Only the OpenXR runtime receives the composed stereo image or the optional
-sharp-window overlay. OpenVR still receives only the wide views.
+sharp-window overlay. On OpenVR Quad View does not start and the game renders
+plain Native Stereo.
 
 ## How the four views reach Unreal
 
@@ -407,6 +408,36 @@ Without eye tracking the window now has its own, larger size
 the shader's own root signature. Both paths apply it only while shared
 exposure is on, which is when the panel shows it (`fc5eeb1`).
 
+### 26. Hardening from the upstream review
+
+Small, behaviour-preserving changes for points raised in the review of the
+upstream pull request:
+
+- **Console variables are restored only while they are still ours.** If the
+  game, a plugin or the user changed a value Quad View had set, it is left
+  alone when Quad View turns off (all `QuadViewCVarOverride` values and
+  `r.Tonemapper.Quality`).
+- **D3D11 device reset.** `reset_quad_compose_resources()` drops every compose
+  resource and readiness flag in `D3D11Component::on_reset`, so nothing from an
+  old device or swapchain generation is reused.
+- **D3D12 resource validation.** The compositor checks that the atlas and the
+  target are plain single-sample 2D textures and that the atlas is sampleable
+  before recording anything; otherwise it logs once and leaves the frame to
+  the caller's fallback.
+- **OpenVR.** `is_quad_view_active()` is false on OpenVR, so the game renders
+  Native Stereo instead of an atlas the runtime cannot show; the panel and the
+  log say so.
+- **LOD.** With *LOD scale* at 1.0 the init options are neither scanned nor
+  written (status "off"). The heuristic offset search is still what finds
+  `LODDistanceFactor` when the option is in use.
+
+Still open from that review: per-engine-version view adapters, verified
+member discovery for the LOD field, actor-lifetime and per-view handling in
+the experimental culling, fence-based retirement of the retired atlas views
+(they are kept for four swaps today), the layered-submit fallback when the
+compose is off, and replacing the filename-based plugin skip with an explicit
+conflict report.
+
 ## Choosing the UE4 or UE5 path
 
 The path is selected by `FFakeStereoRenderingHook::has_double_precision()`.
@@ -440,8 +471,8 @@ returns `eSSP_FULL` for it, which is what later UE5 versions do themselves.
 - **UE4 support is experimental and thinly verified.** The bring-up title was
   UE4.26 on D3D11, where the four-view path failed. Treat UE4 + D3D12 as the
   intended path and validate per game.
-- **OpenVR.** It receives only the wide views; the sharp window and the
-  composed image are OpenXR features.
+- **OpenVR.** Quad View falls back to Native Stereo there; the sharp window
+  and the composed image are OpenXR features.
 - **Depth.** Quad View does not submit depth because the atlas layout is not
   the stereo layout the runtime would reproject with.
 - **Nanite.** Nanite meshes ignore the wide-view LOD scale.

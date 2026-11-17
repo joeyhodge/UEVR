@@ -186,6 +186,25 @@ bool QuadViewCompositor::record(ID3D12Device* device, ID3D12GraphicsCommandList*
     }
 
     const auto dst_desc = destination->GetDesc();
+    const auto src_desc = atlas->GetDesc();
+
+    // Both must be plain single-sample 2D textures (not arrays), and the atlas
+    // must be sampleable; anything else is left to the caller's fallback.
+    const auto plain_2d = [](const D3D12_RESOURCE_DESC& d) {
+        return d.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && d.DepthOrArraySize == 1 &&
+            d.SampleDesc.Count == 1 && d.Width >= 16 && d.Height >= 16;
+    };
+    if (!plain_2d(dst_desc) || !plain_2d(src_desc) ||
+        (src_desc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) != 0)
+    {
+        SPDLOG_WARN_ONCE("[QuadView][D3D12] Unsupported compose resources (atlas {}x{} fmt {} array {} samples {} flags 0x{:x}; "
+            "target {}x{} fmt {} array {} samples {}); not composing",
+            src_desc.Width, src_desc.Height, (uint32_t)src_desc.Format, src_desc.DepthOrArraySize, src_desc.SampleDesc.Count,
+            (uint32_t)src_desc.Flags, dst_desc.Width, dst_desc.Height, (uint32_t)dst_desc.Format, dst_desc.DepthOrArraySize,
+            dst_desc.SampleDesc.Count);
+        return false;
+    }
+
     const auto family = family_of(dst_desc.Format);
 
     if (!family) {
@@ -206,7 +225,7 @@ bool QuadViewCompositor::record(ID3D12Device* device, ID3D12GraphicsCommandList*
         return false;
     }
 
-    const auto atlas_desc = atlas->GetDesc();
+    const auto& atlas_desc = src_desc;
     const auto out_w = (uint32_t)dst_desc.Width;
     const auto out_h = (uint32_t)dst_desc.Height;
     const double eye_w = double(out_w) / 2.0;

@@ -80,6 +80,7 @@ private:
     bool ensure_ui_invert_resources();
     bool ensure_quad_compose_resources();
     bool compose_quad_atlas(ID3D11Texture2D* destination);
+    void reset_quad_compose_resources();
     void render_ui_invert_to_rt(ID3D11Texture2D* render_target, TextureContext& srv, float invert_amount);
     bool ensure_daysgone_ui_key_resources();
     void render_daysgone_ui_key_to_rt(

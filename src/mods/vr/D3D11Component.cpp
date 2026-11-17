@@ -531,6 +531,24 @@ bool D3D11Component::ensure_quad_compose_resources() {
     return true;
 }
 
+// Drops everything the Quad View compose created, so nothing from an old
+// device or swapchain generation is reused: it is all rebuilt on the next
+// composed frame.
+void D3D11Component::reset_quad_compose_resources() {
+    m_quad_compose_blend.Reset();
+    m_quad_compose_alpha_blend.Reset();
+    m_quad_compose_tex.Reset();
+    m_quad_compose_rtv.Reset();
+    m_quad_compose_ps.Reset();
+    m_quad_compose_cb.Reset();
+    m_quad_source_srv.Reset();
+    m_quad_source_tex = nullptr;
+    m_quad_compose_ps_ready = false;
+    m_quad_compose_width = 0;
+    m_quad_compose_height = 0;
+    m_quad_compose_format = DXGI_FORMAT_UNKNOWN;
+}
+
 bool D3D11Component::compose_quad_atlas(ID3D11Texture2D* destination) {
     auto vr = VR::get();
     auto* const xr = vr != nullptr ? vr->get_openxr_runtime() : nullptr;
@@ -2263,6 +2281,7 @@ void D3D11Component::on_reset(VR* vr) {
     m_ui_invert_ps.Reset();
     m_ui_invert_blend.Reset();
     m_ui_invert_ready = false;
+    reset_quad_compose_resources();
     m_daysgone_ui_key_ps.Reset();
     m_daysgone_ui_key_blend.Reset();
     m_daysgone_ui_key_ready = false;

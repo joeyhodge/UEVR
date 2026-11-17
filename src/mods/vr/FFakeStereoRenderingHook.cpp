@@ -23623,7 +23623,14 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         static uevr::quadview::LodOffsetLatch lod_latch{};
         constexpr size_t scan_size = 0x600;
 
-        if (slot >= 0 && init_options != nullptr &&
+        // The LOD bias is optional: with the scale at 1.0 the init options are
+        // neither scanned nor written.
+        const bool lod_wanted = vr->get_quad_view_wide_lod_scale() < 0.999f;
+        if (!lod_wanted) {
+            s_quad_lod_status = 4;
+        }
+
+        if (lod_wanted && slot >= 0 && init_options != nullptr &&
             is_readable_process_range(reinterpret_cast<uintptr_t>(init_options), scan_size))
         {
             auto* const bytes = reinterpret_cast<uint8_t*>(init_options);
@@ -31037,6 +31044,15 @@ static bool quad_view_declares_four_views() {
 
 bool FFakeStereoRenderingHook::is_quad_view_active() {
     if (!quad_view_declares_four_views()) {
+        return false;
+    }
+
+    // The composed image and the sharp layer are OpenXR features. On OpenVR
+    // the game renders plain Native Stereo instead of a half-working atlas
+    // (the panel says so). The four view states may already be declared by
+    // then, which is harmless: only two views are requested.
+    if (const auto runtime = VR::get()->get_runtime(); runtime != nullptr && runtime->loaded && !runtime->is_openxr()) {
+        SPDLOG_WARN_ONCE("[QuadView] OpenVR runtime: Quad View is not supported, rendering Native Stereo instead");
         return false;
     }
 

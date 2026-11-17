@@ -14,7 +14,7 @@ is behind one of two checks:
 | Check | Meaning | Used by |
 | --- | --- | --- |
 | `VR::is_using_quad_view()` | The method is selected and no mode that excludes it is on (AFR, 2D screen, stereo emulation). | Settings, gaze sampling, the cvar overrides. |
-| `FFakeStereoRenderingHook::is_quad_view_active()` | The engine is rendering four views this frame. Adds: not NASCAR, no SceneView/Splitscreen compatibility, UE4 opt-in and its settle gate. | Every hook, both composes, the submit. |
+| `FFakeStereoRenderingHook::is_quad_view_active()` | The engine is rendering four views this frame. Adds: OpenXR runtime (OpenVR falls back to Native Stereo), not NASCAR, no SceneView/Splitscreen compatibility, UE4 opt-in and its settle gate. | Every hook, both composes, the submit. |
 
 With any other rendering method both return false and no Quad View code runs,
 with one exception: `get_desired_number_of_views_hook` answers 4 during
@@ -92,6 +92,7 @@ Each block is marked with a `Quad View:` comment. Searching for `quad_view`,
 | --- | --- |
 | `D3D12Component::on_frame` | `try_quad_compose`: records `QuadViewCompositor` into the double-wide swapchain copy; falls back to the plain copy. |
 | `D3D12Component::on_reset` | Resets the compositor. |
+| `D3D11Component::on_reset` | One call: `reset_quad_compose_resources()`. |
 | `D3D11Component::on_frame` | Calls `compose_quad_atlas` before the plain copy. |
 | `D3D11Component::ensure_quad_compose_resources`, `compose_quad_atlas` (new) | The D3D11 compose and its resources (`m_quad_*` members). |
 
@@ -127,7 +128,8 @@ invariant that keeps the sharp image and its window together.
 ## Engine state Quad View changes, and restores
 
 All through `QuadViewCVarOverride` in `QuadViewVR.cpp`, which saves the game's
-value and puts it back when Quad View or the option is turned off.
+value and puts it back when Quad View or the option is turned off, but only
+while the value is still the one Quad View set.
 
 | Console variable | When | Why |
 | --- | --- | --- |

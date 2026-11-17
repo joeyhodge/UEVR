@@ -827,7 +827,8 @@ public:
     static bool is_quad_view_active();
 
     // Wide-view LOD: 0 = learning the init-options layout, 1 = active,
-    // 2 = unavailable in this game (layout not recognised), 3 = constructor not hooked.
+    // 2 = unavailable in this game (layout not recognised), 3 = constructor not hooked,
+    // 4 = off (the LOD scale is 1.0, nothing is scanned or written).
     static inline std::atomic<int> s_quad_lod_status{3};
 
     bool has_attempted_to_hook_engine() const {
