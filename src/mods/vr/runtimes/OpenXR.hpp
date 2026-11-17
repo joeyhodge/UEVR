@@ -430,28 +430,32 @@ public:
     // frames); otherwise nothing is returned rather than another frame's data.
     std::optional<uevr::quadview::FrameSnapshot> get_quad_snapshot(uint32_t frame) {
         std::scoped_lock _{this->sync_assignment_mtx};
-        const auto& s = this->pipeline_states[frame % QUEUE_SIZE];
-        if (s.quad_set && s.frame_count == frame) return s.quad;
-        return std::nullopt;
+        return get_quad_snapshot_locked(frame);
     }
 
     // Game thread: the frame whose pose was sampled last, which is the frame
     // the views are being built for (the same sample the eye poses use).
     std::optional<uevr::quadview::FrameSnapshot> get_game_quad_snapshot() {
-        return get_quad_snapshot(this->internal_frame_count);
+        std::scoped_lock _{this->sync_assignment_mtx};
+        return get_quad_snapshot_locked(this->internal_frame_count);
     }
 
     // Render thread: the frame about to be presented, without the side effects
     // of get_submit_state() (for the compositors).
     std::optional<uevr::quadview::FrameSnapshot> get_render_quad_snapshot() {
-        uint32_t frame{};
-        {
-            std::scoped_lock _{this->sync_assignment_mtx};
-            if (!this->has_render_frame_count) return std::nullopt;
-            frame = this->internal_render_frame_count;
-        }
-        return get_quad_snapshot(frame);
+        std::scoped_lock _{this->sync_assignment_mtx};
+        if (!this->has_render_frame_count) return std::nullopt;
+        return get_quad_snapshot_locked(this->internal_render_frame_count);
     }
+
+private:
+    std::optional<uevr::quadview::FrameSnapshot> get_quad_snapshot_locked(uint32_t frame) const {
+        const auto& s = this->pipeline_states[frame % QUEUE_SIZE];
+        if (s.quad_set && s.frame_count == frame) return s.quad;
+        return std::nullopt;
+    }
+
+public:
     struct Stalker2PairSubmit {
         std::array<XrView, 2> views{};
         uint64_t epoch{}, generation{};
