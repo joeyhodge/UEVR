@@ -1727,6 +1727,9 @@ private:
     static constexpr uint32_t QUAD_VIEW_UE4_SETTLE_FRAMES = 60;
     uint32_t m_quad_view_ue4_settle_frames{0};
     const ModToggle::Ptr m_quad_view_allow_ue4{ ModToggle::create(generate_name("QuadViewAllowUE4"), false) };
+    // UE4: leave the game's occlusion queries on (Quad View turns them off by
+    // default as a crash workaround, which also turns occlusion culling off).
+    const ModToggle::Ptr m_quad_view_ue4_keep_occlusion{ ModToggle::create(generate_name("QuadViewUE4KeepOcclusion"), false) };
     const ModToggle::Ptr m_quad_view_cull_actors{ ModToggle::create(generate_name("QuadViewCullSmallActors"), false) };
     const ModSlider::Ptr m_quad_view_cpu_particles{ ModSlider::create(generate_name("QuadViewCPUParticles"), 0.1f, 1.0f, 1.0f) };
     const ModToggle::Ptr m_native_stereo_fix_preserve_secondary_pass{ ModToggle::create(generate_name("NativeStereoFixPreserveSecondaryPass"), true) };
@@ -2078,6 +2081,7 @@ public:
             *m_quad_view_cpu_particles,
             *m_quad_view_cull_actors,
             *m_quad_view_allow_ue4,
+            *m_quad_view_ue4_keep_occlusion,
             *m_quad_view_sharp_first,
             *m_quad_view_sharpen,
             *m_quad_view_wide_bicubic,

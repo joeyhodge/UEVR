@@ -23640,7 +23640,11 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
             if (offset) {
                 SPDLOG_INFO_ONCE("[QuadView] LODDistanceFactor found at init-options +0x{:x}", *offset);
             } else if (lod_latch.failed) {
-                SPDLOG_WARN_ONCE("[QuadView] LODDistanceFactor not recognised; wide-view LOD scale is off for this game");
+                // Zero candidates = the layout differs; several = ambiguous.
+                size_t found[8]{};
+                const auto count = uevr::quadview::list_lod_candidates(bytes, scan_size, found, 8);
+                SPDLOG_WARN_ONCE("[QuadView] LODDistanceFactor not recognised; wide-view LOD scale is off for this game "
+                    "({} candidates: +0x{:x} +0x{:x} +0x{:x} +0x{:x})", count, found[0], found[1], found[2], found[3]);
             }
 
             const auto scale = std::clamp(vr->get_quad_view_wide_lod_scale(), 0.1f, 1.0f);

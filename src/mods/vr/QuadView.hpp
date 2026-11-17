@@ -424,6 +424,18 @@ inline std::optional<size_t> find_lod_factor_offset(const uint8_t* p, size_t siz
     return found;
 }
 
+// Diagnostics: every offset in the range that looks like the LOD factor
+// (up to `max`), for the log when the unique match fails.
+inline size_t list_lod_candidates(const uint8_t* p, size_t size, size_t* out, size_t max, size_t begin = 0x40) {
+    size_t n = 0;
+    for (size_t o = (begin + 3) & ~size_t(3); o + 8 <= size; o += 4) {
+        if (!lod_candidate_at(p, size, o)) continue;
+        if (n < max) out[n] = o;
+        ++n;
+    }
+    return n;
+}
+
 struct LodOffsetLatch {
     static constexpr uint32_t NEEDED = 60;
     std::optional<size_t> offset{};

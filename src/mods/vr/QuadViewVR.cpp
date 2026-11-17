@@ -81,7 +81,8 @@ struct QuadViewCVarOverride {
                 saved = *current;
             }
             if (same(*current, *target)) {
-                applied = *target; // the game already has this value: nothing to set or log
+                applied = *target; // the game already has this value: nothing to set
+                spdlog::info("[QuadView] {} is already {}", utility::narrow(name), *target);
                 return;
             }
             if (set(*target)) {
@@ -205,7 +206,12 @@ void VR::update_quad_view_cvars() {
         // states) change. Turning both on at once crashed Last Hope on inject.
         const bool ue4_quad_wanted = is_using_quad_view() && m_quad_view_allow_ue4->value() &&
             m_fake_stereo_hook != nullptr && !m_fake_stereo_hook->has_double_precision();
-        g_quad_ue4_occlusion_queries.update(ue4_quad_wanted ? std::optional<float>{0.0f} : std::nullopt);
+        // Without occlusion queries Unreal draws everything inside each view's
+        // frustum, hidden or not, which costs a lot in dense scenes. The
+        // "keep occlusion culling" option leaves them on for games that run
+        // four views without the query crash.
+        const bool occlusion_off = ue4_quad_wanted && !m_quad_view_ue4_keep_occlusion->value();
+        g_quad_ue4_occlusion_queries.update(occlusion_off ? std::optional<float>{0.0f} : std::nullopt);
         g_quad_ue4_gpu_stats.update(ue4_quad_wanted ? std::optional<float>{0.0f} : std::nullopt);
 
         // Share exposure across the four views (see the cvar comments above).
@@ -214,11 +220,12 @@ void VR::update_quad_view_cvars() {
         g_quad_eye_adaptation_quality.update(share_exposure ? std::optional<float>{0.0f} : std::nullopt);
         if (!ue4_quad_wanted) {
             m_quad_view_ue4_settle_frames = 0;
-        } else if (g_quad_ue4_occlusion_queries.applied || g_quad_ue4_occlusion_queries.missing()) {
+        } else if (!occlusion_off || g_quad_ue4_occlusion_queries.applied || g_quad_ue4_occlusion_queries.missing()) {
             if (m_quad_view_ue4_settle_frames < QUAD_VIEW_UE4_SETTLE_FRAMES) {
                 ++m_quad_view_ue4_settle_frames;
                 if (m_quad_view_ue4_settle_frames == QUAD_VIEW_UE4_SETTLE_FRAMES) {
-                    spdlog::info("[QuadView] UE4: occlusion queries settled, starting the four views");
+                    spdlog::info("[QuadView] UE4: starting the four views (occlusion queries {})",
+                        occlusion_off ? "off" : "left on");
                 }
             }
         }
@@ -275,7 +282,13 @@ void VR::draw_quad_view_ui() {
     if (m_fake_stereo_hook != nullptr && !m_fake_stereo_hook->has_double_precision()) {
         m_quad_view_allow_ue4->draw("Allow on Unreal Engine 4 (experimental, may crash)");
         if (g_framework != nullptr && !g_framework->is_dx12()) {
-            ImGui::TextColored(warn, "UE4 with D3D11 is known to crash with four views (D3D11 query error); use Native Stereo.");
+            ImGui::TextColored(warn, "UE4 with D3D11 can crash with four views (D3D11 query error). If it does, use Native Stereo.");
+        }
+        if (m_quad_view_allow_ue4->value()) {
+            m_quad_view_ue4_keep_occlusion->draw("UE4: keep occlusion culling (faster, may crash)");
+            ImGui::TextDisabled(m_quad_view_ue4_keep_occlusion->value()
+                ? "Occlusion queries stay on: hidden objects are skipped. Turn this off if the game crashes."
+                : "Occlusion queries are off (crash workaround): Unreal draws hidden objects too, in all\nfour views. Try this option for more performance in dense scenes.");
         }
         if (!m_quad_view_allow_ue4->value()) {
             ImGui::TextColored(warn, "Unreal Engine 4 game: Quad View is off, this game renders plain stereo.");

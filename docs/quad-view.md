@@ -39,7 +39,16 @@ in [Quad View on UE4 and UE5](quad-view-ue4-ue5.md).
 ### Unreal Engine 4
 
 UE4 games need *Allow on Unreal Engine 4 (experimental)*, and should use
-D3D12. **UE4 + D3D11 is known to crash with four views** (D3D11 query error).
+D3D12. **UE4 + D3D11 can crash with four views** (D3D11 query error); two
+UE4.26 D3D11 games have since run with it, so it is worth a try.
+
+While Quad View runs on UE4 the occlusion queries are turned off as a crash
+workaround. That also turns occlusion culling off, so Unreal draws hidden
+objects in all four views. *UE4: keep occlusion culling*
+(`QuadViewUE4KeepOcclusion`, off by default) leaves the queries on: faster in
+dense scenes, but turn it off again if the game crashes.
+
+UE4 + D3D11 was first seen crashing with four views (D3D11 query error).
 Use Native Stereo there.
 
 The UE4 path uses float view math, declares four views before Unreal allocates
@@ -142,6 +151,6 @@ The settings are stored in `config.txt` like other UEVR options:
 `QuadViewExposureBias`, `QuadViewEdgeBlend`, `QuadViewShowOutline`,
 `QuadViewCompose`, `QuadViewFocusShape`, `QuadViewOffsetX`, `QuadViewOffsetY`,
 `QuadViewWideMinPixels`, `QuadViewCullSmallActors`, `QuadViewCPUParticles`,
-`QuadViewSharpFirst`, `QuadViewAllowUE4`, `QuadViewDisableVignette`,
+`QuadViewSharpFirst`, `QuadViewAllowUE4`, `QuadViewUE4KeepOcclusion`, `QuadViewDisableVignette`,
 `QuadViewDebugWideOnly`, `QuadViewDebugSharpOnly`, `QuadViewSharpen`,
 `QuadViewWideBicubic`.
