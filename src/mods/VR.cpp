@@ -7539,6 +7539,18 @@ struct QuadViewCVarOverride {
     // Looked up and not there (after the first lookup attempt).
     bool missing() const { return variable == nullptr && lookups > 0; }
 
+    // The cvar's current value, without overriding it (panel readouts).
+    std::optional<float> read() {
+        if (!find()) {
+            return std::nullopt;
+        }
+        try {
+            return variable->TryGetFloat();
+        } catch (...) {
+            return std::nullopt;
+        }
+    }
+
     const char* status() const {
         if (applied) return "active";
         if (variable == nullptr && lookups > 0) return "not found in this game";
@@ -7547,6 +7559,8 @@ struct QuadViewCVarOverride {
 };
 
 QuadViewCVarOverride g_quad_foliage_min_screen_size{L"foliage.MinimumScreenSize"};
+// Read only: the game's resolution scale, which shrinks all four views.
+QuadViewCVarOverride g_quad_screen_percentage{L"r.ScreenPercentage"};
 QuadViewCVarOverride g_quad_emitter_spawn_rate{L"r.EmitterSpawnRateScale"};
 // UE4.26 on D3D11 hit a fatal DXGI_ERROR_INVALID_CALL reading an occlusion
 // query (D3D11Query.cpp) on its first four-view frame.
@@ -10813,6 +10827,20 @@ void VR::draw_quad_view_ui() {
         for (uint32_t i = 0; i < uevr::quadview::VIEW_COUNT; ++i) {
             const auto& r = layout.views[i];
             ImGui::Text("  %s %s: %ux%u at (%u, %u)", i % 2 == 0 ? "Left" : "Right", i < 2 ? "wide " : "sharp", r.w, r.h, r.x, r.y);
+        }
+
+        // The game's resolution scale shrinks all four views before Unreal
+        // renders them; an upscaler (DLSS, FSR, TSR) can lower it further.
+        if (const auto percentage = g_quad_screen_percentage.read(); percentage && *percentage > 0.0f) {
+            const float k = *percentage / 100.0f;
+            const auto wide_w = (uint32_t)(layout.views[0].w * k);
+            const auto wide_h = (uint32_t)(layout.views[0].h * k);
+            const auto sharp_w = (uint32_t)(layout.views[2].w * k);
+            const auto sharp_h = (uint32_t)(layout.views[2].h * k);
+            ImGui::Text("Rendered at r.ScreenPercentage %.0f%%: wide %ux%u, sharp %ux%u", *percentage, wide_w, wide_h, sharp_w, sharp_h);
+            if (wide_w < 400) {
+                ImGui::TextColored(warn, "The wide views render under 400 pixels across: the periphery will look blocky.\nRaise the wide Resolution or the game's resolution scale (and check DLSS/FSR modes).");
+            }
         }
     }
 
