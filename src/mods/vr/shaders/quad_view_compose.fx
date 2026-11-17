@@ -1,18 +1,11 @@
-// Quad View compositor: draws the atlas views back into a plain stereo image.
+// Quad View compositor (D3D12): draws the atlas views back into a plain
+// stereo image.
 //
 // Used through DirectXTK's SpriteBatch, so the root signature and the vertex
-// shader match SpriteBatch's own. Each sprite carries its parameters in the
-// vertex data SpriteBatch already has:
-//   color       = destination rectangle in pixels (x0, y0, x1, y1)
-//   layerDepth  = (shape * 2 + outline + blend * 2) / 8, blend share 0..0.5,
-//                 shape 0 rectangle, 1 rounded rectangle, 2 ellipse
-// SV_Position gives the pixel being shaded, so the shader knows where it sits
-// inside its sprite without an extra constant buffer.
-//
-// The wide sprites are drawn as opaque rectangles; the sharp sprites are cut
-// to the chosen shape and fade to transparent over the outer `blend` share
-// (the pipeline uses non-premultiplied alpha blending). Same math as
-// uevr::quadview::shape_alpha.
+// shader match SpriteBatch's own. The pixel logic (sprite settings packing,
+// bicubic wide views, sharpening, shapes, edge blend, outline) is shared with
+// the D3D11 compose in quad_view_compose.hlsli. The pipeline uses
+// non-premultiplied alpha blending; the wide sprites are opaque.
 
 #define SpriteStaticRS \
 "RootFlags ( ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |" \
@@ -36,6 +29,11 @@ cbuffer Parameters : register(b0)
     row_major float4x4 MatrixTransform;
 };
 
+// D3D12 has no brightness slider yet (the D3D11 compose does).
+#define QV_BRIGHTNESS 1.0
+
+#include "quad_view_compose.hlsli"
+
 [RootSignature(SpriteStaticRS)]
 void SpriteVertexShader(inout float4 color    : COLOR0,
     inout float2 texCoord : TEXCOORD0,
@@ -49,50 +47,5 @@ float4 SpritePixelShader(float4 color    : COLOR0,
     float2 texCoord : TEXCOORD0,
     float4 position : SV_Position) : SV_Target0
 {
-    float4 tex = Texture.Sample(TextureSampler, texCoord);
-
-    // Same packing as uevr::quadview::pack_sprite_settings.
-    float v = position.z * 8.0;
-    float code = floor(v + 0.0005);
-    float blend = saturate(v - code) * 0.5;
-    bool outline = fmod(code, 2.0) >= 0.5;
-    int shape = (int)(code * 0.5 + 0.25);
-
-    if (shape == 0 && blend <= 0.0 && !outline) {
-        return float4(tex.rgb, 1.0); // wide views: plain opaque copy
-    }
-
-    // Distance to the shape's edge as a share of the sprite size (0 on the
-    // edge, 0.5 in the centre), same as uevr::quadview::shape_edge_share.
-    float2 size = max(color.zw - color.xy, float2(1.0, 1.0));
-    float2 uv = (position.xy - color.xy) / size;
-    float2 p = abs(uv - 0.5) * 2.0;
-    float edge_share;
-    if (shape == 2) {
-        edge_share = (1.0 - length(p)) * 0.5;
-    } else if (shape == 1) {
-        const float r = 0.5;
-        float2 q = p - (1.0 - r);
-        edge_share = -(length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r) * 0.5;
-    } else {
-        edge_share = min(1.0 - p.x, 1.0 - p.y) * 0.5;
-    }
-
-    if (edge_share <= 0.0) {
-        return float4(tex.rgb, 0.0); // outside the shape (rounded corners, ellipse)
-    }
-
-    // Outline: about 3 pixels inside the edge.
-    float edge_px = (shape == 0) ? min(min(uv.x, 1.0 - uv.x) * size.x, min(uv.y, 1.0 - uv.y) * size.y)
-                                 : edge_share * min(size.x, size.y);
-    if (outline && edge_px < 3.0) {
-        return float4(0.1, 1.0, 0.3, 1.0);
-    }
-
-    float alpha = 1.0;
-    if (blend > 0.0) {
-        alpha = smoothstep(0.0, 1.0, saturate(edge_share / blend));
-    }
-
-    return float4(tex.rgb, alpha);
+    return qv_compose(color, texCoord, position);
 }

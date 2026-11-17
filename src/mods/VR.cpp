@@ -10721,10 +10721,6 @@ void VR::draw_quad_view_ui() {
         }
     }
 
-    if (g_framework != nullptr && !g_framework->is_dx12()) {
-        ImGui::TextDisabled("D3D11 game: the sharp area is a blended rectangle; the rounded and ellipse shapes need D3D12.");
-    }
-
     if (ImGui::TreeNodeEx("Sharp views (where you look)", ImGuiTreeNodeFlags_DefaultOpen)) {
         m_quad_view_focus_width->draw("Width (share of view)");
         m_quad_view_focus_height->draw("Height (share of view)");
@@ -10782,17 +10778,18 @@ void VR::draw_quad_view_ui() {
         m_quad_view_compose->draw("Compose into one image (enables edge blend)");
         if (m_quad_view_compose->value()) {
             m_quad_view_edge_blend->draw("Edge blend");
+            m_quad_view_focus_shape->draw("Sharp area shape");
+            m_quad_view_sharpen->draw("Sharpen the sharp views (0 = off)");
+            m_quad_view_wide_bicubic->draw("Smooth wide-view upscaling (bicubic)");
+            ImGui::TextDisabled("Bicubic upscaling hides the low resolution of the periphery better than plain\nfiltering, so the wide views can usually run at a lower resolution.");
             m_quad_view_show_outline->draw("Show sharp area outline");
             m_quad_view_debug_wide_only->draw("Debug: show wide views only (see the periphery quality)");
-        }
-        if (m_quad_view_compose->value() && g_framework != nullptr && g_framework->is_dx12()) {
-            m_quad_view_focus_shape->draw("Sharp area shape");
         }
         m_quad_view_debug_sharp_only->draw("Debug: submit the sharp layer only (wide layer off)");
         m_quad_view_disable_vignette->draw("Remove vignette (otherwise each sharp view gets its own dark edges)");
         m_quad_view_shared_exposure->draw("Share exposure across the four views (freezes auto-exposure)");
-        if (m_quad_view_shared_exposure->value()) {
-            m_quad_view_exposure_bias->draw("Brightness (composed image)");
+        if (m_quad_view_shared_exposure->value() && g_framework != nullptr && !g_framework->is_dx12()) {
+            m_quad_view_exposure_bias->draw("Brightness (composed image, D3D11)");
         }
         m_quad_view_sharp_first->draw("Render sharp views first (experimental)");
         ImGui::TextDisabled("For games whose hair (Groom) only draws in the first two views. The left sharp view then drives\nexposure and shadows, which may look different. Takes effect on the next frame.");
@@ -10812,6 +10809,14 @@ void VR::draw_quad_view_ui() {
             const auto& r = layout.views[i];
             ImGui::Text("  %s %s: %ux%u at (%u, %u)", i % 2 == 0 ? "Left" : "Right", i < 2 ? "wide " : "sharp", r.w, r.h, r.x, r.y);
         }
+    }
+
+    // Pixel share is not frame time: four views cost more CPU than two. Show
+    // the real frame rate so settings can be compared with Native Stereo.
+    const float fps = ImGui::GetIO().Framerate;
+    if (fps > 0.0f) {
+        ImGui::Text("Game frame rate: %.0f fps (%.1f ms)", fps, 1000.0f / fps);
+        ImGui::TextDisabled("Compare with Native Stereo at the same spot. Console 'stat unit' splits the time into\ngame thread, render thread and GPU: a busy game or render thread means Quad View's\nextra views cost more CPU than the pixels they save.");
     }
 
     ImGui::Unindent();

@@ -16,6 +16,9 @@ namespace pixel_shader1 {
 #include "shaders/ps.hpp"
 }
 
+// Quad View compose pixel shader (FXC, ps_5_0), shared logic with D3D12.
+#include "shaders/Compiled/quad_view_compose_d3d11_SpritePixelShader.inc"
+
 #include <utility/ScopeGuard.hpp>
 #include <utility/Logging.hpp>
 #include <utility/PacingRecorder.hpp>
@@ -44,34 +47,6 @@ namespace pixel_shader1 {
 
 namespace vrmod {
 namespace {
-// Quad View compose: the sharp view is pasted over the wide image with its edges
-// fading into it (the same edge share the D3D12 compose shader uses). The
-// destination rectangle travels in the sprite's vertex colour, so SV_Position
-// says where inside the sharp window this pixel sits.
-constexpr const char* k_quad_compose_ps_hlsl = R"(
-Texture2D Texture : register(t0);
-SamplerState TextureSampler : register(s0);
-
-cbuffer QuadComposeConstants : register(b0)
-{
-    float EdgeBlend;
-    float Brightness;
-    float2 Padding;
-};
-
-float4 SpritePixelShader(float4 color : COLOR0, float2 texCoord : TEXCOORD0, float4 position : SV_Position) : SV_Target
-{
-    float4 tex = Texture.Sample(TextureSampler, texCoord);
-    float2 size = max(color.zw - color.xy, float2(1.0, 1.0));
-    float2 p = saturate((position.xy - color.xy) / size);
-    float2 d = min(p, 1.0 - p);
-    float edge = min(d.x, d.y);
-
-    float alpha = (EdgeBlend <= 0.0) ? 1.0 : saturate(edge / EdgeBlend);
-    return float4(tex.rgb * Brightness, alpha);
-}
-)";
-
 constexpr const char* k_ui_invert_ps_hlsl = R"(
 Texture2D Texture : register(t0);
 SamplerState TextureSampler : register(s0);
@@ -546,44 +521,13 @@ bool D3D11Component::ensure_quad_compose_resources() {
         return false;
     }
 
-    ComPtr<ID3DBlob> ps_blob{};
-    ComPtr<ID3DBlob> error_blob{};
-
-    const UINT flags =
-#if defined(_DEBUG)
-        D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION | D3DCOMPILE_ENABLE_STRICTNESS;
-#else
-        D3DCOMPILE_OPTIMIZATION_LEVEL3 | D3DCOMPILE_ENABLE_STRICTNESS;
-#endif
-
-    const auto hr = D3DCompile(
-        k_quad_compose_ps_hlsl,
-        strlen(k_quad_compose_ps_hlsl),
-        "UEVR_QuadCompose",
-        nullptr,
-        nullptr,
-        "SpritePixelShader",
-        "ps_4_0",
-        flags,
-        0,
-        &ps_blob,
-        &error_blob);
-
-    if (FAILED(hr)) {
-        if (error_blob != nullptr) {
-            SPDLOG_ERROR("[QuadView][D3D11] edge blend: shader compile failed: {}", (const char*)error_blob->GetBufferPointer());
-        } else {
-            SPDLOG_ERROR("[QuadView][D3D11] edge blend: shader compile failed (hr=0x{:08x})", (uint32_t)hr);
-        }
+    if (FAILED(device->CreatePixelShader(quad_view_compose_d3d11_SpritePixelShader,
+            sizeof(quad_view_compose_d3d11_SpritePixelShader), nullptr, &m_quad_compose_ps))) {
+        SPDLOG_ERROR("[QuadView][D3D11] compose: failed to create the pixel shader (needs feature level 11)");
         return false;
     }
 
-    if (FAILED(device->CreatePixelShader(ps_blob->GetBufferPointer(), ps_blob->GetBufferSize(), nullptr, &m_quad_compose_ps))) {
-        SPDLOG_ERROR("[QuadView][D3D11] edge blend: failed to create pixel shader");
-        return false;
-    }
-
-    SPDLOG_INFO("[QuadView][D3D11] edge blend shader ready");
+    SPDLOG_INFO("[QuadView][D3D11] compose shader ready");
     return true;
 }
 
@@ -715,8 +659,6 @@ bool D3D11Component::compose_quad_atlas(ID3D11Texture2D* destination) {
     const auto eye_w = (double)desc.Width / 2.0;
     const auto eye_h = (double)desc.Height;
 
-    const auto outline = vr->is_quad_view_outline_enabled();
-
     if (sharp_only) {
         // The compose target is reused every frame; without this the previous
         // frame's wide views stay visible around the sharp window.
@@ -724,108 +666,7 @@ bool D3D11Component::compose_quad_atlas(ID3D11Texture2D* destination) {
         context->ClearRenderTargetView(m_quad_compose_rtv.Get(), clear);
     }
 
-    if (outline && m_quad_outline_srv == nullptr) {
-        // 1x1 white so the outline is four tinted rectangles through the batch.
-        D3D11_TEXTURE2D_DESC white_desc{};
-        white_desc.Width = 1;
-        white_desc.Height = 1;
-        white_desc.MipLevels = 1;
-        white_desc.ArraySize = 1;
-        white_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        white_desc.SampleDesc.Count = 1;
-        white_desc.Usage = D3D11_USAGE_IMMUTABLE;
-        white_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-
-        const uint32_t white = 0xffffffff;
-        const D3D11_SUBRESOURCE_DATA white_data{&white, sizeof(white), 0};
-
-        ComPtr<ID3D11Texture2D> white_tex{};
-        if (SUCCEEDED(device->CreateTexture2D(&white_desc, &white_data, &white_tex))) {
-            if (SUCCEEDED(device->CreateShaderResourceView(white_tex.Get(), nullptr, &m_quad_outline_srv))) {
-                m_quad_outline_tex = white_tex;
-            }
-        }
-    }
-
     ID3D11ShaderResourceView* source_srv = m_engine_tex_ref;
-
-    const auto draw_atlas_rect = [&](const uevr::quadview::Rect& r, double x, double y, double w, double h, bool pack_rect_color = false) {
-        RECT dest{};
-        dest.left = (LONG)std::lround(x);
-        dest.top = (LONG)std::lround(y);
-        dest.right = (LONG)std::lround(x + w);
-        dest.bottom = (LONG)std::lround(y + h);
-
-        RECT src{};
-        src.left = (LONG)std::lround(r.x * scale_x);
-        src.top = (LONG)std::lround(r.y * scale_y);
-        src.right = (LONG)std::lround((r.x + r.w) * scale_x);
-        src.bottom = (LONG)std::lround((r.y + r.h) * scale_y);
-
-        if (dest.right <= dest.left || dest.bottom <= dest.top ||
-            src.right <= src.left || src.bottom <= src.top) {
-            return;
-        }
-
-        const auto color = pack_rect_color
-            ? DirectX::XMVectorSet((float)dest.left, (float)dest.top, (float)dest.right, (float)dest.bottom)
-            : DirectX::Colors::White;
-
-        m_backbuffer_batch->Draw(source_srv, dest, &src, color);
-    };
-
-    const auto draw_outline_rect = [&](double x, double y, double w, double h) {
-        if (m_quad_outline_srv == nullptr || w < 1.0 || h < 1.0) {
-            return;
-        }
-
-        RECT dest{};
-        dest.left = (LONG)std::lround(x);
-        dest.top = (LONG)std::lround(y);
-        dest.right = (LONG)std::lround(x + w);
-        dest.bottom = (LONG)std::lround(y + h);
-
-        const RECT src{0, 0, 1, 1};
-        m_backbuffer_batch->Draw(m_quad_outline_srv.Get(), dest, &src, DirectX::XMVectorSet(0.1f, 1.0f, 0.3f, 1.0f));
-    };
-
-    const auto focus_rect = [&](uint32_t eye) {
-        const uevr::quadview::Tangents rendered{
-            (double)xr->rendered_tangents[eye][0], (double)xr->rendered_tangents[eye][1],
-            (double)xr->rendered_tangents[eye][2], (double)xr->rendered_tangents[eye][3]};
-        return uevr::quadview::focus_dest_rect(rendered, snapshot.focus[eye], (double)eye * eye_w, eye_w, eye_h);
-    };
-
-    // The sharp window, with the destination rectangle in the sprite colour so
-    // the edge-blend shader can fade it into the wide image by pixel position.
-    const auto draw_sharp_rect = [&](const uevr::quadview::Rect& r, const uevr::quadview::RectF& d, bool pack_rect_color) {
-        RECT dest{};
-        dest.left = (LONG)std::lround(d.x);
-        dest.top = (LONG)std::lround(d.y);
-        dest.right = (LONG)std::lround(d.x + d.w);
-        dest.bottom = (LONG)std::lround(d.y + d.h);
-
-        RECT src{};
-        src.left = (LONG)std::lround(r.x * scale_x);
-        src.top = (LONG)std::lround(r.y * scale_y);
-        src.right = (LONG)std::lround((r.x + r.w) * scale_x);
-        src.bottom = (LONG)std::lround((r.y + r.h) * scale_y);
-
-        if (dest.right <= dest.left || dest.bottom <= dest.top ||
-            src.right <= src.left || src.bottom <= src.top) {
-            return;
-        }
-
-        const auto color = pack_rect_color
-            ? DirectX::XMVectorSet((float)dest.left, (float)dest.top, (float)dest.right, (float)dest.bottom)
-            : DirectX::Colors::White;
-
-        m_backbuffer_batch->Draw(source_srv, dest, &src, color);
-    };
-
-    const auto edge_blend = (float)std::clamp(vr->get_quad_view_edge_blend(), 0.0f, 0.5f);
-    const float brightness = (float)std::clamp(vr->get_quad_view_exposure_bias(), 0.1f, 4.0f);
-    const bool custom_ready = ensure_quad_compose_resources();
 
     // The compose target is written through an sRGB view when the swapchain is
     // sRGB, so the atlas must be sampled through an sRGB view too: decode then
@@ -859,89 +700,94 @@ bool D3D11Component::compose_quad_atlas(ID3D11Texture2D* destination) {
         }
     }
 
-    // Wide views: one opaque copy stretched over each eye.
-    if (!sharp_only) {
-        if (custom_ready) {
-            const float constants[4]{0.0f, brightness, 0.0f, 0.0f};
-            context->UpdateSubresource(m_quad_compose_cb.Get(), 0, nullptr, constants, 0, 0);
+    // One sprite: an atlas rect drawn over a destination rect. With the shared
+    // compose shader the destination rect travels in the colour and the sprite
+    // settings in the layer depth (see quad_view_compose.hlsli).
+    const auto draw = [&](const uevr::quadview::Rect& r, double x, double y, double w, double h,
+                          const uevr::quadview::SpriteSettings* settings) {
+        RECT dest{};
+        dest.left = (LONG)std::lround(x);
+        dest.top = (LONG)std::lround(y);
+        dest.right = (LONG)std::lround(x + w);
+        dest.bottom = (LONG)std::lround(y + h);
 
+        RECT src{};
+        src.left = (LONG)std::lround(r.x * scale_x);
+        src.top = (LONG)std::lround(r.y * scale_y);
+        src.right = (LONG)std::lround((r.x + r.w) * scale_x);
+        src.bottom = (LONG)std::lround((r.y + r.h) * scale_y);
+
+        if (dest.right <= dest.left || dest.bottom <= dest.top ||
+            src.right <= src.left || src.bottom <= src.top) {
+            return;
+        }
+
+        if (settings == nullptr) {
+            m_backbuffer_batch->Draw(source_srv, dest, &src, DirectX::Colors::White);
+            return;
+        }
+
+        const auto color = DirectX::XMVectorSet((float)dest.left, (float)dest.top, (float)dest.right, (float)dest.bottom);
+        m_backbuffer_batch->Draw(source_srv, dest, &src, color, 0.0f, DirectX::XMFLOAT2{0.0f, 0.0f},
+            DirectX::DX11::SpriteEffects_None, uevr::quadview::pack_sprite_settings(*settings));
+    };
+
+    const auto focus_rect = [&](uint32_t eye) {
+        const uevr::quadview::Tangents rendered{
+            (double)xr->rendered_tangents[eye][0], (double)xr->rendered_tangents[eye][1],
+            (double)xr->rendered_tangents[eye][2], (double)xr->rendered_tangents[eye][3]};
+        return uevr::quadview::focus_dest_rect(rendered, snapshot.focus[eye], (double)eye * eye_w, eye_w, eye_h);
+    };
+
+    const bool custom_ready = ensure_quad_compose_resources();
+    const float brightness = (float)std::clamp(vr->get_quad_view_exposure_bias(), 0.1f, 4.0f);
+
+    uevr::quadview::SpriteSettings wide{};
+    wide.wide = vr->is_quad_view_wide_bicubic();
+
+    uevr::quadview::SpriteSettings sharp{};
+    sharp.shape = vr->get_quad_view_focus_shape();
+    sharp.outline = vr->is_quad_view_outline_enabled();
+    sharp.blend = (float)std::clamp(vr->get_quad_view_edge_blend(), 0.0f, 0.5f);
+    sharp.sharpen = vr->get_quad_view_sharpen();
+
+    // Wide views opaque first, then the sharp windows alpha-blended on top.
+    // Without the compose shader (it failed to load) both are plain copies.
+    const auto begin = [&](ID3D11BlendState* blend) {
+        if (custom_ready) {
             auto* const ctx = context.Get();
             auto* const ps = m_quad_compose_ps.Get();
             auto* const cb = m_quad_compose_cb.Get();
-
-            m_backbuffer_batch->Begin(DirectX::DX11::SpriteSortMode_Deferred, m_quad_compose_blend.Get(),
+            m_backbuffer_batch->Begin(DirectX::DX11::SpriteSortMode_Deferred, blend,
                 nullptr, nullptr, nullptr, [ctx, ps, cb] {
                     ctx->PSSetShader(ps, nullptr, 0);
                     ctx->PSSetConstantBuffers(0, 1, &cb);
                 });
-            m_backbuffer_batch->SetViewport(viewport);
-
-            for (uint32_t eye = 0; eye < 2; ++eye) {
-                draw_atlas_rect(layout.views[eye], (double)eye * eye_w, 0.0, eye_w, eye_h, true);
-            }
-
-            m_backbuffer_batch->End();
         } else {
             m_backbuffer_batch->Begin(DirectX::DX11::SpriteSortMode_Deferred, m_quad_compose_blend.Get());
-            m_backbuffer_batch->SetViewport(viewport);
-
-            for (uint32_t eye = 0; eye < 2; ++eye) {
-                draw_atlas_rect(layout.views[eye], (double)eye * eye_w, 0.0, eye_w, eye_h);
-            }
-
-            m_backbuffer_batch->End();
         }
-    }
-
-    // Sharp windows: faded into the wide image when edge blending is on.
-    if (!wide_only) {
-        if (custom_ready) {
-            const float constants[4]{edge_blend, brightness, 0.0f, 0.0f};
-            context->UpdateSubresource(m_quad_compose_cb.Get(), 0, nullptr, constants, 0, 0);
-
-            auto* const ctx = context.Get();
-            auto* const ps = m_quad_compose_ps.Get();
-            auto* const cb = m_quad_compose_cb.Get();
-
-            m_backbuffer_batch->Begin(DirectX::DX11::SpriteSortMode_Deferred,
-                edge_blend > 0.001f ? m_quad_compose_alpha_blend.Get() : m_quad_compose_blend.Get(),
-                nullptr, nullptr, nullptr, [ctx, ps, cb] {
-                    ctx->PSSetShader(ps, nullptr, 0);
-                    ctx->PSSetConstantBuffers(0, 1, &cb);
-                });
-            m_backbuffer_batch->SetViewport(viewport);
-
-            for (uint32_t eye = 0; eye < 2; ++eye) {
-                draw_sharp_rect(layout.views[eye + 2], focus_rect(eye), true);
-            }
-
-            m_backbuffer_batch->End();
-        } else {
-            m_backbuffer_batch->Begin(DirectX::DX11::SpriteSortMode_Deferred, m_quad_compose_blend.Get());
-            m_backbuffer_batch->SetViewport(viewport);
-
-            for (uint32_t eye = 0; eye < 2; ++eye) {
-                draw_sharp_rect(layout.views[eye + 2], focus_rect(eye), false);
-            }
-
-            m_backbuffer_batch->End();
-        }
-    }
-
-    if (outline && !wide_only) {
-        m_backbuffer_batch->Begin(DirectX::DX11::SpriteSortMode_Deferred, m_quad_compose_blend.Get());
         m_backbuffer_batch->SetViewport(viewport);
+    };
 
+    if (custom_ready) {
+        const float constants[4]{brightness, 0.0f, 0.0f, 0.0f};
+        context->UpdateSubresource(m_quad_compose_cb.Get(), 0, nullptr, constants, 0, 0);
+    }
+
+    if (!sharp_only) {
+        begin(m_quad_compose_blend.Get());
+        for (uint32_t eye = 0; eye < 2; ++eye) {
+            draw(layout.views[eye], (double)eye * eye_w, 0.0, eye_w, eye_h, custom_ready ? &wide : nullptr);
+        }
+        m_backbuffer_batch->End();
+    }
+
+    if (!wide_only) {
+        begin(custom_ready ? m_quad_compose_alpha_blend.Get() : m_quad_compose_blend.Get());
         for (uint32_t eye = 0; eye < 2; ++eye) {
             const auto d = focus_rect(eye);
-            // Same 3-pixel green border as the D3D12 compose shader.
-            constexpr double thickness = 3.0;
-            draw_outline_rect(d.x, d.y, d.w, thickness);
-            draw_outline_rect(d.x, d.y + d.h - thickness, d.w, thickness);
-            draw_outline_rect(d.x, d.y, thickness, d.h);
-            draw_outline_rect(d.x + d.w - thickness, d.y, thickness, d.h);
+            draw(layout.views[eye + 2], d.x, d.y, d.w, d.h, custom_ready ? &sharp : nullptr);
         }
-
         m_backbuffer_batch->End();
     }
 

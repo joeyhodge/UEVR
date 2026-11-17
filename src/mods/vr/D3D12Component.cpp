@@ -4516,6 +4516,8 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                         frame.edge_blend = vr->get_quad_view_edge_blend();
                         frame.shape = vr->get_quad_view_focus_shape();
                         frame.outline = vr->is_quad_view_outline_enabled();
+                        frame.sharpen = vr->get_quad_view_sharpen();
+                        frame.wide_bicubic = vr->is_quad_view_wide_bicubic();
                         frame.wide_only = vr->is_quad_view_wide_only_debug();
                         frame.sharp_only = vr->is_quad_view_sharp_only_debug();
                         for (uint32_t eye = 0; eye < 2; ++eye) {

@@ -38,6 +38,7 @@ call :CompileShader alpha_luminance_sprite_ps ps SpritePixelShader
 call :CompileShader alpha_luminance_sprite_ps vs SpriteVertexShader
 call :CompileShader quad_view_compose ps SpritePixelShader
 call :CompileShader quad_view_compose vs SpriteVertexShader
+call :CompileShaderFXC quad_view_compose_d3d11 ps SpritePixelShader
 
 if %error% == 0 (
     echo Shaders compiled ok
@@ -122,6 +123,20 @@ if not defined PCFXC (
 
 set FXCOPTS=/nologo /WX /Ges /Zi /Zpc /Qstrip_reflect /Qstrip_debug
 set CMD=%PCFXC% "!SOURCEFILE!" !FXCOPTS! /T%2_5_0 /E%3 "/Fh%CompileShadersOutput%\%1_%3.inc" "/Fd%CompileShadersOutput%\%1_%3.pdb" /Vn%1_%3
+echo.
+echo !CMD!
+!CMD! || set error=1
+exit /b
+
+:CompileShaderFXC
+rem D3D11 shaders need DXBC, so these always use FXC (shader model 5.0).
+if not defined PCFXC (
+    echo FXC is required for %1.fx
+    set error=1
+    exit /b
+)
+set FXCOPTS=/nologo /WX /Ges /Zi /Zpc /Qstrip_reflect /Qstrip_debug
+set CMD=%PCFXC% "%1.fx" !FXCOPTS! /T%2_5_0 /E%3 "/Fh%CompileShadersOutput%\%1_%3.inc" "/Fd%CompileShadersOutput%\%1_%3.pdb" /Vn%1_%3
 echo.
 echo !CMD!
 !CMD! || set error=1

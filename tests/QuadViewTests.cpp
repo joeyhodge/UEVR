@@ -310,9 +310,23 @@ static void shape_tests() {
                     "sprite settings survive the layer depth packing");
                 const float packed = q::pack_sprite_settings((S)shape, outline, blend);
                 expect(packed >= 0.0f && packed < 1.0f, "packed settings stay in the depth range");
+
+                for (float sharpen : {0.0f, 0.3f, 0.7f, 1.0f}) {
+                    const auto s = q::unpack_sprite_settings(q::pack_sprite_settings(
+                        q::SpriteSettings{(S)shape, outline, blend, false, sharpen}));
+                    expect((int)s.shape == shape && s.outline == outline && !s.wide &&
+                        std::abs(s.blend - blend) < 0.002f && std::abs(s.sharpen - sharpen) < 0.01f,
+                        "sharpening survives the packing with the other settings");
+                    const float p = q::pack_sprite_settings(q::SpriteSettings{(S)shape, outline, blend, false, sharpen});
+                    expect(p >= 0.0f && p < 1.0f, "packed settings with sharpening stay in the depth range");
+                }
             }
         }
     }
+
+    const auto wide = q::unpack_sprite_settings(q::pack_sprite_settings(q::SpriteSettings{S::ELLIPSE, true, 0.3f, true, 0.5f}));
+    expect(wide.wide && !wide.outline && wide.shape == S::RECTANGLE && wide.blend == 0.0f,
+        "a wide sprite ignores the sharp-area shape, outline and blend");
 }
 
 int main() {

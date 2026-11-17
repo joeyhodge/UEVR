@@ -518,26 +518,46 @@ inline double shape_alpha(FocusShape shape, double u, double v, double blend) {
     return t * t * (3 - 2 * t);
 }
 
-// The compositor passes each sprite's settings through SpriteBatch's layer
-// depth: (shape * 2 + outline + blend * 2) / 8, blend in 0..0.5.
-inline float pack_sprite_settings(FocusShape shape, bool outline, float blend) {
-    const float b = std::clamp(blend, 0.0f, 0.5f) * 2.0f * 0.998f;
-    const int code = (int)shape * 2 + (outline ? 1 : 0);
-    return ((float)code + b) / 8.0f;
-}
+// The compositors pass each sprite's settings through SpriteBatch's layer
+// depth (see quad_view_compose.hlsli):
+//   (code + blend * 2) / 128, code = base + 8 * sharpen level
+//   base 0..5 = shape * 2 + outline (sharp sprite), 6 = wide sprite (bicubic)
+//   sharpen level 0..10 in tenths, blend share 0..0.5
+inline constexpr float SPRITE_PACK_SCALE = 128.0f;
+inline constexpr int SPRITE_WIDE_BASE = 6;
 
 struct SpriteSettings {
-    FocusShape shape;
-    bool outline;
-    float blend;
+    FocusShape shape{FocusShape::RECTANGLE};
+    bool outline{false};
+    float blend{0.0f};
+    bool wide{false};     // wide view: bicubic upscale, opaque
+    float sharpen{0.0f};  // 0..1, in steps of 0.1
 };
 
+inline float pack_sprite_settings(const SpriteSettings& s) {
+    const int level = (int)std::lround(std::clamp(s.sharpen, 0.0f, 1.0f) * 10.0f);
+    const int base = s.wide ? SPRITE_WIDE_BASE : (int)s.shape * 2 + (s.outline ? 1 : 0);
+    const float b = s.wide ? 0.0f : std::clamp(s.blend, 0.0f, 0.5f) * 2.0f * 0.998f;
+    return ((float)(base + 8 * level) + b) / SPRITE_PACK_SCALE;
+}
+
+inline float pack_sprite_settings(FocusShape shape, bool outline, float blend) {
+    return pack_sprite_settings(SpriteSettings{shape, outline, blend, false, 0.0f});
+}
+
 inline SpriteSettings unpack_sprite_settings(float packed) {
-    const float v = packed * 8.0f;
+    const float v = packed * SPRITE_PACK_SCALE;
     const float code = std::floor(v + 0.0005f);
-    const float b = std::clamp(v - code, 0.0f, 1.0f) * 0.5f;
+    SpriteSettings s{};
+    s.blend = std::clamp(v - code, 0.0f, 1.0f) * 0.5f;
     const int c = (int)code;
-    return SpriteSettings{(FocusShape)(c / 2), (c % 2) != 0, b};
+    const int level = c / 8;
+    const int base = c % 8;
+    s.sharpen = (float)level * 0.1f;
+    s.wide = base == SPRITE_WIDE_BASE;
+    s.outline = !s.wide && (base % 2) != 0;
+    s.shape = s.wide ? FocusShape::RECTANGLE : (FocusShape)(base / 2);
+    return s;
 }
 
 // Share of the eye's pixels the four views cost, versus plain stereo at

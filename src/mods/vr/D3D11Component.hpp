@@ -211,8 +211,6 @@ private:
     ComPtr<ID3D11BlendState> m_quad_compose_blend{};
     ComPtr<ID3D11Texture2D> m_quad_compose_tex{};
     ComPtr<ID3D11RenderTargetView> m_quad_compose_rtv{};
-    ComPtr<ID3D11Texture2D> m_quad_outline_tex{};
-    ComPtr<ID3D11ShaderResourceView> m_quad_outline_srv{};
     ComPtr<ID3D11PixelShader> m_quad_compose_ps{};
     ComPtr<ID3D11Buffer> m_quad_compose_cb{};
     ComPtr<ID3D11BlendState> m_quad_compose_alpha_blend{};

@@ -548,6 +548,8 @@ public:
     bool is_quad_view_compositor_enabled() const { return m_quad_view_compose->value(); }
     bool is_quad_view_wide_only_debug() const { return m_quad_view_debug_wide_only->value(); }
     bool is_quad_view_sharp_only_debug() const { return m_quad_view_debug_sharp_only->value(); }
+    float get_quad_view_sharpen() const { return std::clamp(m_quad_view_sharpen->value(), 0.0f, 1.0f); }
+    bool is_quad_view_wide_bicubic() const { return m_quad_view_wide_bicubic->value(); }
 
     // Where the four views sit in the render target. Hooks (render side) and
     // the OpenXR submit both call this, so they always agree on the rects.
@@ -1696,6 +1698,10 @@ private:
     const ModSlider::Ptr m_quad_view_offset_x{ ModSlider::create(generate_name("QuadViewOffsetX"), -0.25f, 0.25f, 0.0f) };
     const ModSlider::Ptr m_quad_view_offset_y{ ModSlider::create(generate_name("QuadViewOffsetY"), -0.25f, 0.25f, 0.0f) };
     const ModCombo::Ptr m_quad_view_focus_shape{ ModCombo::create(generate_name("QuadViewFocusShape"), s_quad_view_focus_shape_names, 1) };
+    // Contrast-adaptive sharpening of the sharp views in the compose (0 = off).
+    const ModSlider::Ptr m_quad_view_sharpen{ ModSlider::create(generate_name("QuadViewSharpen"), 0.0f, 1.0f, 0.5f) };
+    // Bicubic (Catmull-Rom) upscaling of the wide views in the compose; off = bilinear.
+    const ModToggle::Ptr m_quad_view_wide_bicubic{ ModToggle::create(generate_name("QuadViewWideBicubic"), true) };
     // 0 = off. Objects smaller than this many pixels in the wide views are culled
     // (foliage and instanced meshes, through foliage.MinimumScreenSize).
     const ModSlider::Ptr m_quad_view_wide_min_pixels{ ModSlider::create(generate_name("QuadViewWideMinPixels"), 0.0f, 8.0f, 0.0f) };
@@ -2056,6 +2062,8 @@ public:
             *m_quad_view_cull_actors,
             *m_quad_view_allow_ue4,
             *m_quad_view_sharp_first,
+            *m_quad_view_sharpen,
+            *m_quad_view_wide_bicubic,
             *m_native_stereo_fix_preserve_secondary_pass,
             *m_native_stereo_fix_texture_array_submit,
             *m_native_stereo_fix_async_openxr_wait,
