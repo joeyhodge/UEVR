@@ -18,6 +18,9 @@ With the default settings (wide 0.2, focus 0.25, density 1.0) the atlas costs
 about 11% of the pixels of native stereo at 3840×3552. The panel prints the
 atlas size and its share of native stereo pixels for the current headset.
 
+The engine-specific workarounds and the issues that needed them are recorded
+in [Quad View on UE4 and UE5](quad-view-ue4-ue5.md).
+
 ## Requirements
 
 - **OpenXR.** OpenVR receives only the wide views, so Quad View is not useful
@@ -35,8 +38,15 @@ atlas size and its share of native stereo pixels for the current headset.
 
 UE4 games need *Allow on Unreal Engine 4 (experimental)*, and should use
 D3D12. **UE4 + D3D11 is known to crash with four views** (D3D11 query error).
-Use Native Stereo there. The UE4 path also waits for occlusion queries to
-settle before it starts the four views.
+Use Native Stereo there.
+
+The UE4 path uses float view math, declares four views before Unreal allocates
+`LocalPlayer::ViewStates`, gives each view its own stereo pass (1–4) and view
+state, and maps views by call order because UE4's `GetViewPassForIndex` cannot
+tell the four views apart. While Quad View runs on UE4, occlusion queries and
+GPU stats are turned off and the four views start only after 60 settled frames.
+These workarounds, and the reason each one exists, are in
+[Quad View on UE4 and UE5](quad-view-ue4-ue5.md).
 
 ## How to enable
 
@@ -90,7 +100,7 @@ movements, and the window recentres after 500 ms without valid gaze.
 | Show sharp area outline | off | Green outline for tuning the window. |
 | Remove vignette | on | Sets `r.Tonemapper.Quality` while Quad View runs so each sharp view does not get its own dark edges. |
 | Share exposure across the four views | on | Freezes `r.DefaultFeature.AutoExposure` and `r.EyeAdaptationQuality` so the wide and sharp views keep the same brightness. |
-| Brightness | 1.0 | Multiplier for the composed image; only shown when exposure is shared. |
+| Brightness | 1.0 | Multiplier for the D3D11 composed image; only shown when exposure is shared. |
 | Render sharp views first | off | Renders the sharp pair as views 0/1. Workaround for games whose Groom hair only draws in the first two views. |
 
 ### Debug
@@ -104,7 +114,9 @@ movements, and the window recentres after 500 ms without valid gaze.
 
 - The feature is experimental and is not enabled by default.
 - OpenVR shows only the wide views.
-- UE4 support is opt-in; UE4 + D3D11 crashes with four views.
+- UE4 support is opt-in and should use D3D12; UE4 + D3D11 crashes with four
+  views. See [Quad View on UE4 and UE5](quad-view-ue4-ue5.md) for the full
+  engine-specific list.
 - D3D11 composes with a rectangular sharp area; the rounded and ellipse shapes
   need D3D12.
 - Foveated rendering plugins (for example Cheeky Foveated DLSS) fight Quad View
