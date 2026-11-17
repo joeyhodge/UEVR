@@ -522,8 +522,12 @@ public:
         uevr::quadview::Settings s{};
         s.enabled = is_using_quad_view();
         s.wide_scale = m_quad_view_wide_scale->value();
-        s.focus_width = m_quad_view_focus_width->value();
-        s.focus_height = m_quad_view_focus_height->value();
+        // Without eye tracking the window cannot follow the eyes, so it uses its
+        // own, larger size. Decided once per session (when the runtime starts),
+        // not per frame, so a blink never resizes the views.
+        const bool gaze = is_quad_view_gaze_available();
+        s.focus_width = gaze ? m_quad_view_focus_width->value() : m_quad_view_fixed_width->value();
+        s.focus_height = gaze ? m_quad_view_focus_height->value() : m_quad_view_fixed_height->value();
         s.focus_density = m_quad_view_focus_density->value();
         s.dead_zone = m_quad_view_follow_gaze->value() ? m_quad_view_gaze_dead_zone->value() : 0.0;
         s.gaze_smoothing_ms = m_quad_view_follow_gaze->value() ? m_quad_view_gaze_smoothing_ms->value() : 0.0;
@@ -534,6 +538,8 @@ public:
 
     void draw_quad_view_ui();
     bool is_quad_view_gaze_enabled() const { return m_quad_view_follow_gaze->value(); }
+    // Follow gaze is on and the runtime started with eye tracking.
+    bool is_quad_view_gaze_available() const;
     bool is_quad_view_ue4_allowed() const { return m_quad_view_allow_ue4->value(); }
     bool is_quad_view_ue4_ready() const { return m_quad_view_ue4_settle_frames >= QUAD_VIEW_UE4_SETTLE_FRAMES; }
     bool is_quad_view_sharp_first() const { return m_quad_view_sharp_first->value(); }
@@ -1679,6 +1685,10 @@ private:
     const ModSlider::Ptr m_quad_view_wide_scale{ ModSlider::create(generate_name("QuadViewWideScale"), 0.1f, 1.0f, 0.2f) };
     const ModSlider::Ptr m_quad_view_focus_width{ ModSlider::create(generate_name("QuadViewFocusWidth"), 0.1f, 0.8f, 0.25f) };
     const ModSlider::Ptr m_quad_view_focus_height{ ModSlider::create(generate_name("QuadViewFocusHeight"), 0.1f, 0.8f, 0.25f) };
+    // Sharp window size without eye tracking (fixed foveation): it has to cover
+    // where the eyes may look, so it is larger (Quad-Views-Foveated uses 0.5 x 0.45).
+    const ModSlider::Ptr m_quad_view_fixed_width{ ModSlider::create(generate_name("QuadViewFixedWidth"), 0.1f, 0.8f, 0.5f) };
+    const ModSlider::Ptr m_quad_view_fixed_height{ ModSlider::create(generate_name("QuadViewFixedHeight"), 0.1f, 0.8f, 0.45f) };
     const ModSlider::Ptr m_quad_view_focus_density{ ModSlider::create(generate_name("QuadViewFocusDensity"), 0.5f, 2.0f, 1.0f) };
     const ModToggle::Ptr m_quad_view_follow_gaze{ ModToggle::create(generate_name("QuadViewFollowGaze"), true) };
     const ModSlider::Ptr m_quad_view_gaze_dead_zone{ ModSlider::create(generate_name("QuadViewGazeDeadZone"), 0.0f, 0.15f, 0.0f) };
@@ -2064,6 +2074,8 @@ public:
             *m_quad_view_sharp_first,
             *m_quad_view_sharpen,
             *m_quad_view_wide_bicubic,
+            *m_quad_view_fixed_width,
+            *m_quad_view_fixed_height,
             *m_native_stereo_fix_preserve_secondary_pass,
             *m_native_stereo_fix_texture_array_submit,
             *m_native_stereo_fix_async_openxr_wait,

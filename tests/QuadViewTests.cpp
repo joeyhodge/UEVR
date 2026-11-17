@@ -129,6 +129,22 @@ static void gaze_tests() {
     expect(g.seeded, "a short gaze dropout keeps the window");
     g.update(c, d, 0u, 0.0, 15.0, 2300, 500);
     expect(!g.seeded && near(g.cx[0], 0.0) && near(g.cy[1], 0.0), "a long dropout recentres");
+
+    // Losing the gaze holds the window, then eases it to the centre instead of
+    // jumping there.
+    q::GazeFilter ease{};
+    const double far_x[2]{0.30, 0.32}, far_y[2]{0.20, 0.20};
+    ease.update(far_x, far_y, 3u, 0.0, 0.0, 1000, 500);
+    ease.update(far_x, far_y, 0u, 0.0, 0.0, 1400, 500);
+    expect(near(ease.cx[0], 0.30), "a short loss (a blink) holds the window where it was");
+    ease.update(far_x, far_y, 0u, 0.0, 0.0, 1575, 500); // half way through the ease
+    expect(ease.cx[0] > 0.05 && ease.cx[0] < 0.25 && ease.easing, "after the hold the window eases toward the centre");
+    const double back_x[2]{-0.10, -0.08}, back_y[2]{0.0, 0.0};
+    ease.update(back_x, back_y, 3u, 0.0, 0.0, 1580, 500);
+    expect(near(ease.cx[0], -0.10) && !ease.easing, "gaze returning mid-ease starts again where the eyes are");
+    ease.update(back_x, back_y, 0u, 0.0, 0.0, 2081, 500);
+    ease.update(back_x, back_y, 0u, 0.0, 0.0, 2300, 500);
+    expect(!ease.seeded && near(ease.cx[0], 0.0), "the ease ends exactly at the centre");
 }
 
 static void frame_tests() {

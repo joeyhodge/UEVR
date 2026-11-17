@@ -200,19 +200,25 @@ inline double median3(double a, double b, double c) {
 // user's smoothing time, which averages the remaining tracker noise over a few
 // milliseconds. The window follows the filtered gaze directly, so it matches
 // what the eyes are looking at; an optional dead zone holds it for small
-// movements. Without gaze for return_ms, it recentres. Centres are in each
-// eye's tangent space; (0, 0) is straight ahead.
+// movements. When the gaze is lost (a blink, a tracking dropout) the window
+// holds its place for return_ms, then eases back to the centre over EASE_MS
+// instead of jumping there. Centres are in each eye's tangent space; (0, 0)
+// is straight ahead.
 struct GazeFilter {
     // Once the filtered gaze has settled this close to the median raw sample,
     // stop following; the window stays centred on the fixation.
     static constexpr double SETTLED = 0.004;
+    // After the hold, the window slides to the centre over this long.
+    static constexpr uint64_t EASE_MS = 150;
 
     double cx[2]{0, 0}, cy[2]{0, 0}; // window centre
     double fx[2]{0, 0}, fy[2]{0, 0}; // filtered gaze target
     double rx[2][3]{}, ry[2][3]{};    // last three raw samples per eye
     uint32_t ri[2]{0, 0};             // next raw-sample slot
+    double lx[2]{0, 0}, ly[2]{0, 0}; // window centre when the gaze was lost
     bool seeded{false};
     bool following{false};
+    bool easing{false};               // sliding back to the centre after a long loss
     uint64_t last_valid_ms{0};
     uint64_t last_update_ms{0};
 
@@ -222,6 +228,13 @@ struct GazeFilter {
     void update(const double gx[2], const double gy[2], uint32_t valid_mask, double dead_zone,
                 double smoothing_ms, uint64_t now_ms, uint64_t return_ms) {
         if ((valid_mask & 3u) == 3u) {
+            if (easing) {
+                // The gaze came back after a long loss: start again from where
+                // the eyes are now rather than from the stale filter state.
+                seeded = false;
+                easing = false;
+            }
+
             last_valid_ms = now_ms;
 
             const uint64_t dt_ms = last_update_ms != 0 && now_ms > last_update_ms
@@ -288,15 +301,34 @@ struct GazeFilter {
                 }
             }
         } else if (seeded && now_ms - last_valid_ms > return_ms) {
-            for (int i = 0; i < 2; ++i) {
-                cx[i] = 0;
-                cy[i] = 0;
-                fx[i] = 0;
-                fy[i] = 0;
-                ri[i] = 0;
+            // Held long enough: ease from where the window was to the centre.
+            if (!easing) {
+                for (int i = 0; i < 2; ++i) {
+                    lx[i] = cx[i];
+                    ly[i] = cy[i];
+                }
+                easing = true;
+                following = false;
             }
-            seeded = false;
-            following = false;
+
+            const double t = std::clamp(double(now_ms - last_valid_ms - return_ms) / double(EASE_MS), 0.0, 1.0);
+            const double keep = 1.0 - t * t * (3.0 - 2.0 * t);
+            for (int i = 0; i < 2; ++i) {
+                cx[i] = lx[i] * keep;
+                cy[i] = ly[i] * keep;
+            }
+
+            if (t >= 1.0) {
+                for (int i = 0; i < 2; ++i) {
+                    cx[i] = 0;
+                    cy[i] = 0;
+                    fx[i] = 0;
+                    fy[i] = 0;
+                    ri[i] = 0;
+                }
+                seeded = false;
+                easing = false;
+            }
         }
     }
 };

@@ -10722,8 +10722,13 @@ void VR::draw_quad_view_ui() {
     }
 
     if (ImGui::TreeNodeEx("Sharp views (where you look)", ImGuiTreeNodeFlags_DefaultOpen)) {
-        m_quad_view_focus_width->draw("Width (share of view)");
-        m_quad_view_focus_height->draw("Height (share of view)");
+        m_quad_view_focus_width->draw("Width with eye tracking (share of view)");
+        m_quad_view_focus_height->draw("Height with eye tracking (share of view)");
+        m_quad_view_fixed_width->draw("Width without eye tracking");
+        m_quad_view_fixed_height->draw("Height without eye tracking");
+        ImGui::TextDisabled(is_quad_view_gaze_available()
+            ? "Using the eye-tracking size: the window follows your gaze."
+            : "Using the size without eye tracking: the window stays put, so it is larger.");
         m_quad_view_focus_density->draw("Pixel density");
         m_quad_view_offset_x->draw("Offset left/right (+ = right)");
         m_quad_view_offset_y->draw("Offset down/up (+ = up)");
@@ -10820,6 +10825,11 @@ void VR::draw_quad_view_ui() {
     }
 
     ImGui::Unindent();
+}
+
+bool VR::is_quad_view_gaze_available() const {
+    return m_quad_view_follow_gaze->value() && has_quad_view_openxr() && m_openxr->eye_gaze_supported &&
+        m_openxr->eye_gaze_space != XR_NULL_HANDLE;
 }
 
 bool VR::has_quad_view_openxr() const {
