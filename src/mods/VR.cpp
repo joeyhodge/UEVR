@@ -10722,8 +10722,12 @@ void VR::draw_quad_view_ui() {
     if (get_runtime() != nullptr && !get_runtime()->is_openxr()) {
         ImGui::TextColored(warn, "Quad View needs the OpenXR runtime; OpenVR only shows the wide views.");
     }
-    if (is_native_stereo_fix_enabled() || is_sceneview_compatibility_enabled() || is_splitscreen_compatibility_enabled()) {
-        ImGui::TextColored(warn, "Quad View is off while Native Stereo Fix, SceneView or Splitscreen compatibility is on.");
+    if (is_sceneview_compatibility_enabled() || is_splitscreen_compatibility_enabled()) {
+        ImGui::TextColored(warn, "Quad View is off while SceneView or Splitscreen compatibility is on.");
+    }
+    if (m_native_stereo_fix->value()) {
+        // The fix only runs with the Native Stereo method, so it is inactive here.
+        ImGui::TextColored(warn, "Native Stereo Fix is checked but only runs with Native Stereo. Games that need it\nmay not render correctly with Quad View.");
     }
     if (m_fake_stereo_hook != nullptr && !m_fake_stereo_hook->has_double_precision()) {
         m_quad_view_allow_ue4->draw("Allow on Unreal Engine 4 (experimental, may crash)");

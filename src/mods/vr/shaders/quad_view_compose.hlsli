@@ -157,7 +157,9 @@ float4 qv_compose(float4 color, float2 texCoord, float4 position) {
             alpha = smoothstep(0.0, 1.0, saturate(edge_share / sp.blend));
         }
 
-        if (edge_share <= 0.0) {
+        if (sp.shape == 0 && sp.blend <= 0.0 && !sp.outline) {
+            result = float4(rgb, 1.0); // plain rectangle (wide view without bicubic): opaque to the edge
+        } else if (edge_share <= 0.0) {
             result = float4(rgb, 0.0); // outside the shape (rounded corners, ellipse)
         } else if (sp.outline && edge_px < 3.0) {
             result = float4(0.1, 1.0, 0.3, 1.0);
