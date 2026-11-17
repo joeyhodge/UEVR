@@ -270,6 +270,20 @@ static void offset_tests() {
     expect(near(w.right, 1.0), "an offset window still stays inside the view");
 }
 
+static void call_order_tests() {
+    q::CallOrder o{};
+    // A stereo-pass call before the viewport draw (epoch 1) ...
+    expect(o.next(1, 1) == 0, "an early call is counted in its own epoch");
+    // ... must not shift the views of the draw (epoch 2).
+    for (int32_t i = 0; i < 4; ++i) {
+        expect(o.next(1 + (i % 2), 2) == i, "views are numbered by call order within the draw");
+    }
+    expect(o.next(1, 2) == -1, "calls after the fourth view are not views (HUD projections)");
+    expect(o.next(0, 3) == -1, "pass 0 (full/mono) is never a view");
+    expect(o.next(5, 3) == -1, "a pass beyond four is never a view");
+    expect(o.next(2, 3) == 0, "the next draw starts again at view 0");
+}
+
 static void culling_tests() {
     // 10 cm object, 50 m away, 1000 px per tangent unit -> 2 px
     expect(near(q::wide_pixel_size(5.0, 5000.0, 1000.0), 2.0), "pixel size of a small far object");
@@ -316,6 +330,7 @@ int main() {
         shape_tests();
         offset_tests();
         order_tests();
+        call_order_tests();
         culling_tests();
     } catch (const std::exception& e) {
         std::cerr << "FAILED: " << e.what() << '\n';

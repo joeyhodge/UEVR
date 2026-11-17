@@ -817,8 +817,13 @@ public:
         return m_has_double_precision;
     }
 
-    // True when this frame renders four views (Quad View): UE5 only, native
-    // stereo path, and none of the compatibility modes that own the view list.
+    bool has_game_viewport_client_draw_hook() const {
+        return m_has_game_viewport_client_draw_hook;
+    }
+
+    // True when this frame renders four views (Quad View): the native stereo
+    // path, UE5 or UE4 with the opt-in once its settle gate is open, and none
+    // of the compatibility modes that own the view list.
     static bool is_quad_view_active();
 
     // Wide-view LOD: 0 = learning the init-options layout, 1 = active,

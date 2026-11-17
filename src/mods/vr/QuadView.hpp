@@ -69,6 +69,34 @@ inline Slot slot_for_view(int32_t view_index, bool index_starts_from_one, bool s
     return Slot{i % 2u, sharp_first ? !second_pair : second_pair};
 }
 
+// UE4 never hands the stereo hooks a view index: the value is the stereo pass
+// (0 = full/mono, then 1..4 as GetViewPassForIndex hands them out), and the
+// engine's own pass for views 1..3 cannot tell them apart. What does hold is
+// order: within one viewport draw the engine builds the views in request order
+// (0, 1, 2, 3), calling each hook once per view. So the position of a call
+// within the draw is the view index. Each hook keeps its own counter, since
+// they are separate call sequences. The epoch changes at the start of every
+// viewport draw, so a stereo-pass call made earlier in the frame (outside the
+// draw) cannot shift the views; calls beyond the fourth are not views.
+struct CallOrder {
+    uint64_t epoch{~0ull};
+    uint32_t calls{0};
+
+    int32_t next(int32_t pass, uint64_t current_epoch) {
+        if (pass < 1 || pass > (int32_t)VIEW_COUNT) {
+            return -1;
+        }
+        if (epoch != current_epoch) {
+            epoch = current_epoch;
+            calls = 0;
+        }
+        if (calls >= VIEW_COUNT) {
+            return -1;
+        }
+        return (int32_t)calls++;
+    }
+};
+
 // Only the first view drives the frame (shadows, exposure, history setup);
 // every other view is a secondary of it.
 inline bool is_primary_view(int32_t view_index) { return view_index == 0; }

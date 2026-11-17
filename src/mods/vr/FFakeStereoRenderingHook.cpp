@@ -172,6 +172,11 @@ FFakeStereoRenderingHook* g_hook = nullptr;
 // the four views it is building.
 thread_local int32_t t_quad_view_next_slot = -1;
 
+// Quad View: bumped at the start of every UGameViewportClient::Draw (game
+// thread). The UE4 view mapping counts hook calls per draw, so calls made
+// earlier in the frame cannot shift the views (see quadview::CallOrder).
+static uint64_t g_quad_view_draw_epoch{0};
+
 uint32_t g_frame_count{};
 
 static_assert(static_cast<int32_t>(VR::NATIVE_STEREO) ==
@@ -21721,6 +21726,7 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
 
     g_hook->m_in_viewport_client_draw = true;
     g_hook->m_was_in_viewport_client_draw = false;
+    ++g_quad_view_draw_epoch;
     g_hook->get_render_target_manager()->set_viewport(viewport);
     if (viewport != nullptr) {
         shf_force_scene_viewport_separate_rt(*viewport, "UGameViewportClient::Draw");
@@ -30982,44 +30988,24 @@ bool FFakeStereoRenderingHook::is_stereo_enabled(FFakeStereoRendering* stereo) {
     return result;
 }
 
-// The stereo hooks get the view index on UE5 (INDEX_NONE = -1 for a mono
-// pass) but the stereo pass on UE4 (0 = full/mono, then 1, 2, 3, 4 for the
-// views in order, as GetViewPassForIndex below hands them out). This turns
-// either into the view index, -1 when it is not one of the four views.
-static int32_t quad_view_index_from(int32_t raw) {
-    if (g_hook == nullptr || g_hook->has_double_precision()) {
+// The view index (0..3) of a stereo hook call, or -1 when Quad View is not
+// running or the call is not one of the four views. UE5 hands the hooks the
+// view index (INDEX_NONE = -1 for a mono pass); UE4 hands them the stereo
+// pass, so the position of the call within the viewport draw is used instead.
+// Without a viewport draw hook the engine frame number is the epoch.
+static int32_t resolve_quad_view_index(int32_t raw, uevr::quadview::CallOrder& order) {
+    if (!FFakeStereoRenderingHook::is_quad_view_active()) {
+        return -1;
+    }
+
+    if (g_hook->has_double_precision()) {
         return raw >= 0 ? raw : -1;
     }
-    return raw >= 1 ? raw - 1 : -1;
-}
 
-// UE4 never hands the stereo hooks a view index: the value is the stereo pass,
-// and this engine's own GetViewPassForIndex answers left only for view 0 and
-// right for the other three, so the pass cannot tell the views apart at all.
-// What does hold is order: the engine builds the views of a frame in request
-// order (0,1,2,3), calling each hook once per view. So the position of the
-// call in the frame is the view index. Each hook keeps its own counter: they
-// are separate call sequences.
-struct QuadViewCallOrder {
-    uint32_t frame{0};
-    uint32_t calls{0};
-};
-
-static int32_t quad_view_index_from_ue4_pass(int32_t pass, QuadViewCallOrder& order) {
-    if (pass < 1 || pass > 4) {
-        return -1;
-    }
-
-    if (order.frame != g_frame_count) {
-        order.frame = g_frame_count;
-        order.calls = 0;
-    }
-
-    if (order.calls >= uevr::quadview::VIEW_COUNT) {
-        return -1;
-    }
-
-    return (int32_t)order.calls++;
+    const uint64_t epoch = g_hook->has_game_viewport_client_draw_hook()
+        ? g_quad_view_draw_epoch
+        : (uint64_t)g_frame_count;
+    return order.next(raw, epoch);
 }
 
 // Whether the game is configured to render four Unreal views, without the
@@ -31077,14 +31063,10 @@ void FFakeStereoRenderingHook::adjust_view_rect(FFakeStereoRendering* stereo, in
 
     static bool index_starts_from_one = true;
     const bool medium_one_based_eye_pass = medium_is_current_game();
-    // Quad View: UE5 numbers the four views 0..3. UE4 only reports the eye
-    // pass (1,2,1,2), so the call order tells the pairs apart.
-    static thread_local QuadViewCallOrder quad_rect_order{};
-    const bool quad_ready = is_quad_view_active();
-    const int32_t quad_index = quad_ready
-        ? (g_hook->has_double_precision() ? quad_view_index_from(index) : quad_view_index_from_ue4_pass(index, quad_rect_order))
-        : -1;
-    const bool quad_view = quad_ready && quad_index >= 0; // a mono pass is not a quad view
+    // Quad View: the view index 0..3, or -1 (off, or a mono pass).
+    static thread_local uevr::quadview::CallOrder quad_rect_order{};
+    const int32_t quad_index = resolve_quad_view_index(index, quad_rect_order);
+    const bool quad_view = quad_index >= 0;
 
     if (quad_view) {
         // Leave the stereo index detection untouched for when Quad View is turned off.
@@ -31185,14 +31167,10 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
     static bool index_was_ever_negative = false;
     const bool medium_one_based_eye_pass = medium_is_current_game();
     // Quad View: views 0..3 are wide L, wide R, sharp L, sharp R (or the sharp
-    // pair first, see slot_for_view). UE4 only reports the eye pass, so the
-    // call order tells the pairs apart.
-    static thread_local QuadViewCallOrder quad_offset_order{};
-    const bool quad_ready = is_quad_view_active();
-    const int32_t quad_index = quad_ready
-        ? (g_hook->has_double_precision() ? quad_view_index_from(view_index) : quad_view_index_from_ue4_pass(view_index, quad_offset_order))
-        : -1;
-    const bool quad_view = quad_ready && quad_index >= 0;
+    // pair first, see slot_for_view); -1 when off or for a mono pass.
+    static thread_local uevr::quadview::CallOrder quad_offset_order{};
+    const int32_t quad_index = resolve_quad_view_index(view_index, quad_offset_order);
+    const bool quad_view = quad_index >= 0;
     const auto quad_slot = uevr::quadview::slot_for_view(quad_index, false, VR::get()->is_quad_view_sharp_first());
     // The first view of each eye in render order samples the pose and runs
     // the once-per-eye side effects; the eye's other view reuses them.
@@ -31773,12 +31751,9 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
     static bool index_was_ever_two = false;
 
     const bool medium_one_based_projection_pass = medium_is_current_game();
-    static thread_local QuadViewCallOrder quad_projection_order{};
-    const bool quad_ready = is_quad_view_active();
-    const int32_t quad_index = quad_ready
-        ? (g_hook->has_double_precision() ? quad_view_index_from(view_index) : quad_view_index_from_ue4_pass(view_index, quad_projection_order))
-        : -1;
-    const bool quad_view = quad_ready && quad_index >= 0; // a mono pass is not a quad view
+    static thread_local uevr::quadview::CallOrder quad_projection_order{};
+    const int32_t quad_index = resolve_quad_view_index(view_index, quad_projection_order);
+    const bool quad_view = quad_index >= 0; // -1: Quad View off, or a mono pass
 
     // This is eSSP_FULL, we don't care. It will cause the view to become monoscopic if we do anything.
     // or maybe we should, this could be used for WorldToScreen.
