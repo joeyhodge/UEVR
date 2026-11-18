@@ -220,6 +220,15 @@ static void lod_offset_tests() {
     expect(o && *o == 0x288, "a real mouse position still matches");
     put_f(b, 0x30C, 1.0f); put_f(b, 0x310, -1.0f);
     expect(!q::find_lod_factor_offset(b.data(), b.size()), "two matches are refused");
+    // UE4.26 (Last Hope): a second look-alike past the end of the struct. The
+    // real field is the one with the unset cursor (-1, -1) in front of it.
+    put_i(b, 0x280, -1); put_i(b, 0x284, -1);
+    o = q::find_lod_factor_offset(b.data(), b.size());
+    expect(o && *o == 0x288, "of two matches, the one with the unset cursor wins");
+    put_i(b, 0x304, -1); put_i(b, 0x308, -1);
+    expect(!q::find_lod_factor_offset(b.data(), b.size()), "two matches with an unset cursor are still refused");
+    put_i(b, 0x304, 0); put_i(b, 0x308, 0);
+    put_i(b, 0x280, 812); put_i(b, 0x284, 455);
     put_f(b, 0x310, 0.0f);
     put_f(b, 0x28C, 5000.0f);
     expect(!q::find_lod_factor_offset(b.data(), b.size()), "an overridden far plane gives no match");

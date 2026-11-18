@@ -42,11 +42,12 @@ UE4 games need *Allow on Unreal Engine 4 (experimental)*, and should use
 D3D12. **UE4 + D3D11 can crash with four views** (D3D11 query error); two
 UE4.26 D3D11 games have since run with it, so it is worth a try.
 
-While Quad View runs on UE4 the occlusion queries are turned off as a crash
-workaround. That also turns occlusion culling off, so Unreal draws hidden
-objects in all four views. *UE4: keep occlusion culling*
-(`QuadViewUE4KeepOcclusion`, off by default) leaves the queries on: faster in
-dense scenes, but turn it off again if the game crashes.
+*UE4: keep occlusion culling* (`QuadViewUE4KeepOcclusion`, on by default)
+leaves the game's occlusion queries on. Turning them off was the first
+workaround for the query crash, but without occlusion culling Unreal draws
+hidden objects in all four views: in one UE4.26 D3D11 game the draw time went
+from 28 ms to 14 ms with culling kept, and the crash did not return. Untick it
+only if a game crashes with a D3D11 query error.
 
 UE4 + D3D11 was first seen crashing with four views (D3D11 query error).
 Use Native Stereo there.

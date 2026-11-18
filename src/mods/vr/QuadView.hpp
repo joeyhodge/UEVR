@@ -414,14 +414,30 @@ inline bool lod_candidate_at(const uint8_t* p, size_t size, size_t o) {
     return cursor_ok && std::isfinite(lod) && lod >= 0.01f && lod <= 100.0f && far_plane == -1.0f;
 }
 
+// The cursor is (-1, -1) whenever the view has no mouse over it, which is the
+// normal case in VR.
+inline bool lod_cursor_unset_at(const uint8_t* p, size_t o) {
+    int32_t cx, cy;
+    std::memcpy(&cx, p + o - 8, 4);
+    std::memcpy(&cy, p + o - 4, 4);
+    return cx == -1 && cy == -1;
+}
+
+// One match wins. Several matches (the scan runs past the end of the smaller
+// UE4 struct into unrelated memory, where zeros followed by -1.0 also fit)
+// are settled only by a stricter test: exactly one of them has the unset
+// cursor in front of it. Anything else is refused rather than guessed.
 inline std::optional<size_t> find_lod_factor_offset(const uint8_t* p, size_t size, size_t begin = 0x40) {
-    std::optional<size_t> found{};
+    std::optional<size_t> loose{}, strict{};
+    uint32_t loose_count = 0, strict_count = 0;
     for (size_t o = (begin + 3) & ~size_t(3); o + 8 <= size; o += 4) {
         if (!lod_candidate_at(p, size, o)) continue;
-        if (found) return std::nullopt;  // ambiguous: refuse rather than guess
-        found = o;
+        if (loose_count++ == 0) loose = o;
+        if (lod_cursor_unset_at(p, o) && strict_count++ == 0) strict = o;
     }
-    return found;
+    if (loose_count == 1) return loose;
+    if (strict_count == 1) return strict;
+    return std::nullopt;
 }
 
 // Diagnostics: every offset in the range that looks like the LOD factor

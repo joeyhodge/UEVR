@@ -285,10 +285,10 @@ void VR::draw_quad_view_ui() {
             ImGui::TextColored(warn, "UE4 with D3D11 can crash with four views (D3D11 query error). If it does, use Native Stereo.");
         }
         if (m_quad_view_allow_ue4->value()) {
-            m_quad_view_ue4_keep_occlusion->draw("UE4: keep occlusion culling (faster, may crash)");
+            m_quad_view_ue4_keep_occlusion->draw("UE4: keep occlusion culling (recommended)");
             ImGui::TextDisabled(m_quad_view_ue4_keep_occlusion->value()
-                ? "Occlusion queries stay on: hidden objects are skipped. Turn this off if the game crashes."
-                : "Occlusion queries are off (crash workaround): Unreal draws hidden objects too, in all\nfour views. Try this option for more performance in dense scenes.");
+                ? "Occlusion queries stay on: hidden objects are skipped. Turn this off only if the game\ncrashes with a D3D11 query error."
+                : "Occlusion queries are off (crash workaround): Unreal draws hidden objects too, in all\nfour views, which can double the draw time.");
         }
         if (!m_quad_view_allow_ue4->value()) {
             ImGui::TextColored(warn, "Unreal Engine 4 game: Quad View is off, this game renders plain stereo.");

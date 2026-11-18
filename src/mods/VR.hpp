@@ -1727,9 +1727,11 @@ private:
     static constexpr uint32_t QUAD_VIEW_UE4_SETTLE_FRAMES = 60;
     uint32_t m_quad_view_ue4_settle_frames{0};
     const ModToggle::Ptr m_quad_view_allow_ue4{ ModToggle::create(generate_name("QuadViewAllowUE4"), false) };
-    // UE4: leave the game's occlusion queries on (Quad View turns them off by
-    // default as a crash workaround, which also turns occlusion culling off).
-    const ModToggle::Ptr m_quad_view_ue4_keep_occlusion{ ModToggle::create(generate_name("QuadViewUE4KeepOcclusion"), false) };
+    // UE4: leave the game's occlusion queries (and so its occlusion culling)
+    // on. Turning them off was the first workaround for a D3D11 query crash,
+    // but it roughly doubled the draw time in testing and the crash did not
+    // come back with them on, so it is now only a fallback: untick to get it.
+    const ModToggle::Ptr m_quad_view_ue4_keep_occlusion{ ModToggle::create(generate_name("QuadViewUE4KeepOcclusion"), true) };
     const ModToggle::Ptr m_quad_view_cull_actors{ ModToggle::create(generate_name("QuadViewCullSmallActors"), false) };
     const ModSlider::Ptr m_quad_view_cpu_particles{ ModSlider::create(generate_name("QuadViewCPUParticles"), 0.1f, 1.0f, 1.0f) };
     const ModToggle::Ptr m_native_stereo_fix_preserve_secondary_pass{ ModToggle::create(generate_name("NativeStereoFixPreserveSecondaryPass"), true) };
