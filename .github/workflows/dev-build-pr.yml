@@ -5,7 +5,25 @@ permissions:
 env:
   BUILD_TYPE: Release
 jobs:
+  fork-check:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout without private submodules
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+        with:
+          fetch-depth: 2
+          submodules: false
+          persist-credentials: false
+
+      - name: Check patch whitespace
+        run: git diff --check --no-ext-diff HEAD^1 HEAD --
+
+      - name: Report build scope
+        run: echo 'The full Release build uses the private UESDK and must run on a trusted ref.' >> "$GITHUB_STEP_SUMMARY"
+
   dev-release:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: windows-2022
     strategy:
       matrix:
@@ -16,6 +34,7 @@ jobs:
         with:
           token: ${{ secrets.PAT_TOKEN }}
           submodules: recursive
+          persist-credentials: false
 
       - name: Configure CMake
         run: cmake -S ${{github.workspace}} -B ${{github.workspace}}/build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DUEVR_BUILD_COMPATIBILITY_TESTS=ON
