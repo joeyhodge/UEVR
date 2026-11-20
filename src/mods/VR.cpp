@@ -3057,12 +3057,21 @@ std::optional<std::string> VR::initialize_openxr() {
                     spdlog::info("[VR] Found OpenXR extension: {}", extension_property.extensionName);
                 }
 
-                const std::unordered_set<std::string> wanted_extensions {
+                std::unordered_set<std::string> wanted_extensions {
                     XR_KHR_COMPOSITION_LAYER_DEPTH_EXTENSION_NAME,
                     XR_KHR_COMPOSITION_LAYER_CYLINDER_EXTENSION_NAME,
                     uevr::steam_frame::extension
                     // To be seen if we need more!
                 };
+
+                // Quad View: ask for eye tracking only when it will be used, so
+                // every other mode starts OpenXR exactly as before. (Settings are
+                // loaded before this runs; switching to Quad View needs a restart.)
+                if (m_rendering_method->value() == RenderingMethod::QUAD_VIEW && m_quad_view_follow_gaze->value()) {
+                    wanted_extensions.insert(XR_EXT_EYE_GAZE_INTERACTION_EXTENSION_NAME);
+                } else {
+                    spdlog::info("[QuadView] Eye gaze extension not requested (Quad View with gaze is off)");
+                }
 
                 for (const auto& extension_property : extension_properties) {
                     if (wanted_extensions.contains(extension_property.extensionName)) {
@@ -3226,7 +3235,13 @@ std::optional<std::string> VR::initialize_openxr() {
     spdlog::info("[VR] Getting OpenXR system properties");
 
     XrSystemProperties system_properties{XR_TYPE_SYSTEM_PROPERTIES};
+    XrSystemEyeGazeInteractionPropertiesEXT eye_gaze_properties{XR_TYPE_SYSTEM_EYE_GAZE_INTERACTION_PROPERTIES_EXT};
+    if (m_openxr->enabled_extensions.contains(XR_EXT_EYE_GAZE_INTERACTION_EXTENSION_NAME)) {
+        system_properties.next = &eye_gaze_properties;
+    }
     result = xrGetSystemProperties(m_openxr->instance, m_openxr->system, &system_properties);
+    m_openxr->eye_gaze_supported = result == XR_SUCCESS && eye_gaze_properties.supportsEyeGazeInteraction == XR_TRUE;
+    spdlog::info("[QuadView] Eye gaze interaction supported: {}", m_openxr->eye_gaze_supported);
 
     if (result != XR_SUCCESS) {
         m_openxr->error = "Could not get system properties: " + m_openxr->get_result_string(result);
@@ -4823,6 +4838,8 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     const bool hitch_diagnostics_enabled = m_enable_hitch_diagnostics->value();
 
     m_cvar_manager->on_pre_engine_tick(engine, delta);
+
+    update_quad_view_culling(engine, letterbox_runtime);
     if (!hitch_diagnostics_enabled) {
         if (m_hitch_diagnostics_enabled_last_frame) {
             stop_hitch_snapshot_writer();
@@ -5228,7 +5245,7 @@ void VR::update_subnautica2_native_water_compatibility(sdk::UGameEngine* engine)
         g_framework->is_dx12() &&
         is_hmd_active() &&
         m_compatibility_subnautica2_native_water->value() &&
-        m_rendering_method->value() == RenderingMethod::NATIVE_STEREO &&
+        is_native_stereo_method() &&
         !m_native_stereo_fix->value();
 
     if (!active) {
@@ -5482,7 +5499,7 @@ void VR::update_1666amsterdam_native_postprocess_compatibility(sdk::UGameEngine*
         g_framework->is_dx12() &&
         is_hmd_active() &&
         m_compatibility_1666amsterdam_native_postprocess->value() &&
-        m_rendering_method->value() == RenderingMethod::NATIVE_STEREO &&
+        is_native_stereo_method() &&
         !m_native_stereo_fix->value();
 
     if (!active) {
@@ -6079,7 +6096,7 @@ void VR::set_windrose_meta_ui_2d_state_active(
     bool force_2d,
     bool active)
 {
-    if (m_rendering_method->value() != RenderingMethod::NATIVE_STEREO) {
+    if (!is_native_stereo_method()) {
         return;
     }
 
@@ -7475,6 +7492,8 @@ void VR::update_hmd_state(bool from_view_extensions, uint32_t frame_count) {
         }
     }
 
+    update_quad_view_cvars();
+
     if (frame_count != 0 && is_using_afr() && frame_count % 2 == 0) {
         if (runtime->is_openxr()) {
             std::scoped_lock __{ m_openxr->sync_assignment_mtx };
@@ -8820,6 +8839,10 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         } else {
             m_rendering_method->draw("Rendering Method");
             m_synced_afr_method->draw("Synced Sequential Method");
+
+            if (m_rendering_method->value() == RenderingMethod::QUAD_VIEW) {
+                draw_quad_view_ui();
+            }
         }
 
         m_world_scale->draw("World Scale");

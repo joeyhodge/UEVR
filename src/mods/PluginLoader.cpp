@@ -3,6 +3,10 @@
 #include <utility/OpaqueStateRegistry.hpp>
 #include <sdk/threading/GameThreadWorker.hpp>
 #include <filesystem>
+#include <fstream>
+#include <cctype>
+#include <cstdlib>
+#include <string>
 
 #include <imgui.h>
 #include <spdlog/spdlog.h>
@@ -1788,6 +1792,33 @@ std::shared_ptr<PluginLoader>& PluginLoader::get() {
     return instance;
 }
 
+namespace {
+// Quad View (Rendering Method 3) does its own foveated rendering; foveated
+// rendering plugins (e.g. Cheeky Foveated DLSS) fight it over the views and
+// the render targets. Plugins load before the config, so read the one
+// setting straight from config.txt.
+bool quad_view_selected_in_config() try {
+    std::ifstream file{Framework::get_persistent_dir("config.txt")};
+    std::string line{};
+    while (std::getline(file, line)) {
+        if (line.rfind("VR_RenderingMethod=", 0) == 0) {
+            return std::atoi(line.c_str() + sizeof("VR_RenderingMethod=") - 1) == 3;
+        }
+    }
+    return false;
+} catch (...) {
+    return false;
+}
+
+bool is_foveated_rendering_plugin(const std::filesystem::path& path) {
+    auto name = path.stem().string();
+    for (auto& c : name) {
+        c = (char)std::tolower((unsigned char)c);
+    }
+    return name.find("foveat") != std::string::npos;
+}
+}
+
 void PluginLoader::early_init() try {
     namespace fs = std::filesystem;
 
@@ -1811,7 +1842,9 @@ void PluginLoader::early_init() try {
 
     spdlog::info("[PluginLoader] Loading plugins...");
 
-    auto load_plugins_from_dir = [this](std::filesystem::path path) {
+    const bool quad_view = quad_view_selected_in_config();
+
+    auto load_plugins_from_dir = [this, quad_view](std::filesystem::path path) {
         if (!fs::exists(path) || !fs::is_directory(path)) {
             return;
         }
@@ -1820,6 +1853,13 @@ void PluginLoader::early_init() try {
             auto&& path = entry.path();
 
             if (path.has_extension() && path.extension() == ".dll") {
+                if (quad_view && is_foveated_rendering_plugin(path)) {
+                    spdlog::warn("[PluginLoader] Skipping {}: foveated rendering plugins conflict with Quad View", path.string());
+                    m_plugin_load_errors.emplace(path.stem().string(),
+                        "Not loaded: conflicts with Quad View (switch Rendering Method and restart to use it)");
+                    continue;
+                }
+
                 auto module = LoadLibrary(path.string().c_str());
 
                 if (module == nullptr) {

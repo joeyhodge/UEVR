@@ -21,6 +21,7 @@
 
 #include "d3d12/CommandContext.hpp"
 #include "d3d12/TextureContext.hpp"
+#include "d3d12/QuadViewCompositor.hpp"
 #include "DispatchMovieOpenXR.hpp"
 #include "Stalker2NativeD3D12.hpp"
 #include "NativeOpenXRArrayPolicy.hpp"
@@ -219,6 +220,7 @@ private:
     ComPtr<ID3D12Fence> m_ue58_converted_ui_consumer_fence{};
     uint64_t m_ue58_converted_ui_consumer_fence_value{};
     d3d12::TextureContext m_game_tex{};
+    d3d12::QuadViewCompositor m_quad_compositor{}; // Quad View: atlas -> plain stereo
     // SW Zero Company renders its separate viewport target as R10 HDR, while
     // the OpenXR runtime accepts BGRA. Keep descriptors for the borrowed engine
     // source, snapshot it into an owned R10 texture, then convert to m_game_tex.

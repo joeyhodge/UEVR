@@ -369,6 +369,17 @@ add_test(NAME native-openxr-array-tests COMMAND native-openxr-array-tests "${CMA
 set_tests_properties(native-openxr-array-tests PROPERTIES TIMEOUT 30)
 """
 
+[target.quad-view-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/QuadViewTests.cpp"]
+include-directories = ["src/"]
+compile-features = ["cxx_std_23"]
+cmake-after = """
+add_test(NAME quad-view-tests COMMAND quad-view-tests)
+set_tests_properties(quad-view-tests PROPERTIES TIMEOUT 30)
+"""
+
 [target.stalker2-native-policy-tests]
 condition = "compatibility-policy-tests"
 type = "executable"

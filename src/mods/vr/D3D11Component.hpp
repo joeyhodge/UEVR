@@ -78,6 +78,9 @@ private:
         const RECT& src_rect);
 
     bool ensure_ui_invert_resources();
+    bool ensure_quad_compose_resources();
+    bool compose_quad_atlas(ID3D11Texture2D* destination);
+    void reset_quad_compose_resources();
     void render_ui_invert_to_rt(ID3D11Texture2D* render_target, TextureContext& srv, float invert_amount);
     bool ensure_daysgone_ui_key_resources();
     void render_daysgone_ui_key_to_rt(
@@ -206,6 +209,18 @@ private:
     bool m_ui_invert_ready{false};
     ComPtr<ID3D11PixelShader> m_daysgone_ui_key_ps{};
     ComPtr<ID3D11BlendState> m_daysgone_ui_key_blend{};
+    ComPtr<ID3D11BlendState> m_quad_compose_blend{};
+    ComPtr<ID3D11Texture2D> m_quad_compose_tex{};
+    ComPtr<ID3D11RenderTargetView> m_quad_compose_rtv{};
+    ComPtr<ID3D11PixelShader> m_quad_compose_ps{};
+    ComPtr<ID3D11Buffer> m_quad_compose_cb{};
+    ComPtr<ID3D11BlendState> m_quad_compose_alpha_blend{};
+    ComPtr<ID3D11ShaderResourceView> m_quad_source_srv{};
+    ID3D11Texture2D* m_quad_source_tex{};
+    bool m_quad_compose_ps_ready{false};
+    uint32_t m_quad_compose_width{};
+    uint32_t m_quad_compose_height{};
+    DXGI_FORMAT m_quad_compose_format{DXGI_FORMAT_UNKNOWN};
     bool m_daysgone_ui_key_ready{false};
 
     vr::HmdMatrix44_t m_left_eye_proj{};

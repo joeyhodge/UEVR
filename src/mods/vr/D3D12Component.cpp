@@ -30,6 +30,8 @@
 
 #include "shaders/Compiled/alpha_luminance_sprite_ps_SpritePixelShader.inc"
 #include "shaders/Compiled/alpha_luminance_sprite_ps_SpriteVertexShader.inc"
+#include "shaders/Compiled/quad_view_compose_SpritePixelShader.inc"
+#include "shaders/Compiled/quad_view_compose_SpriteVertexShader.inc"
 
 #include "d3d12/DirectXTK.hpp"
 
@@ -4497,6 +4499,81 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                             SPDLOG_INFO_ONCE("[OpenXR][native] Array copy not validated; preserving double-wide fallback");
                         }
                     }
+                    // Quad View: compose the four-view atlas into plain stereo. When
+                    // that is off or fails, the raw atlas is copied and the OpenXR
+                    // submit places the views itself (sharp views as an overlay layer).
+                    const auto try_quad_compose = [&]() -> bool {
+                        auto* const xr = vr->get_openxr_runtime();
+                        if (xr == nullptr || !FFakeStereoRenderingHook::is_quad_view_active() ||
+                            !vr->is_quad_view_compositor_enabled() || backbuffer == nullptr) {
+                            return false;
+                        }
+
+                        // The presented frame's own layout and sharp windows.
+                        const auto snapshot = vr->get_quad_view_frame_render();
+                        d3d12::QuadViewCompositor::Frame frame{};
+                        frame.layout = snapshot.layout;
+                        frame.edge_blend = vr->get_quad_view_edge_blend();
+                        frame.shape = vr->get_quad_view_focus_shape();
+                        frame.outline = vr->is_quad_view_outline_enabled();
+                        frame.sharpen = vr->get_quad_view_sharpen();
+                        frame.wide_bicubic = vr->is_quad_view_wide_bicubic();
+                        frame.brightness = vr->is_quad_view_shared_exposure_enabled() ? vr->get_quad_view_exposure_bias() : 1.0f;
+                        frame.wide_only = vr->is_quad_view_wide_only_debug();
+                        frame.sharp_only = vr->is_quad_view_sharp_only_debug();
+                        for (uint32_t eye = 0; eye < 2; ++eye) {
+                            const auto* t = xr->rendered_tangents[eye];
+                            frame.rendered[eye] = {t[0], t[1], t[2], t[3]};
+                            frame.focus[eye] = snapshot.focus[eye];
+                        }
+
+                        bool recorded = false;
+                        const auto make_batch = [this, device](DXGI_FORMAT format) -> std::unique_ptr<DirectX::DX12::SpriteBatch> {
+                            // The compose shader's root signature is SpriteBatch's
+                            // plus the compose root constants (brightness), so the
+                            // batch must be built with it instead of its own.
+                            ComPtr<ID3D12RootSignature> root_signature{};
+                            if (FAILED(device->CreateRootSignature(0, quad_view_compose_SpritePixelShader,
+                                    sizeof(quad_view_compose_SpritePixelShader), IID_PPV_ARGS(&root_signature)))) {
+                                spdlog::error("[QuadView][D3D12] Could not create the compose root signature");
+                                return nullptr;
+                            }
+                            DirectX::SpriteBatchPipelineStateDescription pd{DirectX::RenderTargetState{format, DXGI_FORMAT_UNKNOWN}};
+                            pd.customRootSignature = root_signature.Get(); // the batch keeps its own reference
+                            auto& rt = pd.blendDesc.RenderTarget[0];
+                            rt.BlendEnable = TRUE; // non-premultiplied: the sharp views fade by their alpha
+                            rt.SrcBlend = D3D12_BLEND_SRC_ALPHA;
+                            rt.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+                            rt.BlendOp = D3D12_BLEND_OP_ADD;
+                            rt.SrcBlendAlpha = D3D12_BLEND_ONE;
+                            rt.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+                            rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+                            rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+                            return setup_sprite_batch_pso(format, quad_view_compose_SpritePixelShader,
+                                quad_view_compose_SpriteVertexShader, pd);
+                        };
+                        const auto compose = [&](d3d12::CommandContext& commands, ID3D12Resource* destination) {
+                            if (!commands.ready() || destination == nullptr) { return; }
+                            recorded = m_quad_compositor.record(device, commands.cmd_list.Get(), backbuffer.Get(),
+                                scene_source_state, destination, frame, make_batch);
+                            if (recorded) { commands.has_commands = true; }
+                        };
+
+                        // Tell the submit what the swapchain will hold before the copy queues it.
+                        xr->quad_composed.store(true, std::memory_order_release);
+                        m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE, nullptr, compose,
+                            std::nullopt, D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr);
+                        xr->quad_composed.store(recorded, std::memory_order_release);
+                        if (!recorded) {
+                            SPDLOG_WARN_ONCE("[QuadView][D3D12] Compositor unavailable; falling back to the overlay layer");
+                        }
+                        return recorded;
+                    };
+
+                    if (auto* const xr = vr->get_openxr_runtime(); xr != nullptr && !FFakeStereoRenderingHook::is_quad_view_active()) {
+                        xr->quad_composed.store(false, std::memory_order_release);
+                    }
+
                     if (!native_stereo_array_submit_active) {
                         if (stalker_exact) {
                             copy_stalker_pair();
@@ -4504,7 +4581,9 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                                    m_scene_capture_tex.texture.Get() == nullptr ||
                                    shf_using_mono_expansion ||
                                    dune_using_hmd_mono_expansion) {
-                            m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE, backbuffer.Get(), scene_source_state, nullptr);
+                            if (!try_quad_compose()) {
+                                m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE, backbuffer.Get(), scene_source_state, nullptr);
+                            }
                         } else {
                             m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE, nullptr, pre_render, std::nullopt, D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr);
                         }
@@ -5539,6 +5618,7 @@ void D3D12Component::on_reset(VR* vr) {
     m_game_ui_tex.reset();
     reset_ue58_converted_ui_textures();
     m_game_tex.reset();
+    m_quad_compositor.reset();
     m_sw_zero_company_scene_source_tex.reset();
     m_sw_zero_company_scene_snapshot_tex.reset();
     m_ue58_spectator_tex.reset();

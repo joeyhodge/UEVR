@@ -212,6 +212,10 @@ struct VRRuntime {
     // view bounds proportions - left xmin, xmax, ymin, ymax then right xmin, xmax, ymin, ymax
     // used to crop the rendered eye textures to account for projection adjustments
     float view_bounds[2][4] = {0, 1, 0, 1, 0, 1, 0, 1};
+    // The field of view each eye is actually rendered with (tangents: left,
+    // right, top, bottom), which can be wider than raw_projections when a
+    // projection override is active. Quad View composes against this.
+    float rendered_tangents[2][4] = {-1, 1, 1, -1, -1, 1, 1, -1};
 
     float last_eye_matrix_nearz = 0.01f;
     bool should_update_eye_matrices{true};

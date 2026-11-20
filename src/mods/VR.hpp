@@ -36,6 +36,7 @@
 #include "vr/GamepadRecovery.hpp"
 #include "vr/NativeOpenXRAsyncWorker.hpp"
 #include "vr/NativeOpenXRWaitOnly.hpp"
+#include "vr/QuadView.hpp"
 
 #undef max
 #include <tracy/Tracy.hpp>
@@ -51,6 +52,7 @@ public:
         NATIVE_STEREO = 0,
         SYNCHRONIZED = 1,
         ALTERNATING = 2,
+        QUAD_VIEW = 3, // native stereo with 4 views (2 wide + 2 focus), see mods/vr/QuadView.hpp
     };
 
     enum SynchronizeStage {
@@ -510,14 +512,87 @@ public:
                m_extreme_compat_mode->value() == true;
     }
 
+    // Quad View renders through the native stereo path with 4 views instead of 2.
+    bool is_native_stereo_method() const {
+        return m_rendering_method->value() == RenderingMethod::NATIVE_STEREO ||
+               m_rendering_method->value() == RenderingMethod::QUAD_VIEW;
+    }
+
+    uevr::quadview::Settings get_quad_view_settings() const {
+        uevr::quadview::Settings s{};
+        s.enabled = is_using_quad_view();
+        s.wide_scale = m_quad_view_wide_scale->value();
+        // Without eye tracking the window cannot follow the eyes, so it uses its
+        // own, larger size. Decided once per session (when the runtime starts),
+        // not per frame, so a blink never resizes the views.
+        const bool gaze = is_quad_view_gaze_available();
+        s.focus_width = gaze ? m_quad_view_focus_width->value() : m_quad_view_fixed_width->value();
+        s.focus_height = gaze ? m_quad_view_focus_height->value() : m_quad_view_fixed_height->value();
+        s.focus_density = m_quad_view_focus_density->value();
+        s.dead_zone = m_quad_view_follow_gaze->value() ? m_quad_view_gaze_dead_zone->value() : 0.0;
+        s.gaze_smoothing_ms = m_quad_view_follow_gaze->value() ? m_quad_view_gaze_smoothing_ms->value() : 0.0;
+        s.offset_x = m_quad_view_offset_x->value();
+        s.offset_y = m_quad_view_offset_y->value();
+        return s;
+    }
+
+    // Implemented in vr/QuadViewVR.cpp, with the rest of the Quad View glue.
+    void draw_quad_view_ui();
+    void update_quad_view_cvars();   // once per frame, from update_hmd_state
+    void update_quad_view_culling(sdk::UGameEngine* engine, const VRRuntime* letterbox_runtime); // once per engine tick
+    bool is_quad_view_gaze_enabled() const { return m_quad_view_follow_gaze->value(); }
+    // Follow gaze is on and the runtime started with eye tracking.
+    bool is_quad_view_gaze_available() const;
+    bool is_quad_view_ue4_allowed() const { return m_quad_view_allow_ue4->value(); }
+    bool is_quad_view_ue4_ready() const { return m_quad_view_ue4_settle_frames >= QUAD_VIEW_UE4_SETTLE_FRAMES; }
+    bool is_quad_view_sharp_first() const { return m_quad_view_sharp_first->value(); }
+    float get_quad_view_wide_lod_scale() const { return m_quad_view_wide_lod_scale->value(); }
+    bool is_quad_view_shared_exposure_enabled() const { return m_quad_view_shared_exposure->value(); }
+    float get_quad_view_exposure_bias() const { return m_quad_view_exposure_bias->value(); }
+    float get_quad_view_edge_blend() const { return m_quad_view_edge_blend->value(); }
+    uevr::quadview::FocusShape get_quad_view_focus_shape() const {
+        return (uevr::quadview::FocusShape)std::clamp(m_quad_view_focus_shape->value(), 0, 2);
+    }
+    bool is_quad_view_outline_enabled() const { return m_quad_view_show_outline->value(); }
+    bool is_quad_view_compositor_enabled() const { return m_quad_view_compose->value(); }
+    bool is_quad_view_wide_only_debug() const { return m_quad_view_debug_wide_only->value(); }
+    bool is_quad_view_sharp_only_debug() const { return m_quad_view_debug_sharp_only->value(); }
+    float get_quad_view_sharpen() const { return std::clamp(m_quad_view_sharpen->value(), 0.0f, 1.0f); }
+    bool is_quad_view_wide_bicubic() const { return m_quad_view_wide_bicubic->value(); }
+
+    // Where the four views sit in the render target, from the current settings.
+    // Rendering code should use the per-frame snapshot instead
+    // (get_quad_view_frame_game / _render); this is what the snapshot is
+    // captured from, and what the panel shows.
+    uevr::quadview::Layout get_quad_view_layout() const {
+        return uevr::quadview::make_fitted_layout(get_quad_view_settings(), get_hmd_width(), get_hmd_height());
+    }
+
+    // Quad View: the layout and sharp windows of one frame. The OpenXR runtime
+    // captures them with each pose sample. The game thread (view rects and
+    // projections) reads the frame it is building; the compose and submit read
+    // the frame they present. Both are the same snapshot for the same frame, so
+    // the sharp content cannot land offset from its window even when the render
+    // thread runs a frame behind. Without a snapshot (startup, OpenVR) the live
+    // values are used.
+    uevr::quadview::FrameSnapshot get_quad_view_frame_game() const;
+    uevr::quadview::FrameSnapshot get_quad_view_frame_render() const;
+    uevr::quadview::FrameSnapshot get_quad_view_frame_live() const;
+    bool has_quad_view_openxr() const;
+
+    bool is_using_quad_view() const {
+        return m_rendering_method->value() == RenderingMethod::QUAD_VIEW && !is_using_afr() &&
+               !is_using_2d_screen() && !is_stereo_emulation_enabled();
+    }
+
     bool is_using_native_stereo() const {
-        return m_rendering_method->value() == RenderingMethod::NATIVE_STEREO &&
+        return is_native_stereo_method() &&
                !is_using_afr();
     }
 
     bool is_using_synchronized_afr() const {
         return m_rendering_method->value() == RenderingMethod::SYNCHRONIZED ||
-               (m_extreme_compat_mode->value() && m_rendering_method->value() == RenderingMethod::NATIVE_STEREO);
+               (m_extreme_compat_mode->value() && is_native_stereo_method());
     }
 
     bool is_using_strict_synchronized_afr() const {
@@ -1369,6 +1444,7 @@ private:
         "Native Stereo",
         "Synchronized Sequential",
         "Alternating/AFR",
+        "Quad View (Experimental)",
     };
 
     static const inline std::vector<std::string> s_sync_mode_names{
@@ -1417,6 +1493,12 @@ private:
     enum DesktopMirrorMode : int32_t {
         DESKTOP_MIRROR_FULL = 0,
         DESKTOP_MIRROR_SCENE_ONLY = 1,
+    };
+
+    static const inline std::vector<std::string> s_quad_view_focus_shape_names{
+        "Rectangle",
+        "Rounded rectangle",
+        "Ellipse",
     };
 
     static const inline std::vector<std::string> s_desktop_mirror_mode_names{
@@ -1603,6 +1685,55 @@ private:
     const ModToggle::Ptr m_ghosting_fix_bootstrap_view_states{ ModToggle::create(generate_name("GhostingFixBootstrapViewStates"), false) };
     const ModToggle::Ptr m_native_stereo_fix{ ModToggle::create(generate_name("NativeStereoFix"), false) };
     const ModToggle::Ptr m_native_stereo_fix_same_pass{ ModToggle::create(generate_name("NativeStereoFixSamePass"), true) };
+
+    // Quad View (RenderingMethod::QUAD_VIEW). Shown under the Rendering Method combo when selected.
+    const ModSlider::Ptr m_quad_view_wide_scale{ ModSlider::create(generate_name("QuadViewWideScale"), 0.1f, 1.0f, 0.2f) };
+    const ModSlider::Ptr m_quad_view_focus_width{ ModSlider::create(generate_name("QuadViewFocusWidth"), 0.1f, 0.8f, 0.35f) };
+    const ModSlider::Ptr m_quad_view_focus_height{ ModSlider::create(generate_name("QuadViewFocusHeight"), 0.1f, 0.8f, 0.35f) };
+    // Sharp window size without eye tracking (fixed foveation): it has to cover
+    // where the eyes may look, so it is larger (Quad-Views-Foveated uses 0.5 x 0.45).
+    const ModSlider::Ptr m_quad_view_fixed_width{ ModSlider::create(generate_name("QuadViewFixedWidth"), 0.1f, 0.8f, 0.5f) };
+    const ModSlider::Ptr m_quad_view_fixed_height{ ModSlider::create(generate_name("QuadViewFixedHeight"), 0.1f, 0.8f, 0.45f) };
+    const ModSlider::Ptr m_quad_view_focus_density{ ModSlider::create(generate_name("QuadViewFocusDensity"), 0.5f, 2.0f, 1.0f) };
+    const ModToggle::Ptr m_quad_view_follow_gaze{ ModToggle::create(generate_name("QuadViewFollowGaze"), true) };
+    const ModSlider::Ptr m_quad_view_gaze_dead_zone{ ModSlider::create(generate_name("QuadViewGazeDeadZone"), 0.0f, 0.15f, 0.0f) };
+    // Low-pass time constant for the gaze, in milliseconds. The default is
+    // close to raw: the median of three already rejects spikes, and the eye
+    // tracker itself is tens of milliseconds late, so extra smoothing only
+    // adds lag. Raise it (a few ms) for a noisy tracker.
+    const ModSlider::Ptr m_quad_view_gaze_smoothing_ms{ ModSlider::create(generate_name("QuadViewGazeSmoothingMs"), 0.0f, 100.0f, 0.15f) };
+    const ModSlider::Ptr m_quad_view_wide_lod_scale{ ModSlider::create(generate_name("QuadViewWideLODScale"), 0.1f, 1.0f, 0.5f) };
+    const ModToggle::Ptr m_quad_view_shared_exposure{ ModToggle::create(generate_name("QuadViewSharedExposure"), true) };
+    const ModSlider::Ptr m_quad_view_exposure_bias{ ModSlider::create(generate_name("QuadViewExposureBias"), 0.5f, 2.0f, 1.0f) };
+    const ModSlider::Ptr m_quad_view_edge_blend{ ModSlider::create(generate_name("QuadViewEdgeBlend"), 0.0f, 0.5f, 0.2f) };
+    const ModToggle::Ptr m_quad_view_show_outline{ ModToggle::create(generate_name("QuadViewShowOutline"), false) };
+    const ModToggle::Ptr m_quad_view_compose{ ModToggle::create(generate_name("QuadViewCompose"), true) };
+    const ModToggle::Ptr m_quad_view_debug_wide_only{ ModToggle::create(generate_name("QuadViewDebugWideOnly"), false) };
+    const ModToggle::Ptr m_quad_view_debug_sharp_only{ ModToggle::create(generate_name("QuadViewDebugSharpOnly"), false) };
+    const ModToggle::Ptr m_quad_view_disable_vignette{ ModToggle::create(generate_name("QuadViewDisableVignette"), true) };
+    std::optional<int> m_quad_view_saved_tonemapper_quality{};
+    const ModSlider::Ptr m_quad_view_offset_x{ ModSlider::create(generate_name("QuadViewOffsetX"), -0.25f, 0.25f, 0.0f) };
+    const ModSlider::Ptr m_quad_view_offset_y{ ModSlider::create(generate_name("QuadViewOffsetY"), -0.25f, 0.25f, 0.0f) };
+    const ModCombo::Ptr m_quad_view_focus_shape{ ModCombo::create(generate_name("QuadViewFocusShape"), s_quad_view_focus_shape_names, 1) };
+    // Contrast-adaptive sharpening of the sharp views in the compose (0 = off).
+    const ModSlider::Ptr m_quad_view_sharpen{ ModSlider::create(generate_name("QuadViewSharpen"), 0.0f, 1.0f, 0.5f) };
+    // Bicubic (Catmull-Rom) upscaling of the wide views in the compose; off = bilinear.
+    const ModToggle::Ptr m_quad_view_wide_bicubic{ ModToggle::create(generate_name("QuadViewWideBicubic"), true) };
+    // 0 = off. Objects smaller than this many pixels in the wide views are culled
+    // (foliage and instanced meshes, through foliage.MinimumScreenSize).
+    const ModSlider::Ptr m_quad_view_wide_min_pixels{ ModSlider::create(generate_name("QuadViewWideMinPixels"), 0.0f, 8.0f, 0.0f) };
+    // Cascade (CPU) particle spawn rate, whole image (r.EmitterSpawnRateScale). 1 = unchanged.
+    const ModToggle::Ptr m_quad_view_sharp_first{ ModToggle::create(generate_name("QuadViewSharpFirst"), false) };
+    static constexpr uint32_t QUAD_VIEW_UE4_SETTLE_FRAMES = 60;
+    uint32_t m_quad_view_ue4_settle_frames{0};
+    const ModToggle::Ptr m_quad_view_allow_ue4{ ModToggle::create(generate_name("QuadViewAllowUE4"), false) };
+    // UE4: leave the game's occlusion queries (and so its occlusion culling)
+    // on. Turning them off was the first workaround for a D3D11 query crash,
+    // but it roughly doubled the draw time in testing and the crash did not
+    // come back with them on, so it is now only a fallback: untick to get it.
+    const ModToggle::Ptr m_quad_view_ue4_keep_occlusion{ ModToggle::create(generate_name("QuadViewUE4KeepOcclusion"), true) };
+    const ModToggle::Ptr m_quad_view_cull_actors{ ModToggle::create(generate_name("QuadViewCullSmallActors"), false) };
+    const ModSlider::Ptr m_quad_view_cpu_particles{ ModSlider::create(generate_name("QuadViewCPUParticles"), 0.1f, 1.0f, 1.0f) };
     const ModToggle::Ptr m_native_stereo_fix_preserve_secondary_pass{ ModToggle::create(generate_name("NativeStereoFixPreserveSecondaryPass"), true) };
     const ModToggle::Ptr m_native_stereo_fix_texture_array_submit{ ModToggle::create(generate_name("NativeStereoFixTextureArraySubmit"), false) };
     const ModToggle::Ptr m_native_stereo_fix_async_openxr_wait{ ModToggle::create(generate_name("NativeStereoFixAsyncOpenXRWait"), false) };
@@ -1929,6 +2060,35 @@ public:
             *m_ghosting_fix_bootstrap_view_states,
             *m_native_stereo_fix,
             *m_native_stereo_fix_same_pass,
+            *m_quad_view_wide_scale,
+            *m_quad_view_focus_width,
+            *m_quad_view_focus_height,
+            *m_quad_view_focus_density,
+            *m_quad_view_follow_gaze,
+            *m_quad_view_gaze_dead_zone,
+            *m_quad_view_gaze_smoothing_ms,
+            *m_quad_view_wide_lod_scale,
+            *m_quad_view_shared_exposure,
+            *m_quad_view_exposure_bias,
+            *m_quad_view_edge_blend,
+            *m_quad_view_show_outline,
+            *m_quad_view_compose,
+            *m_quad_view_debug_wide_only,
+            *m_quad_view_debug_sharp_only,
+            *m_quad_view_disable_vignette,
+            *m_quad_view_focus_shape,
+            *m_quad_view_offset_x,
+            *m_quad_view_offset_y,
+            *m_quad_view_wide_min_pixels,
+            *m_quad_view_cpu_particles,
+            *m_quad_view_cull_actors,
+            *m_quad_view_allow_ue4,
+            *m_quad_view_ue4_keep_occlusion,
+            *m_quad_view_sharp_first,
+            *m_quad_view_sharpen,
+            *m_quad_view_wide_bicubic,
+            *m_quad_view_fixed_width,
+            *m_quad_view_fixed_height,
             *m_native_stereo_fix_preserve_secondary_pass,
             *m_native_stereo_fix_texture_array_submit,
             *m_native_stereo_fix_async_openxr_wait,

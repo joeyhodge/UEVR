@@ -44,6 +44,7 @@
 #include <sdk/DiscoveryMemory.hpp>
 #include <sdk/GearsEDayDiscovery.hpp>
 #include <sdk/TheSinkingCity2Native.hpp>
+#include "QuadViewCulling.hpp"
 #include "UE58NativeFix.hpp"
 #include "UE59NativeFix.hpp"
 #include "UE584Development.hpp"
@@ -165,6 +166,18 @@
 //#define FFAKE_STEREO_RENDERING_LOG_ALL_CALLS
 
 FFakeStereoRenderingHook* g_hook = nullptr;
+
+// Quad View: the slot of the view whose offset was just calculated. Unreal's
+// LocalPlayer computes a view's offset/projection and then constructs its
+// FSceneView on the same thread, so the constructor hook can tell which of
+// the four views it is building.
+thread_local int32_t t_quad_view_next_slot = -1;
+
+// Quad View: bumped at the start of every UGameViewportClient::Draw (game
+// thread). The UE4 view mapping counts hook calls per draw, so calls made
+// earlier in the frame cannot shift the views (see quadview::CallOrder).
+static uint64_t g_quad_view_draw_epoch{0};
+
 uint32_t g_frame_count{};
 
 static_assert(static_cast<int32_t>(VR::NATIVE_STEREO) ==
@@ -12135,6 +12148,33 @@ bool ue425_426_read_view_state_pair(
         left != right;
 }
 
+// Quad View: the four states Unreal allocated for the four views. This engine
+// hands the same state to every pass-2 view (wide right, sharp left, sharp
+// right), so those three share one temporal history and the wide image bleeds
+// through the sharp ones. Each view gets its own state instead.
+std::array<sdk::FSceneViewStateInterface*, uevr::quadview::VIEW_COUNT> g_quad_view_states{};
+
+void publish_quad_view_states(const LegacyLocalPlayerViewStatesSnapshot& snapshot) {
+    constexpr uint32_t QUAD_VIEW_STATE_STRIDE = 0x28;
+
+    std::array<sdk::FSceneViewStateInterface*, uevr::quadview::VIEW_COUNT> states{};
+
+    for (uint32_t i = 0; i < uevr::quadview::VIEW_COUNT; ++i) {
+        if (!ue425_426_view_state_is_valid(snapshot, (int32_t)i)) {
+            continue;
+        }
+
+        uintptr_t state{};
+        const auto slot = snapshot.header.data +
+            static_cast<uintptr_t>(i) * QUAD_VIEW_STATE_STRIDE + sizeof(uintptr_t);
+        if (safe_read_value(slot, state)) {
+            states[i] = reinterpret_cast<sdk::FSceneViewStateInterface*>(state);
+        }
+    }
+
+    g_quad_view_states = states;
+}
+
 std::optional<LegacyLocalPlayerViewStatesSnapshot> resolve_ue425_426_view_states(uintptr_t localplayer) {
     constexpr uintptr_t STOCK_VIEW_STATES_OFFSET = 0xA8;
     std::array<uintptr_t, 2> candidates{};
@@ -16798,7 +16838,9 @@ void FFakeStereoRenderingHook::attempt_hook_fsceneview_constructor() {
 
     auto& vr = VR::get();
 
-    if (!vr->is_ghosting_fix_enabled() && !vr->is_splitscreen_compatibility_enabled() && !vr->is_sceneview_compatibility_enabled() && !vr->is_native_stereo_fix_enabled()) {
+    if (!vr->is_ghosting_fix_enabled() && !vr->is_splitscreen_compatibility_enabled() && !vr->is_sceneview_compatibility_enabled() && !vr->is_native_stereo_fix_enabled() &&
+        !vr->is_using_quad_view()) // Quad View sets the wide views' LOD factor here
+    {
         return;
     }
 
@@ -21689,6 +21731,7 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
 
     g_hook->m_in_viewport_client_draw = true;
     g_hook->m_was_in_viewport_client_draw = false;
+    ++g_quad_view_draw_epoch;
     g_hook->get_render_target_manager()->set_viewport(viewport);
     if (viewport != nullptr) {
         shf_force_scene_viewport_separate_rt(*viewport, "UGameViewportClient::Draw");
@@ -23560,6 +23603,65 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     };
 
     if (dune_awakening_is_current_game() && g_hook->is_dune_character_creation_active()) {
+        return g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
+    }
+
+    // Quad View: none of the compatibility paths below apply (they are
+    // excluded by is_quad_view_active), so only scale the wide views' LOD.
+    if (is_quad_view_active()) {
+        update_init_offsets();
+        const auto slot = std::exchange(t_quad_view_next_slot, -1);
+        if (slot >= 0 && init_options != nullptr && !g_hook->has_double_precision()) {
+            // UE4 gives every pass-2 view the same scene state, so the wide and
+            // sharp views share temporal history and bleed into each other.
+            // The four allocated states are handed out one per view instead,
+            // with the pass the eye actually belongs to.
+            const auto view_index = VR::get()->is_quad_view_sharp_first() ? (slot ^ 2) : slot;
+            if (view_index >= 0 && view_index < (int32_t)uevr::quadview::VIEW_COUNT) {
+                auto* const planned = g_quad_view_states[view_index];
+                if (planned != nullptr) {
+                    init_options->set_scene_state(planned);
+                    init_options->set_stereo_pass((uint32_t)(view_index % 2 == 0 ? 1 : 2));
+                }
+            }
+        }
+        static uevr::quadview::LodOffsetLatch lod_latch{};
+        constexpr size_t scan_size = 0x600;
+
+        // The LOD bias is optional: with the scale at 1.0 the init options are
+        // neither scanned nor written.
+        const bool lod_wanted = vr->get_quad_view_wide_lod_scale() < 0.999f;
+        if (!lod_wanted) {
+            s_quad_lod_status = 4;
+        }
+
+        if (lod_wanted && slot >= 0 && init_options != nullptr &&
+            is_readable_process_range(reinterpret_cast<uintptr_t>(init_options), scan_size))
+        {
+            auto* const bytes = reinterpret_cast<uint8_t*>(init_options);
+            const auto offset = lod_latch.observe(bytes, scan_size);
+            s_quad_lod_status = offset ? 1 : (lod_latch.failed ? 2 : 0);
+
+            if (offset) {
+                SPDLOG_INFO_ONCE("[QuadView] LODDistanceFactor found at init-options +0x{:x}", *offset);
+            } else if (lod_latch.failed) {
+                // Zero candidates = the layout differs; several = ambiguous.
+                size_t found[8]{};
+                const auto count = uevr::quadview::list_lod_candidates(bytes, scan_size, found, 8);
+                SPDLOG_WARN_ONCE("[QuadView] LODDistanceFactor not recognised; wide-view LOD scale is off for this game "
+                    "({} candidates: +0x{:x} +0x{:x} +0x{:x} +0x{:x})", count, found[0], found[1], found[2], found[3]);
+            }
+
+            const auto scale = std::clamp(vr->get_quad_view_wide_lod_scale(), 0.1f, 1.0f);
+
+            if (offset && slot < 2 && scale < 0.999f) {
+                float factor{};
+                std::memcpy(&factor, bytes + *offset, sizeof(factor));
+                factor /= scale; // larger factor = treated as farther = simpler LODs
+                std::memcpy(bytes + *offset, &factor, sizeof(factor));
+            }
+        }
+
         return g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
     }
 
@@ -30903,6 +31005,72 @@ bool FFakeStereoRenderingHook::is_stereo_enabled(FFakeStereoRendering* stereo) {
     return result;
 }
 
+// The view index (0..3) of a stereo hook call, or -1 when Quad View is not
+// running or the call is not one of the four views. UE5 hands the hooks the
+// view index (INDEX_NONE = -1 for a mono pass); UE4 hands them the stereo
+// pass, so the position of the call within the viewport draw is used instead.
+// Without a viewport draw hook the engine frame number is the epoch.
+static int32_t resolve_quad_view_index(int32_t raw, uevr::quadview::CallOrder& order) {
+    if (!FFakeStereoRenderingHook::is_quad_view_active()) {
+        return -1;
+    }
+
+    if (g_hook->has_double_precision()) {
+        return raw >= 0 ? raw : -1;
+    }
+
+    const uint64_t epoch = g_hook->has_game_viewport_client_draw_hook()
+        ? g_quad_view_draw_epoch
+        : (uint64_t)g_frame_count;
+    return order.next(raw, epoch);
+}
+
+// Whether the game is configured to render four Unreal views, without the
+// UE4 settle gate. Unreal sizes LocalPlayer::ViewStates once, from the count
+// GetDesiredNumberOfViews reports during PostInitProperties; that runs long
+// before the settle gate opens (and before any frame-driven state exists).
+// Declaring four views only once the gate is open leaves Unreal with two view
+// states, and the engine then renders just the first pair: wide views at low
+// resolution, or the sharp pair when sharp-first is on.
+static bool quad_view_declares_four_views() {
+    if (g_hook == nullptr || uevr::nascar::is_target()) {
+        return false;
+    }
+
+    const auto& vr = VR::get();
+
+    // UE4 goes through the same hooks with float vectors and matrices, but it
+    // is unproven (a UE4.26 game crashed on its first four-view frame), so it
+    // stays behind an explicit opt-in.
+    if (!g_hook->has_double_precision() && !vr->is_quad_view_ue4_allowed()) {
+        return false;
+    }
+
+    return vr->is_using_quad_view() &&
+        !vr->is_native_stereo_fix_enabled() &&
+        !vr->is_sceneview_compatibility_enabled() &&
+        !vr->is_splitscreen_compatibility_enabled();
+}
+
+bool FFakeStereoRenderingHook::is_quad_view_active() {
+    if (!quad_view_declares_four_views()) {
+        return false;
+    }
+
+    // The composed image and the sharp layer are OpenXR features. On OpenVR
+    // the game renders plain Native Stereo instead of a half-working atlas
+    // (the panel says so). The four view states may already be declared by
+    // then, which is harmless: only two views are requested.
+    if (const auto runtime = VR::get()->get_runtime(); runtime != nullptr && runtime->loaded && !runtime->is_openxr()) {
+        SPDLOG_WARN_ONCE("[QuadView] OpenVR runtime: Quad View is not supported, rendering Native Stereo instead");
+        return false;
+    }
+
+    // UE4 is allowed to declare its four view states early, but the four views
+    // only start once the game's own queries have been off for a while.
+    return g_hook->has_double_precision() || VR::get()->is_quad_view_ue4_ready();
+}
+
 void FFakeStereoRenderingHook::adjust_view_rect(FFakeStereoRendering* stereo, int32_t index, int* x, int* y, uint32_t* w, uint32_t* h) {
     if (uevr::nascar::is_target() && !g_hook->m_nascar_ready.load(std::memory_order_acquire)) {
         return g_hook->m_nascar_stereo.call_slot(8, stereo, index, x, y, w, h);
@@ -30921,8 +31089,14 @@ void FFakeStereoRenderingHook::adjust_view_rect(FFakeStereoRendering* stereo, in
 
     static bool index_starts_from_one = true;
     const bool medium_one_based_eye_pass = medium_is_current_game();
+    // Quad View: the view index 0..3, or -1 (off, or a mono pass).
+    static thread_local uevr::quadview::CallOrder quad_rect_order{};
+    const int32_t quad_index = resolve_quad_view_index(index, quad_rect_order);
+    const bool quad_view = quad_index >= 0;
 
-    if (!medium_one_based_eye_pass) {
+    if (quad_view) {
+        // Leave the stereo index detection untouched for when Quad View is turned off.
+    } else if (!medium_one_based_eye_pass) {
         if (index == 2) {
             index_starts_from_one = true;
         } else if (index == 0) {
@@ -30952,6 +31126,21 @@ void FFakeStereoRenderingHook::adjust_view_rect(FFakeStereoRendering* stereo, in
         *w = std::min<uint32_t>(VR::get()->get_hmd_width(), *w);
         *h = std::min<uint32_t>(VR::get()->get_hmd_height(), *h);
         --g_hook->m_skip_next_adjust_view_rect_count;
+        return;
+    }
+
+    if (quad_view) {
+        // The layout of the frame being built; the compose reads the same
+        // frame's snapshot when it presents it.
+        const auto layout = VR::get()->get_quad_view_frame_game().layout;
+        const auto slot = uevr::quadview::slot_for_view(quad_index, false, VR::get()->is_quad_view_sharp_first());
+        const auto& r = layout.views[slot.index()];
+        *x = (int)r.x;
+        *y = (int)r.y;
+        *w = r.w;
+        *h = r.h;
+        SPDLOG_INFO_ONCE("[QuadView] AdjustViewRect: atlas {}x{}, wide {}x{}, sharp {}x{}",
+            layout.atlas_w, layout.atlas_h, layout.views[0].w, layout.views[0].h, layout.views[2].w, layout.views[2].h);
         return;
     }
 
@@ -31003,6 +31192,33 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
     static bool index_was_ever_two = false;
     static bool index_was_ever_negative = false;
     const bool medium_one_based_eye_pass = medium_is_current_game();
+    // Quad View: views 0..3 are wide L, wide R, sharp L, sharp R (or the sharp
+    // pair first, see slot_for_view); -1 when off or for a mono pass.
+    static thread_local uevr::quadview::CallOrder quad_offset_order{};
+    const int32_t quad_index = resolve_quad_view_index(view_index, quad_offset_order);
+    const bool quad_view = quad_index >= 0;
+    const auto quad_slot = uevr::quadview::slot_for_view(quad_index, false, VR::get()->is_quad_view_sharp_first());
+    // The first view of each eye in render order samples the pose and runs
+    // the once-per-eye side effects; the eye's other view reuses them.
+    const bool quad_pose_owner = !quad_view || (quad_slot.focus == vr->is_quad_view_sharp_first());
+    if (quad_view) {
+        t_quad_view_next_slot = (int32_t)quad_slot.index();
+    }
+
+    // Small-actor culling: swap the controller's hidden list in for the wide
+    // views and back out for the sharp ones (see QuadViewCulling.hpp).
+    if (quad_view && view_location != nullptr) {
+        double location[3]{};
+        if (g_hook->m_has_double_precision) {
+            std::memcpy(location, view_location, sizeof(location));
+        } else {
+            const auto* f = (const float*)view_location;
+            location[0] = f[0]; location[1] = f[1]; location[2] = f[2];
+        }
+        uevr::quadview::ActorCulling::get().on_view((int32_t)quad_slot.index(), location);
+    } else {
+        uevr::quadview::ActorCulling::get().restore();
+    }
 
     if (view_index == -1) {
         index_was_ever_negative = true;
@@ -31029,14 +31245,14 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
     }
 
     // This is eSSP_FULL, we don't care. It will cause the view to become monoscopic if we do anything.
-    if (index_was_ever_two && view_index == 0 && !synced_ue56_zero_view_is_eye) {
+    if (!quad_view && index_was_ever_two && view_index == 0 && !synced_ue56_zero_view_is_eye) {
         SPDLOG_INFO_ONCE("calculate stereo view offset called with view index 0 after 2, ignoring.");
         return;
     }
 
     vr->set_world_to_meters(world_to_meters);
 
-    if (!medium_one_based_eye_pass) {
+    if (!medium_one_based_eye_pass && !quad_view) {
         if (view_index == 2) {
             index_starts_from_one = true;
             index_was_ever_two = true;
@@ -31057,6 +31273,9 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
     auto true_index = medium_one_based_eye_pass
         ? view_index - 1
         : (index_starts_from_one ? ((view_index + 1) % 2) : (view_index % 2));
+    if (quad_view) {
+        true_index = (int32_t)quad_slot.eye;
+    }
     const auto has_double_precision = g_hook->m_has_double_precision;
     const auto rot_d = (Rotator<double>*)view_rotation;
 
@@ -31080,7 +31299,9 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
         }
     }
 
-    if (true_index == 0 && !is_full_pass) {
+    // One head-pose sample per frame: the sharp views reuse the pose the wide
+    // views were built from, so wide and sharp can never drift apart.
+    if (true_index == 0 && !is_full_pass && quad_pose_owner) {
         if (has_double_precision) {
             g_hook->m_last_pre_rotation_double = *rot_d;
         } else {
@@ -31292,7 +31513,7 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
         // only do it on the right eye pass
         // if we did it on the left, there would be eye desyncs when the right eye is rendered
         const auto payday3_aim_guard = is_payday3_aim_guard_enabled();
-        if (true_index == 1 && (vr->is_roomscale_enabled() || (!payday3_aim_guard && vr->is_aim_pawn_control_rotation_enabled()))) {
+        if (true_index == 1 && quad_pose_owner && (vr->is_roomscale_enabled() || (!payday3_aim_guard && vr->is_aim_pawn_control_rotation_enabled()))) {
             const auto engine = sdk::UEngine::get();
             const auto world = engine != nullptr ? engine->get_world() : nullptr;
 
@@ -31353,7 +31574,7 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
             mod->on_post_calculate_stereo_view_offset(stereo, view_index, view_rotation, world_to_meters, view_location, g_hook->m_has_double_precision);
         }
 
-        if (true_index == 0) {
+        if (true_index == 0 && quad_pose_owner) {
             if (has_double_precision) {
                 g_hook->m_last_rotation_double = *rot_d;
             } else {
@@ -31370,7 +31591,7 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
             (vr->is_headlocked_aim_enabled() ||
                 (vr->is_controller_aim_enabled() && vr->is_using_controllers()));
 
-        if (true_index == 1 &&
+        if (true_index == 1 && quad_pose_owner &&
             vr->is_any_aim_method_active() &&
             !controller_camera_guard_active &&
             (vr->is_aim_modify_player_control_rotation_enabled() || direct_aim_compatibility_fallback))
@@ -31556,6 +31777,9 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
     static bool index_was_ever_two = false;
 
     const bool medium_one_based_projection_pass = medium_is_current_game();
+    static thread_local uevr::quadview::CallOrder quad_projection_order{};
+    const int32_t quad_index = resolve_quad_view_index(view_index, quad_projection_order);
+    const bool quad_view = quad_index >= 0; // -1: Quad View off, or a mono pass
 
     // This is eSSP_FULL, we don't care. It will cause the view to become monoscopic if we do anything.
     // or maybe we should, this could be used for WorldToScreen.
@@ -31564,7 +31788,7 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
         return out;
     }*/
 
-    if (!medium_one_based_projection_pass) {
+    if (!medium_one_based_projection_pass && !quad_view) {
         if (view_index == 2) {
             index_starts_from_one = true;
             index_was_ever_two = true;
@@ -31642,10 +31866,28 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
             VR::get()->get_runtime()->update_matrices((float)old_znear, 10000.0f);
         }
 
-        if (!g_hook->m_has_double_precision) {
-            *out = VR::get()->get_projection_matrix((VRRuntime::Eye)(true_index));
+        const auto quad_slot = uevr::quadview::slot_for_view(quad_index, false, VR::get()->is_quad_view_sharp_first());
+
+        if (quad_view && quad_slot.focus) {
+            // Sharp view: an off-axis frustum around the focus window, same
+            // near plane and reversed-Z form as the eye's own projection.
+            float m[16]{};
+            uevr::quadview::projection_from_tangents(
+                VR::get()->get_quad_view_frame_game().focus[quad_slot.eye], VR::get()->m_nearz, m);
+            Matrix4x4f fmat{};
+            std::memcpy(&fmat, m, sizeof(m));
+
+            if (!g_hook->m_has_double_precision) {
+                *out = fmat;
+            } else {
+                double_matrix = fmat;
+            }
+
+            SPDLOG_INFO_ONCE("[QuadView] Using the sharp-view projection for view {}", view_index);
+        } else if (!g_hook->m_has_double_precision) {
+            *out = VR::get()->get_projection_matrix((VRRuntime::Eye)(quad_view ? quad_slot.eye : true_index));
         } else {
-            const auto fmat = VR::get()->get_projection_matrix((VRRuntime::Eye)(true_index));
+            const auto fmat = VR::get()->get_projection_matrix((VRRuntime::Eye)(quad_view ? quad_slot.eye : true_index));
             double_matrix = fmat;
         }
     } else {
@@ -31824,7 +32066,11 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
     }
 
     if (g_hook->m_sceneview_data.inside_post_init_properties) {
-        return 2;
+        // LocalPlayer sizes its ViewStates (TAA/TSR history, exposure) from this.
+        // Quad View must be declared here even while the UE4 settle gate is
+        // still closed: this runs once, and a count raised later is ignored,
+        // leaving Unreal with only the first pair of the four views.
+        return quad_view_declares_four_views() ? 4 : 2;
     }
 
     static const bool ktjl = [] {
@@ -31937,6 +32183,11 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
         return 1;
     }
 
+    if (is_quad_view_active()) {
+        SPDLOG_INFO_ONCE("[QuadView] Requesting four views (wide L, wide R, sharp L, sharp R)");
+        return 4;
+    }
+
     if (vr->is_native_stereo_fix_enabled()) {
         const bool ue59_dx11_fix = is_ue59_dx11_backend();
         if (ue59_dx11_fix && !vrmod::D3D11Component::ue59_native_fix_mode_supported(vr.get())) {
@@ -32046,6 +32297,21 @@ EStereoscopicPass FFakeStereoRenderingHook::get_view_pass_for_index_hook(FFakeSt
     // So we need to imitate it here to prevent a crash
     if (!stereo_requested || view_index < 0) {
         return EStereoscopicPass::eSSP_FULL;
+    }
+
+    // Quad View: only the left wide view is primary. Every other view is a
+    // secondary of it, which makes Unreal share its eye adaptation (exposure)
+    // across all four views, the fix BeamNG needed by hand.
+    if (is_quad_view_active()) {
+        // UE4 hands the pass (not the view index) to AdjustViewRect and the
+        // view offset/projection calls, so every view needs its own pass to
+        // be told apart: 1..4, which is also UE4's own default
+        // (eSSP_LEFT_EYE + ViewIndex). Pass 1 stays the only primary.
+        if (!g_hook->has_double_precision()) {
+            return (EStereoscopicPass)(1 + (int32_t)(std::min<uint32_t>)(view_index, 3));
+        }
+
+        return view_index == 0 ? EStereoscopicPass::eSSP_PRIMARY : EStereoscopicPass::eSSP_SECONDARY;
     }
 
     return view_index % 2 == 0 ? EStereoscopicPass::eSSP_PRIMARY : EStereoscopicPass::eSSP_SECONDARY;
@@ -32556,8 +32822,13 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
         }
 
         const auto view_state_count = legacy_view_states->header.count;
+        const bool quad_four_views = quad_view_declares_four_views();
+        // Quad View needs four states, so fewer than four must be replayed for
+        // Unreal to rebuild the array at the declared count.
+        const int32_t required_states = quad_four_views ? 4 : 2;
 
-        if (view_state_count >= 2 && view_state_count <= 8) {
+        if (view_state_count >= required_states && view_state_count <= 8) {
+            publish_quad_view_states(*legacy_view_states);
             if (!publish_legacy_native_pair(*legacy_view_states)) {
                 SPDLOG_WARN(
                     "[{}][PostInitProperties] Existing ViewStates do not contain a distinct validated eye pair; refusing LocalPlayer bootstrap",
@@ -32576,7 +32847,7 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
             return;
         }
 
-        if (view_state_count != 1) {
+        if (view_state_count != 1 && !quad_four_views) {
             SPDLOG_WARN("[{}][PostInitProperties] Unexpected ViewStates.Num={}; refusing LocalPlayer bootstrap", legacy_runtime_label, view_state_count);
             g_hook->m_native_stereo_localplayer_bootstrap_failed.store(true, std::memory_order_release);
             g_hook->m_fixed_localplayer_view_count = true;
@@ -32592,10 +32863,18 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
             return;
         }
 
-        SPDLOG_INFO(
-            "[{}][PostInitProperties] Existing LocalPlayer has one validated ViewState at {:x}; allocating the right-eye state",
-            legacy_runtime_label,
-            legacy_view_states->header_address);
+        if (quad_four_views) {
+            SPDLOG_INFO(
+                "[{}][PostInitProperties] Existing LocalPlayer has {} validated ViewState(s) at {:x}; replaying PostInitProperties to size four for Quad View",
+                legacy_runtime_label,
+                view_state_count,
+                legacy_view_states->header_address);
+        } else {
+            SPDLOG_INFO(
+                "[{}][PostInitProperties] Existing LocalPlayer has one validated ViewState at {:x}; allocating the right-eye state",
+                legacy_runtime_label,
+                legacy_view_states->header_address);
+        }
     }
 
     const auto ue51_post_init = is_ue_5_1_dx_backend();
@@ -32842,6 +33121,7 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
                 post_bootstrap_view_states.header.count <= 8 &&
                 publish_legacy_native_pair(post_bootstrap_view_states))
             {
+                publish_quad_view_states(post_bootstrap_view_states);
                 SPDLOG_INFO(
                     "[{}][PostInitProperties] Bootstrap completed with {} distinct validated ViewStates",
                     legacy_runtime_label,

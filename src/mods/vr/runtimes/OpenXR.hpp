@@ -30,6 +30,7 @@
 #include "../NativeOpenXRWaitOnly.hpp"
 
 #include "VRRuntime.hpp"
+#include "../QuadView.hpp"
 
 namespace runtimes{
 struct OpenXR final : public VRRuntime {
@@ -255,6 +256,32 @@ public:
     XrSpace stage_space{XR_NULL_HANDLE};
     XrSpace view_space{XR_NULL_HANDLE}; // for generating view matrices
     XrSystemId system{XR_NULL_SYSTEM_ID};
+
+    // Quad View eye tracking (XR_EXT_eye_gaze_interaction).
+    bool eye_gaze_supported{false};
+    XrAction eye_gaze_action{XR_NULL_HANDLE};
+    XrSpace eye_gaze_space{XR_NULL_HANDLE};
+    mutable std::mutex quad_mtx{};
+    uevr::quadview::GazeFilter quad_gaze{};
+    uevr::quadview::FrameSnapshot quad_current{};
+    bool quad_current_set{false};
+    bool quad_gaze_tracking{false};
+
+    // The latest snapshot, whatever frame it belongs to (startup fallback).
+    std::optional<uevr::quadview::FrameSnapshot> get_quad_current() const {
+        std::scoped_lock _{quad_mtx};
+        if (!quad_current_set) return std::nullopt;
+        return quad_current;
+    }
+    bool is_quad_gaze_tracking() const {
+        std::scoped_lock _{quad_mtx};
+        return quad_gaze_tracking;
+    }
+
+    // Set by the D3D12 compositor each frame: true when this frame's atlas was
+    // composed into plain stereo (submit as ordinary stereo), false when the
+    // raw atlas was copied (submit wide rects plus the sharp overlay layer).
+    std::atomic<bool> quad_composed{false};
     XrFormFactor form_factor{XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY};
     XrViewConfigurationType view_config{XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO};
     XrEnvironmentBlendMode blend_mode{XR_ENVIRONMENT_BLEND_MODE_OPAQUE};
@@ -293,7 +320,16 @@ public:
         std::chrono::steady_clock::time_point coherent_capture_time{};
         bool coherent_complete{};
         bool coherent_matches_render{};
+        // Quad View: the layout and sharp windows this frame is rendered with.
+        // The game thread reads them by the frame it builds, the compose and
+        // the submit by the frame they present (see get_quad_snapshot).
+        uevr::quadview::FrameSnapshot quad{};
+        bool quad_set{};
     };
+
+    // Called with each new pose sample: reads the gaze, filters it and
+    // places this frame's sharp windows (render side and pipeline state).
+    void update_quad_view_gaze(XrTime display_time, PipelineState& state);
     /*std::array<std::vector<XrView>, 3> stage_view_queue{};
     std::array<XrSpaceLocation, 3> view_space_location_queue{};
     std::array<XrFrameState, 3> frame_state_queue{};*/
@@ -388,6 +424,34 @@ public:
 
     PipelineState last_submit_state{};
     PipelineState get_submit_state();
+
+    // Game thread: the frame whose pose was sampled last, which is the frame
+    // the views are being built for (the same sample the eye poses use).
+    std::optional<uevr::quadview::FrameSnapshot> get_game_quad_snapshot() {
+        std::scoped_lock _{this->sync_assignment_mtx};
+        return get_quad_snapshot_locked(this->internal_frame_count);
+    }
+
+    // Render thread: the frame about to be presented, without the side effects
+    // of get_submit_state() (for the compositors).
+    std::optional<uevr::quadview::FrameSnapshot> get_render_quad_snapshot() {
+        std::scoped_lock _{this->sync_assignment_mtx};
+        if (!this->has_render_frame_count) return std::nullopt;
+        return get_quad_snapshot_locked(this->internal_render_frame_count);
+    }
+
+private:
+    // Quad View snapshot of one frame, looked up by its frame number (caller
+    // holds sync_assignment_mtx). The slot must still belong to that frame (the
+    // queue is reused every QUEUE_SIZE frames); otherwise nothing is returned
+    // rather than another frame's data.
+    std::optional<uevr::quadview::FrameSnapshot> get_quad_snapshot_locked(uint32_t frame) const {
+        const auto& s = this->pipeline_states[frame % QUEUE_SIZE];
+        if (s.quad_set && s.frame_count == frame) return s.quad;
+        return std::nullopt;
+    }
+
+public:
     struct Stalker2PairSubmit {
         std::array<XrView, 2> views{};
         uint64_t epoch{}, generation{};
