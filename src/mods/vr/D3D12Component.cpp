@@ -34,6 +34,7 @@
 #include "d3d12/DirectXTK.hpp"
 
 #include "D3D12Component.hpp"
+#include "SwgrHdr.hpp"
 #include "NativeOpenXRArrayD3D12.hpp"
 #include "GalacticRacerRenderTargets.hpp"
 #include "PhantomBladeZeroNative.hpp"
@@ -2659,8 +2660,12 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             ENGINE_SRC_COLOR);
         const float opaque_black[4]{0.0f, 0.0f, 0.0f, 1.0f};
         command_ctx.clear_rtv(m_game_tex, opaque_black, ENGINE_SRC_COLOR);
+        // With Windows HDR on, the R10 target holds PQ/BT.2020, not sRGB.
+        const bool swgr_hdr10 = is_swgr_scene_conversion && m_swgr_hdr_conversion_batch != nullptr &&
+            source_desc.Format == DXGI_FORMAT_R10G10B10A2_UNORM &&
+            swgr_hdr::output_is_hdr10(g_framework->get_d3d12_hook()->get_swap_chain());
         d3d12::render_srv_to_rtv(
-            m_sw_zero_company_scene_conversion_batch.get(),
+            swgr_hdr10 ? m_swgr_hdr_conversion_batch.get() : m_sw_zero_company_scene_conversion_batch.get(),
             command_ctx.cmd_list.Get(),
             m_sw_zero_company_scene_snapshot_tex,
             m_game_tex,
@@ -5563,6 +5568,7 @@ void D3D12Component::on_reset(VR* vr) {
     m_backbuffer_batch.reset();
     m_game_batch.reset();
     m_sw_zero_company_scene_conversion_batch.reset();
+    m_swgr_hdr_conversion_batch.reset();
     m_ui_batch_alpha_invert.reset();
     m_graphics_memory.reset();
 
@@ -5855,6 +5861,22 @@ bool D3D12Component::setup() {
             {},
             {},
             scene_conversion_pd);
+
+        if (sdk::galactic_racer::current_game()) {
+            const auto params = swgr_hdr::load_params(Framework::get_persistent_dir() / "swgr_hdr.txt");
+            std::string error{};
+            const auto [ps, vs] = swgr_hdr::compile(params, error);
+            if (ps.empty()) {
+                spdlog::error("[SWGR][HDR] Shader compile failed: {}", error);
+            } else {
+                try {
+                    m_swgr_hdr_conversion_batch = setup_sprite_batch_pso(DXGI_FORMAT_B8G8R8A8_UNORM, ps, vs, scene_conversion_pd);
+                    spdlog::info("[SWGR][HDR] HDR10 conversion ready (paper {} nits)", params.paper);
+                } catch (const std::exception& e) {
+                    spdlog::error("[SWGR][HDR] PSO rejected, using plain copy: {}", e.what());
+                }
+            }
+        }
     }
 
     // Custom blend state to flip the alpha in-place of the UI texture without an intermediate render target
