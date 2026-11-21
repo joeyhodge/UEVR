@@ -1,15 +1,17 @@
 #pragma once
-// HDR10 -> sRGB for the SWGR scene conversion. Used when Windows HDR is on.
+// HDR10 -> sRGB for the SWGR HMD scene. Used only when the engine writes PQ into the scene target.
 // Optional tuning in <profile>/swgr_hdr.txt: "paper=200 knee=0.75".
 
 #include <d3dcompiler.h>
-#include <dxgi1_6.h>
 #include <wrl/client.h>
-#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <string>
+#include <optional>
+#include <utility>
 #include <vector>
+#include <sdk/CVar.hpp>
+#include "SwgrHdrPolicy.hpp"
 
 namespace swgr_hdr {
 struct Params { float paper{200.0f}, knee{0.75f}; };
@@ -78,18 +80,16 @@ float4 SpritePixelShader(float4 color : COLOR0, float2 uv : TEXCOORD0) : SV_Targ
     return {std::move(ps), std::move(vs)};
 }
 
-// True if the game's monitor is in HDR10. Cached for 2 s.
-inline bool output_is_hdr10(IDXGISwapChain* swapchain) {
-    static auto last = std::chrono::steady_clock::time_point{};
-    static bool cached = false;
-    const auto now = std::chrono::steady_clock::now();
-    if (swapchain == nullptr || now - last < std::chrono::seconds(2)) { return cached; }
-    last = now;
-    Microsoft::WRL::ComPtr<IDXGIOutput> output;
-    Microsoft::WRL::ComPtr<IDXGIOutput6> output6;
-    DXGI_OUTPUT_DESC1 desc{};
-    cached = SUCCEEDED(swapchain->GetContainingOutput(&output)) && SUCCEEDED(output.As(&output6)) &&
-             SUCCEEDED(output6->GetDesc1(&desc)) && desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
-    return cached;
+// The engine's HDR output state, which decides how the tonemapper encoded the scene target.
+inline std::pair<std::optional<int32_t>, std::optional<int32_t>> read_hdr_cvars() {
+    const auto read = [](const wchar_t* name) -> std::optional<int32_t> {
+        try {
+            const auto manager = sdk::FConsoleManager::get();
+            const auto object = manager ? manager->find(name) : nullptr;
+            if (!object || !object->is_validated_ue57_variable() || object->AsCommand() != nullptr) { return {}; }
+            return static_cast<sdk::IConsoleVariable*>(object)->TryGetInt();
+        } catch (...) { return {}; }
+    };
+    return {read(L"r.HDR.EnableHDROutput"), read(L"r.HDR.Display.OutputDevice")};
 }
 } // namespace swgr_hdr

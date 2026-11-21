@@ -24,6 +24,7 @@
 #include "DispatchMovieOpenXR.hpp"
 #include "Stalker2NativeD3D12.hpp"
 #include "NativeOpenXRArrayPolicy.hpp"
+#include "SwgrHdrPolicy.hpp"
 
 class VR;
 namespace uevr::dispatch_movie { struct Frame; }
@@ -224,6 +225,9 @@ private:
     // source, snapshot it into an owned R10 texture, then convert to m_game_tex.
     d3d12::TextureContext m_sw_zero_company_scene_source_tex{};
     d3d12::TextureContext m_sw_zero_company_scene_snapshot_tex{};
+    // SWGR HMD-only copy decoded from HDR10; m_game_tex keeps the plain conversion.
+    d3d12::TextureContext m_swgr_hmd_tex{};
+    swgr_hdr::EncodingCache m_swgr_hdr_encoding{};
     d3d12::TextureContext m_ue58_spectator_tex{};
     bool m_ue58_dedicated_ui_spectator_valid{};
     d3d12::TextureContext m_scene_capture_tex{};

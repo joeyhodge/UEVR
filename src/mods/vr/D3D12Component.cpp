@@ -2512,8 +2512,12 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             m_game_tex.texture.Get() == nullptr ||
             !shf_texture_desc_matches(m_game_tex.texture->GetDesc(), converted_desc) ||
             !texture_context_has_views(m_game_tex);
+        const bool swgr_hmd_needs_setup = is_swgr_scene_conversion && m_swgr_hdr_conversion_batch != nullptr &&
+            (m_swgr_hmd_tex.texture.Get() == nullptr ||
+             !shf_texture_desc_matches(m_swgr_hmd_tex.texture->GetDesc(), converted_desc) ||
+             !texture_context_has_views(m_swgr_hmd_tex));
 
-        if (source_needs_setup || snapshot_needs_setup || output_needs_setup) {
+        if (source_needs_setup || snapshot_needs_setup || output_needs_setup || swgr_hmd_needs_setup) {
             // The source descriptors are referenced by our conversion command
             // lists, while the owned snapshot and converted output can still be
             // in an OpenXR copy. Drain all users before replacing any context.
@@ -2532,6 +2536,8 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             m_sw_zero_company_scene_source_tex.reset();
             m_sw_zero_company_scene_snapshot_tex.reset();
             m_game_tex.reset();
+            m_swgr_hmd_tex.reset();
+            m_swgr_hdr_encoding.reset();
 
             if (!m_sw_zero_company_scene_source_tex.setup(
                     device,
@@ -2619,6 +2625,18 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 return vr::VRCompositorError_None;
             }
 
+            if (is_swgr_scene_conversion && m_swgr_hdr_conversion_batch != nullptr) {
+                ComPtr<ID3D12Resource> hmd_scene{};
+                if (FAILED(device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &converted_desc,
+                        ENGINE_SRC_COLOR, nullptr, IID_PPV_ARGS(&hmd_scene))) || hmd_scene == nullptr ||
+                    !m_swgr_hmd_tex.setup(device, hmd_scene.Get(), DXGI_FORMAT_B8G8R8A8_UNORM,
+                        DXGI_FORMAT_B8G8R8A8_UNORM, L"SWGR HDR10 HMD Scene"))
+                {
+                    SPDLOG_ERROR("[SWGR][HDR] Failed to create the HMD scene texture; the HMD keeps the plain conversion");
+                    m_swgr_hmd_tex.reset();
+                }
+            }
+
             for (auto& commands : m_game_tex_commands) {
                 if (!commands.ready()) {
                     commands.setup(is_swgr_scene_conversion ? L"SWGR Scene Conversion Commands" : L"SWZeroCompany UE5.6 Scene Conversion Commands");
@@ -2660,17 +2678,31 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             ENGINE_SRC_COLOR);
         const float opaque_black[4]{0.0f, 0.0f, 0.0f, 1.0f};
         command_ctx.clear_rtv(m_game_tex, opaque_black, ENGINE_SRC_COLOR);
-        // With Windows HDR on, the R10 target holds PQ/BT.2020, not sRGB.
-        const bool swgr_hdr10 = is_swgr_scene_conversion && m_swgr_hdr_conversion_batch != nullptr &&
-            source_desc.Format == DXGI_FORMAT_R10G10B10A2_UNORM &&
-            swgr_hdr::output_is_hdr10(g_framework->get_d3d12_hook()->get_swap_chain());
         d3d12::render_srv_to_rtv(
-            swgr_hdr10 ? m_swgr_hdr_conversion_batch.get() : m_sw_zero_company_scene_conversion_batch.get(),
+            m_sw_zero_company_scene_conversion_batch.get(),
             command_ctx.cmd_list.Get(),
             m_sw_zero_company_scene_snapshot_tex,
             m_game_tex,
             ENGINE_SRC_COLOR,
             ENGINE_SRC_COLOR);
+        // m_game_tex stays the plain conversion: the desktop mirror, the 2D screen and Native Fix read it.
+        const auto now_ms = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+        const bool swgr_hdr10 = is_swgr_scene_conversion && m_swgr_hdr_conversion_batch != nullptr &&
+            texture_context_has_views(m_swgr_hmd_tex) &&
+            swgr_hdr::conversion_allowed(vr->is_native_stereo_fix_enabled()) &&
+            m_swgr_hdr_encoding.is_pq(reinterpret_cast<uintptr_t>(m_sw_zero_company_scene_source_tex.texture.Get()),
+                static_cast<uint32_t>(source_desc.Format), now_ms, swgr_hdr::read_hdr_cvars);
+        if (swgr_hdr10) {
+            command_ctx.clear_rtv(m_swgr_hmd_tex, opaque_black, ENGINE_SRC_COLOR);
+            d3d12::render_srv_to_rtv(
+                m_swgr_hdr_conversion_batch.get(),
+                command_ctx.cmd_list.Get(),
+                m_sw_zero_company_scene_snapshot_tex,
+                m_swgr_hmd_tex,
+                ENGINE_SRC_COLOR,
+                ENGINE_SRC_COLOR);
+        }
         command_ctx.execute();
 
         SPDLOG_INFO_ONCE(
@@ -2678,7 +2710,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             conversion_label);
 
         m_skip_spectator_view_for_volatile_external_rt = false;
-        backbuffer = m_game_tex.texture;
+        backbuffer = swgr_hdr10 ? m_swgr_hmd_tex.texture : m_game_tex.texture;
         scene_source_state = ENGINE_SRC_COLOR;
     } else if (backbuffer.Get() != real_backbuffer.Get() && (use_stable_external_backbuffer_copy || m_game_tex.texture.Get() != backbuffer.Get() || !texture_context_has_views(m_game_tex))) {
         log_shf_texture_source_observation(backbuffer.Get(), real_backbuffer.Get(), m_game_tex.texture.Get(), frame_count);
@@ -5544,6 +5576,8 @@ void D3D12Component::on_reset(VR* vr) {
     m_game_ui_tex.reset();
     reset_ue58_converted_ui_textures();
     m_game_tex.reset();
+    m_swgr_hmd_tex.reset();
+    m_swgr_hdr_encoding.reset();
     m_sw_zero_company_scene_source_tex.reset();
     m_sw_zero_company_scene_snapshot_tex.reset();
     m_ue58_spectator_tex.reset();
