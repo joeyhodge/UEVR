@@ -398,8 +398,17 @@ also recover the early part of the pan when excess lift places the verified
 focus clearly below the view before the dolly passes it. The correction keeps
 the same field floor, retains saved translation and uses signed pitch when
 recomputing lift. It never adds lift beyond the original assist. Other
-replays, the first-base corner pan and calibrated center-field cuts remain
-outside this change.
+replays and calibrated center-field cuts remain outside this change.
+
+The November 23 first-base traces add the marked low corner rig and the recorded
+first-base dugout pan, including its early false crowd classification and
+settled line angle. The narrow camera and native-focus envelopes distinguish
+them from the already-good first-base and other celebration cameras. A fresh
+matching focus must actually be crossed; level overshoots do not need a
+spurious lift to qualify. Only the misclassified low pan uses the field floor
+in place of its stand floor. The same signed endpoint calculation preserves
+the saved offsets, field clearance and stereo framing across the pan. The
+tuning does not alter ball-follow, the podium, TV mesh visibility or ProSpi 2025.
 
 This is not a player/podium detector or a collision fix. In particular, a
 high-foul black stadium still needs a failing capture to distinguish camera

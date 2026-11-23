@@ -6,12 +6,18 @@ namespace uevr::prospi::focus_guard {
 
 enum class AuthoredScope : uint8_t {
     presentation, near_home_crossing, interview_repair, dugout_repair, home_pan_repair,
-    dugout_entry_repair, upward_home_repair, podium_closeup_repair, low_infield_closeup_repair
+    dugout_entry_repair, upward_home_repair, podium_closeup_repair, low_infield_closeup_repair,
+    first_base_corner_repair, first_base_dugout_repair
 };
+
+inline bool recorded_first_base_scope(AuthoredScope scope) noexcept {
+    return scope == AuthoredScope::first_base_corner_repair || scope == AuthoredScope::first_base_dugout_repair;
+}
 
 inline bool recorded_pan_scope(AuthoredScope scope) noexcept {
     return scope == AuthoredScope::dugout_entry_repair || scope == AuthoredScope::upward_home_repair ||
-        scope == AuthoredScope::podium_closeup_repair || scope == AuthoredScope::low_infield_closeup_repair;
+        scope == AuthoredScope::podium_closeup_repair || scope == AuthoredScope::low_infield_closeup_repair ||
+        recorded_first_base_scope(scope);
 }
 
 inline bool repair_scope(AuthoredScope scope) noexcept {
@@ -73,6 +79,17 @@ inline bool recorded_pan_rig(const trace::Pose& p, AuthoredScope scope) noexcept
     case AuthoredScope::low_infield_closeup_repair:
         return std::abs(x) <= 75 && y >= -410 && y <= -340 && z >= 20 && z <= 80 &&
             pitch >= 4 && pitch <= 11 && yaw >= 47 && yaw <= 66 && p.fov >= 9 && p.fov <= 16;
+    case AuthoredScope::first_base_corner_repair:
+        return x >= 2860 && x <= 2930 && y >= -300 && y <= -235 && z >= 112 && z <= 145 &&
+            pitch >= 0.2f && pitch <= 2.2f && yaw >= 134 && yaw <= 140 && p.fov >= 10 && p.fov <= 21;
+    case AuthoredScope::first_base_dugout_repair: {
+        // Entry through the crowd label and the rising line pan are one rig.
+        const bool entry = x >= 2270 && x <= 2690 && y >= -755 && y <= -345 && z >= 132 && z <= 158 &&
+            yaw >= 58 && yaw <= 81 && pitch >= 0.2f && pitch <= 2.5f;
+        const bool tracking = x >= 2575 && x <= 2975 && y >= -945 && y <= -660 && z >= 86 && z <= 158 &&
+            yaw >= 72 && yaw <= 111 && pitch >= 0.2f && pitch <= 11.5f;
+        return p.fov >= 10.5f && p.fov <= 16.5f && (entry || tracking);
+    }
     case AuthoredScope::podium_closeup_repair:
         return x >= 1150 && x <= 1450 && y >= -550 && y <= -320 && z >= 100 && z <= 230 &&
             pitch >= 1 && pitch <= 10 && yaw >= -165 && yaw <= -125 && p.fov >= 25 && p.fov <= 39;
@@ -93,6 +110,12 @@ inline bool recorded_pan_target(const Request& r, const trace::NativeSource& sou
     case AuthoredScope::low_infield_closeup_repair:
         return x >= 175 && x <= 750 && y >= 30 && y <= 550 &&
             z >= 100 && z <= 180 && focus >= 450 && focus <= 1200;
+    case AuthoredScope::first_base_corner_repair:
+        return x >= 2110 && x <= 2570 && y >= 55 && y <= 475 && z >= 110 && z <= 170 &&
+            focus >= 475 && focus <= 1075;
+    case AuthoredScope::first_base_dugout_repair:
+        return x >= 2440 && x <= 2880 && y >= -465 && y <= 30 && z >= 130 && z <= 205 &&
+            focus >= 350 && focus <= 820;
     case AuthoredScope::podium_closeup_repair:
         return x >= 875 && x <= 1350 && y >= -825 && y <= -450 && z >= 115 && z <= 250 &&
             focus >= 170 && focus <= 400;
@@ -272,7 +295,8 @@ inline Decision bound_authored_window(const Request& r, const trace::NativeSourc
         (std::abs(p.x) > remaining * p.half_width * 1.05 || std::abs(p.y - r.lift) > remaining * p.half_height * 1.05));
     if (!crossed && !clipped) { return out; }
     const double old_z = p.end_z(r.dolly, r.lift);
-    if (recorded_pan_scope(scope) && old_z <= double(r.floor) + 2.0) { return out; }
+    // A level first-base shot can cross its target without excessive lift.
+    if (recorded_pan_scope(scope) && !recorded_first_base_scope(scope) && old_z <= double(r.floor) + 2.0) { return out; }
     const double required_z = (std::min)((std::max)(double(r.floor), old_z), double(r.floor) + 2.0);
     const double a = (required_z - p.camera_z) / p.up_z, b = -p.forward_z / p.up_z;
     const auto lift_limit = low_infield ? r.lift : r.max_lift;

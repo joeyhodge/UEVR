@@ -12,7 +12,8 @@ namespace uevr::prospi::repair {
 enum class Reason : uint8_t {
     off, unchanged, protected_controls, unsupported_rig, source_unavailable,
     source_mismatch, no_safe_endpoint, interview_focus, dugout_focus, dugout_height, release_hold,
-    home_pan_focus, home_pan_height, dugout_entry, upward_home, podium_closeup, low_infield_closeup
+    home_pan_focus, home_pan_height, dugout_entry, upward_home, podium_closeup, low_infield_closeup,
+    first_base_corner, first_base_dugout
 };
 inline const char* reason_name(Reason reason) noexcept {
     switch (reason) {
@@ -32,6 +33,8 @@ inline const char* reason_name(Reason reason) noexcept {
     case Reason::upward_home: return "Near-home close-up framing recovered";
     case Reason::podium_closeup: return "Interview close-up framing recovered";
     case Reason::low_infield_closeup: return "Low infield close-up framing recovered";
+    case Reason::first_base_corner: return "First-base corner framing recovered";
+    case Reason::first_base_dugout: return "First-base dugout pan framing recovered";
     default: return "Off / unsupported build";
     }
 }
@@ -58,7 +61,7 @@ inline bool admit_home_pan(const trace::Pose& camera, HomePanGates gates) noexce
 }
 
 struct RecordedPanGates {
-    bool dugout_entry{}, upward_home{}, podium_closeup{};
+    bool dugout_entry{}, upward_home{}, podium_closeup{}, first_base_corner{}, first_base_dugout{};
 };
 inline focus_guard::AuthoredScope admit_recorded_pan(const trace::Pose& camera, RecordedPanGates gates) noexcept {
     using Scope = focus_guard::AuthoredScope;
@@ -73,6 +76,12 @@ inline focus_guard::AuthoredScope admit_recorded_pan(const trace::Pose& camera, 
     }
     if (gates.podium_closeup && focus_guard::recorded_pan_rig(camera, Scope::podium_closeup_repair)) {
         return Scope::podium_closeup_repair;
+    }
+    if (gates.first_base_corner && focus_guard::recorded_pan_rig(camera, Scope::first_base_corner_repair)) {
+        return Scope::first_base_corner_repair;
+    }
+    if (gates.first_base_dugout && focus_guard::recorded_pan_rig(camera, Scope::first_base_dugout_repair)) {
+        return Scope::first_base_dugout_repair;
     }
     return Scope::presentation;
 }
@@ -104,8 +113,13 @@ inline bool candidate(const Request& r) noexcept {
         (r.camera.zone != 3 || r.legacy_floor <= r.field_floor + 350)) { return false; }
     if ((r.recorded_pan == Scope::upward_home_repair || r.recorded_pan == Scope::podium_closeup_repair) &&
         r.camera.zone != 1) { return false; }
-    if (r.recorded_pan == Scope::low_infield_closeup_repair &&
+    if ((r.recorded_pan == Scope::low_infield_closeup_repair || r.recorded_pan == Scope::first_base_corner_repair) &&
         (r.camera.zone != 1 || r.legacy_floor != r.field_floor)) { return false; }
+    if (r.recorded_pan == Scope::first_base_dugout_repair) {
+        const bool field = r.camera.zone == 1 && r.legacy_floor == r.field_floor;
+        const bool false_crowd = r.camera.zone == 3 && r.legacy_floor > r.field_floor + 350;
+        if (!field && !false_crowd) { return false; }
+    }
     const auto c = geometry(r, r.camera.camera, r.camera.now_ns, r.camera.dolly, r.camera.lift);
     return focus_guard::crossing_candidate(c, true, scope(r));
 }
@@ -150,6 +164,8 @@ inline Decision evaluate(const Request& r, const trace::NativeSource& native, fl
     case focus_guard::AuthoredScope::upward_home_repair: out.reason = Reason::upward_home; return out;
     case focus_guard::AuthoredScope::podium_closeup_repair: out.reason = Reason::podium_closeup; return out;
     case focus_guard::AuthoredScope::low_infield_closeup_repair: out.reason = Reason::low_infield_closeup; return out;
+    case focus_guard::AuthoredScope::first_base_corner_repair: out.reason = Reason::first_base_corner; return out;
+    case focus_guard::AuthoredScope::first_base_dugout_repair: out.reason = Reason::first_base_dugout; return out;
     default: break;
     }
     out.reason = selected == focus_guard::AuthoredScope::home_pan_repair ?

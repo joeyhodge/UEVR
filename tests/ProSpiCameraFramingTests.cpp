@@ -733,12 +733,12 @@ void captured_interview_crossings(const Json& fixture) {
         " marked-good="<<marked_good<<" mirrored="<<mirrored<<'\n';
 }
 
-void recorded_pan_repairs(const Json& fixture, const std::array<size_t, 6>& expected_counts) {
+void recorded_pan_repairs(const Json& fixture, const std::array<size_t, 8>& expected_counts) {
     namespace cg = uevr::prospi::cut_guard;
     namespace rp = uevr::prospi::repair;
     namespace helpers = ebaseball_framing_tests;
     constexpr float eye_margin = 3.3f;
-    std::array<size_t, 6> counts{};
+    std::array<size_t, 8> counts{};
     for (const auto& sample : fixture.at("samples")) {
         const auto name = sample.at("trace").get<std::string>() + " cut " + sample.at("cut").dump() +
             " sequence " + sample.at("sequence").dump();
@@ -757,6 +757,9 @@ void recorded_pan_repairs(const Json& fixture, const std::array<size_t, 6>& expe
             .dugout_entry = r.camera.zone == 3 && play == 3 && preset == 0,
             .upward_home = r.camera.zone == 1 && play == 5 && preset == 28,
             .podium_closeup = r.camera.zone == 1 && play == 1 && preset == 24,
+            .first_base_corner = r.camera.zone == 1 && (play == 2 || play == 3) && preset == 26,
+            .first_base_dugout = (r.camera.zone == 1 || r.camera.zone == 3) &&
+                (((play == 2 || play == 3) && preset == 0) || (play == 5 && preset == 23)),
         });
         const auto owner = helpers::identity();
         const cg::Snapshot packet{
@@ -772,10 +775,13 @@ void recorded_pan_repairs(const Json& fixture, const std::array<size_t, 6>& expe
             continue;
         }
         const size_t family = label == "dugout" ? 1 : label == "home" ? 2 : label == "podium" ? 3 :
-            label == "infield-below" ? 4 : label == "infield-crossed" ? 5 : 0;
+            label == "infield-below" ? 4 : label == "infield-crossed" ? 5 :
+            label == "first-base-corner" ? 6 : label == "first-base-dugout" ? 7 : 0;
+        const bool first_base = family >= 6;
         require(family != 0, name + ": unknown regression case");
         const auto reason = family == 1 ? rp::Reason::dugout_entry : family == 2 ? rp::Reason::upward_home :
-            family == 3 ? rp::Reason::podium_closeup : rp::Reason::low_infield_closeup;
+            family == 3 ? rp::Reason::podium_closeup : family < 6 ? rp::Reason::low_infield_closeup :
+            family == 6 ? rp::Reason::first_base_corner : rp::Reason::first_base_dugout;
         const auto recorded = trace::target_framing(read_trace_pose(sample.at("recorded_neutral")), source.look_at);
         require(recorded.valid && (family == 4 ? !recorded.behind && recorded.clip_estimate_valid &&
             recorded.offscreen_estimate && recorded.ndc_y < -1.05f : recorded.behind),
@@ -791,7 +797,10 @@ void recorded_pan_repairs(const Json& fixture, const std::array<size_t, 6>& expe
         const auto endpoint = focus_endpoint(actual.camera, {.dolly = after.dolly, .lift = after.lift}, source.pose.aspect);
         require(trace::distance(original.location, read_trace_pose(sample.at("recorded_neutral")).location) < .02f,
             name + ": independent offset composition disagrees with recorded HMD-neutral pose");
-        require(endpoint.location[2] >= r.field_floor + 1.999f && endpoint.location[2] < original.location[2] &&
+        const float reference_floor = first_base ? std::clamp(original.location[2], r.field_floor, r.field_floor + 2) : r.field_floor + 2;
+        const bool height_ok = first_base ? endpoint.location[2] <= (std::max)(original.location[2], r.field_floor) + .002f :
+            endpoint.location[2] < original.location[2];
+        require(endpoint.location[2] >= reference_floor - .001f && height_ok &&
             rp::window_contains(actual, source, after.dolly, after.lift, eye_margin),
             name + ": corrected shot lost the authored window or signed floor clearance");
         helpers::verify_projection(actual, source, {reason, after.dolly, after.lift, true}, eye_margin,
@@ -801,7 +810,9 @@ void recorded_pan_repairs(const Json& fixture, const std::array<size_t, 6>& expe
             name + ": the proof must apply to the same saved offsets consumed by the view");
 
         if (family >= 4) {
-            require(after.lift < before.lift, name + ": the low close-up retained its excessive lift");
+            if (!first_base || r.camera.zone == 3) {
+                require(after.lift < before.lift, name + ": the close-up retained its excessive lift");
+            }
             const auto safe = cg::repair_current(packet, input, r.camera.now_ns, owner, source, eye_margin, after, continuity);
             require(safe.repair_reason == rp::Reason::unchanged && safe.dolly == after.dolly && safe.lift == after.lift,
                 name + ": the same rig, when already framed, must keep its exact offsets");
@@ -828,7 +839,7 @@ void recorded_pan_repairs(const Json& fixture, const std::array<size_t, 6>& expe
             case 13: view.location[0] += 3; break;
             case 14: legacy.dolly = 20; break;
             case 15: changed.time_ns = now - 250'000'001; break;
-            case 16: changed.framing_repair.legacy_floor += 50; break;
+            case 16: changed.framing_repair.legacy_floor = r.camera.zone == 3 ? r.field_floor : r.legacy_floor + 50; break;
             case 17: changed.framing_repair.camera.mode = 2; break;
             case 18: changed.framing_repair.camera.safety_enabled = false; break;
             }
@@ -840,7 +851,7 @@ void recorded_pan_repairs(const Json& fixture, const std::array<size_t, 6>& expe
     require(counts == expected_counts, "Recorded pan failure/control coverage changed");
     std::cout << "Recorded pans repaired: dugout=" << counts[1] << " near-home=" << counts[2] <<
         " podium=" << counts[3] << " low-infield clipped=" << counts[4] << " crossed=" << counts[5] <<
-        "; controls unchanged=" << counts[0] << '\n';
+        " first-base corner=" << counts[6] << " dugout=" << counts[7] << "; controls unchanged=" << counts[0] << '\n';
 }
 
 void crossing_focus_guards() {
@@ -1335,6 +1346,8 @@ int main(int argc, char** argv) {
             {11, 3, 6, 4, 0, 0});
         recorded_pan_repairs(read_json(std::filesystem::path{argv[1]}.parent_path() / "prospi-20261121-low-infield-closeup.json"),
             {36, 0, 0, 0, 4, 18});
+        recorded_pan_repairs(read_json(std::filesystem::path{argv[1]}.parent_path() / "prospi-20261123-first-base-pans.json"),
+            {22, 0, 0, 0, 0, 0, 8, 24});
         std::cout << "Authored framing: 5000 geometry trials, per-eye margin and shot-identity preservation passed\n";
         baseline_pan_fixtures(read_json(std::filesystem::path{argv[1]}.parent_path() / "prospi-20261010-baseline-pan.json"));
         std::cout << "ProSpi calibrated-framing guards passed\n";

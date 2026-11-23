@@ -13152,8 +13152,16 @@ void VR::update_game_fov() {
                                 play_mode == ProSpiPlayCameraMode::ReplayCutscene && prospi_preset == ProSpiCameraPreset::LowInfieldSideCloseUp,
                             .podium_closeup = safety_zone == ProSpiCameraSafetyZone::FieldFloor &&
                                 play_mode == ProSpiPlayCameraMode::PitchBatterView && prospi_preset == ProSpiCameraPreset::FirstBaseWideTelephoto,
+                            .first_base_corner = safety_zone == ProSpiCameraSafetyZone::FieldFloor &&
+                                (play_mode == ProSpiPlayCameraMode::TelephotoBaseline || play_mode == ProSpiPlayCameraMode::CrowdStandRisk) &&
+                                prospi_preset == ProSpiCameraPreset::FirstBaseCornerLow,
+                            .first_base_dugout = (safety_zone == ProSpiCameraSafetyZone::FieldFloor || safety_zone == ProSpiCameraSafetyZone::StandCrowd) &&
+                                (((play_mode == ProSpiPlayCameraMode::TelephotoBaseline || play_mode == ProSpiPlayCameraMode::CrowdStandRisk) &&
+                                    prospi_preset == ProSpiCameraPreset::None) || (play_mode == ProSpiPlayCameraMode::ReplayCutscene &&
+                                    prospi_preset == ProSpiCameraPreset::FirstBaseTelephoto)),
                         });
                         const bool recorded = uevr::prospi::focus_guard::recorded_pan_scope(recorded_pan);
+                        const bool recorded_first_base = uevr::prospi::focus_guard::recorded_first_base_scope(recorded_pan);
                         auto repair_camera = current_request;
                         repair_camera.protected_camera = false;
                         repair_camera.sequencer_enabled = m_match_game_fov_prospi_auto_camera_sequencer->value();
@@ -13172,7 +13180,8 @@ void VR::update_game_fov() {
                             .protected_camera = (home_plate_pitch_view && !home_pan_presentation) || third_base_outfield_line_replay_camera ||
                                 play_mode == ProSpiPlayCameraMode::BallFollow || play_mode == ProSpiPlayCameraMode::AerialEstablishing ||
                                 framing_status == uevr::prospi::framing::Status::accepted ||
-                                (recorded && (dugout_celebration_tracking_camera || pre_celebration_line_camera)),
+                                (recorded && !recorded_first_base &&
+                                    (dugout_celebration_tracking_camera || pre_celebration_line_camera)),
                             .home_pan = home_pan_presentation,
                             .recorded_pan = recorded_pan,
                         };
