@@ -384,6 +384,23 @@ needed repair; a constant camera pointer alone does not establish a shot ID.
 The lightweight view trace and CSV expose `framing_repair_reason`; no extra
 actor scan, log loop, collision call or recording frequency is introduced.
 
+For the November 18 dugout entry, upward near-home close-up, and narrow
+first-base interview angle, the same check composes up to 30 cm of saved
+camera-relative translation into the endpoint proof. It requires a current
+matched focus at least 2 cm behind the assisted view and an endpoint above the
+field clearance before shortening dolly and recomputing signed lift. A lower
+floor applies only to the identified dugout entry; after the pan returns to its
+normal field floor, the original framing is used. The later wide interview
+angle, genuine stand views, and ball-follow remain outside these additions.
+
+The November 21 low infield close-up uses the same evidence checks. It can
+also recover the early part of the pan when excess lift places the verified
+focus clearly below the view before the dolly passes it. The correction keeps
+the same field floor, retains saved translation and uses signed pitch when
+recomputing lift. It never adds lift beyond the original assist. Other
+replays, the first-base corner pan and calibrated center-field cuts remain
+outside this change.
+
 This is not a player/podium detector or a collision fix. In particular, a
 high-foul black stadium still needs a failing capture to distinguish camera
 penetration from game-authored visibility/culling. No speculative visibility

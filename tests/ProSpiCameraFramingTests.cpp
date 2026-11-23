@@ -173,7 +173,9 @@ trace::Pose focus_endpoint(const fg::Request& r, const fg::Decision& d, float as
     const trace::Vector right0{-std::sin(yaw), std::cos(yaw), 0};
     const trace::Vector up0{-std::sin(pitch) * std::cos(yaw), -std::sin(pitch) * std::sin(yaw), std::cos(pitch)};
     for (size_t i = 0; i < 3; ++i) {
-        p.location[i] += forward[i] * d.dolly + (std::cos(roll) * up0[i] + std::sin(roll) * right0[i]) * d.lift;
+        const auto right = std::cos(roll) * right0[i] - std::sin(roll) * up0[i];
+        const auto up = std::cos(roll) * up0[i] + std::sin(roll) * right0[i];
+        p.location[i] += forward[i] * (d.dolly + r.forward_offset) + right * r.right_offset + up * (d.lift + r.up_offset);
     }
     return p;
 }
@@ -731,6 +733,116 @@ void captured_interview_crossings(const Json& fixture) {
         " marked-good="<<marked_good<<" mirrored="<<mirrored<<'\n';
 }
 
+void recorded_pan_repairs(const Json& fixture, const std::array<size_t, 6>& expected_counts) {
+    namespace cg = uevr::prospi::cut_guard;
+    namespace rp = uevr::prospi::repair;
+    namespace helpers = ebaseball_framing_tests;
+    constexpr float eye_margin = 3.3f;
+    std::array<size_t, 6> counts{};
+    for (const auto& sample : fixture.at("samples")) {
+        const auto name = sample.at("trace").get<std::string>() + " cut " + sample.at("cut").dump() +
+            " sequence " + sample.at("sequence").dump();
+        const auto label = sample.at("expected").get<std::string>();
+        const auto [forward, right, up] = sample.at("base_offsets").get<trace::Vector>();
+        const auto source = read_native_source(sample.at("native_source"));
+        const auto input = read_trace_pose(sample.at("view"));
+        const auto play = sample.at("play_mode").get<int>(), preset = sample.at("preset").get<int>();
+        auto r = helpers::request();
+        r.camera.camera = read_trace_pose(sample.at("camera"));
+        r.camera.zone = sample.at("zone"); r.camera.dolly = sample.at("dolly"); r.camera.lift = sample.at("lift");
+        r.camera.base_fov = sample.at("base_fov"); r.camera.floor = r.legacy_floor = sample.at("legacy_floor");
+        r.camera.forward_offset = forward; r.camera.right_offset = right; r.camera.up_offset = up;
+        r.protected_camera = play == 4 || play == 6;
+        r.recorded_pan = rp::admit_recorded_pan(r.camera.camera, {
+            .dugout_entry = r.camera.zone == 3 && play == 3 && preset == 0,
+            .upward_home = r.camera.zone == 1 && play == 5 && preset == 28,
+            .podium_closeup = r.camera.zone == 1 && play == 1 && preset == 24,
+        });
+        const auto owner = helpers::identity();
+        const cg::Snapshot packet{
+            .camera = r.camera.camera, .dolly = r.camera.dolly, .lift = r.camera.lift, .time_ns = r.camera.now_ns,
+            .automatic = true, .identity = owner, .framing_repair = r};
+        const auto before = cg::evaluate_current(packet, input, r.camera.now_ns, owner, source, eye_margin);
+        rp::Continuity continuity;
+        const auto after = cg::repair_current(packet, input, r.camera.now_ns, owner, source, eye_margin, before, continuity);
+        if (label == "control") {
+            require(after.status == before.status && after.dolly == before.dolly && after.lift == before.lift,
+                name + ": a good/untargeted angle changed");
+            ++counts[0];
+            continue;
+        }
+        const size_t family = label == "dugout" ? 1 : label == "home" ? 2 : label == "podium" ? 3 :
+            label == "infield-below" ? 4 : label == "infield-crossed" ? 5 : 0;
+        require(family != 0, name + ": unknown regression case");
+        const auto reason = family == 1 ? rp::Reason::dugout_entry : family == 2 ? rp::Reason::upward_home :
+            family == 3 ? rp::Reason::podium_closeup : rp::Reason::low_infield_closeup;
+        const auto recorded = trace::target_framing(read_trace_pose(sample.at("recorded_neutral")), source.look_at);
+        require(recorded.valid && (family == 4 ? !recorded.behind && recorded.clip_estimate_valid &&
+            recorded.offscreen_estimate && recorded.ndc_y < -1.05f : recorded.behind),
+            name + ": expected a recorded focus crossing or downward clip");
+        require(after.status == cg::Status::authored_window && after.repair_reason == reason &&
+            after.dolly < before.dolly && after.current_source.object == source.object,
+            name + ": owned current focal window was not recovered (" + rp::reason_name(after.repair_reason) + ")");
+        ++counts[family];
+
+        auto actual = r;
+        actual.camera.camera = input; actual.camera.camera.fov = source.pose.fov;
+        const auto original = focus_endpoint(actual.camera, {.dolly = before.dolly, .lift = before.lift}, source.pose.aspect);
+        const auto endpoint = focus_endpoint(actual.camera, {.dolly = after.dolly, .lift = after.lift}, source.pose.aspect);
+        require(trace::distance(original.location, read_trace_pose(sample.at("recorded_neutral")).location) < .02f,
+            name + ": independent offset composition disagrees with recorded HMD-neutral pose");
+        require(endpoint.location[2] >= r.field_floor + 1.999f && endpoint.location[2] < original.location[2] &&
+            rp::window_contains(actual, source, after.dolly, after.lift, eye_margin),
+            name + ": corrected shot lost the authored window or signed floor clearance");
+        helpers::verify_projection(actual, source, {reason, after.dolly, after.lift, true}, eye_margin,
+            [&](bool passed, const char* message) { require(passed, name + ": " + message); });
+        require(rp::matches_offsets(r, forward, right, up) && !rp::matches_offsets(r, forward + .01f, right, up) &&
+            !rp::matches_offsets(r, forward, right + .01f, up) && !rp::matches_offsets(r, forward, right, up + .01f),
+            name + ": the proof must apply to the same saved offsets consumed by the view");
+
+        if (family >= 4) {
+            require(after.lift < before.lift, name + ": the low close-up retained its excessive lift");
+            const auto safe = cg::repair_current(packet, input, r.camera.now_ns, owner, source, eye_margin, after, continuity);
+            require(safe.repair_reason == rp::Reason::unchanged && safe.dolly == after.dolly && safe.lift == after.lift,
+                name + ": the same rig, when already framed, must keep its exact offsets");
+        }
+
+        for (int failure = 0; failure < (family >= 4 ? 19 : 16); ++failure) {
+            auto changed = packet; auto current = owner; auto witness = source; auto view = input;
+            const auto now = r.camera.now_ns;
+            auto legacy = before;
+            switch (failure) {
+            case 0: changed.framing_repair.ebaseball = false; break;
+            case 1: changed.framing_repair.manual_controls = true; break;
+            case 2: changed.framing_repair.protected_camera = true; break;
+            case 3: changed.framing_repair.camera.automatic_source = false; break;
+            case 4: changed.framing_repair.camera.forward_offset = 31; break;
+            case 5: changed.framing_repair.camera.right_offset = std::numeric_limits<float>::quiet_NaN(); break;
+            case 6: changed.framing_repair.camera.zone = 4; break;
+            case 7: ++current.view_target.serial; break;
+            case 8: ++current.manager.serial; break;
+            case 9: witness.status = trace::SourceStatus::changed_during_read; break;
+            case 10: witness.time_ns = now - 50'000'001; break;
+            case 11: witness.pose.rotation[2] += .03f; break;
+            case 12: witness.look_at[2] += 100; break;
+            case 13: view.location[0] += 3; break;
+            case 14: legacy.dolly = 20; break;
+            case 15: changed.time_ns = now - 250'000'001; break;
+            case 16: changed.framing_repair.legacy_floor += 50; break;
+            case 17: changed.framing_repair.camera.mode = 2; break;
+            case 18: changed.framing_repair.camera.safety_enabled = false; break;
+            }
+            const auto held = cg::repair_current(changed, view, now, current, witness, eye_margin, legacy, continuity);
+            require(held.status == legacy.status && held.dolly == legacy.dolly && held.lift == legacy.lift,
+                name + ": unapproved input, changed ownership or an in-front focus altered the endpoint");
+        }
+    }
+    require(counts == expected_counts, "Recorded pan failure/control coverage changed");
+    std::cout << "Recorded pans repaired: dugout=" << counts[1] << " near-home=" << counts[2] <<
+        " podium=" << counts[3] << " low-infield clipped=" << counts[4] << " crossed=" << counts[5] <<
+        "; controls unchanged=" << counts[0] << '\n';
+}
+
 void crossing_focus_guards() {
     namespace cg = uevr::prospi::cut_guard;
     // Synthetic validated targets exercise the missing presentation envelopes;
@@ -1219,6 +1331,10 @@ int main(int argc, char** argv) {
         ebaseball_home_pan_tests::run([](bool passed, const char* message) { require(passed, message); });
         std::cout << "eBaseball final framing: automatic-calibration, rolled stereo windows, ownership/cache and 4000 geometry trials passed\n";
         captured_interview_crossings(read_json(std::filesystem::path{argv[1]}.parent_path() / "prospi-20261101-interview-crossing.json"));
+        recorded_pan_repairs(read_json(std::filesystem::path{argv[1]}.parent_path() / "prospi-20261118-recorded-pans.json"),
+            {11, 3, 6, 4, 0, 0});
+        recorded_pan_repairs(read_json(std::filesystem::path{argv[1]}.parent_path() / "prospi-20261121-low-infield-closeup.json"),
+            {36, 0, 0, 0, 4, 18});
         std::cout << "Authored framing: 5000 geometry trials, per-eye margin and shot-identity preservation passed\n";
         baseline_pan_fixtures(read_json(std::filesystem::path{argv[1]}.parent_path() / "prospi-20261010-baseline-pan.json"));
         std::cout << "ProSpi calibrated-framing guards passed\n";

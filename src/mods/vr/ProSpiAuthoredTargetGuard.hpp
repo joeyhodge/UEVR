@@ -5,12 +5,18 @@
 namespace uevr::prospi::focus_guard {
 
 enum class AuthoredScope : uint8_t {
-    presentation, near_home_crossing, interview_repair, dugout_repair, home_pan_repair
+    presentation, near_home_crossing, interview_repair, dugout_repair, home_pan_repair,
+    dugout_entry_repair, upward_home_repair, podium_closeup_repair, low_infield_closeup_repair
 };
+
+inline bool recorded_pan_scope(AuthoredScope scope) noexcept {
+    return scope == AuthoredScope::dugout_entry_repair || scope == AuthoredScope::upward_home_repair ||
+        scope == AuthoredScope::podium_closeup_repair || scope == AuthoredScope::low_infield_closeup_repair;
+}
 
 inline bool repair_scope(AuthoredScope scope) noexcept {
     return scope == AuthoredScope::interview_repair || scope == AuthoredScope::dugout_repair ||
-        scope == AuthoredScope::home_pan_repair;
+        scope == AuthoredScope::home_pan_repair || recorded_pan_scope(scope);
 }
 
 inline bool dugout_scope(AuthoredScope scope) noexcept {
@@ -52,6 +58,56 @@ inline bool home_pan_repair_rig(const trace::Pose& p) noexcept {
         std::abs(std::remainder(p.rotation[2], 360.0f)) <= 25 && p.fov >= 5 && p.fov <= 60;
 }
 
+// Recorded presentation rigs. The pose envelope alone never authorizes a correction.
+inline bool recorded_pan_rig(const trace::Pose& p, AuthoredScope scope) noexcept {
+    if (!trace::valid_pose(p) || std::abs(std::remainder(p.rotation[2], 360.0f)) > 0.01f) { return false; }
+    const auto [x, y, z] = p.location;
+    const auto pitch = std::remainder(p.rotation[0], 360.0f), yaw = std::remainder(p.rotation[1], 360.0f);
+    switch (scope) {
+    case AuthoredScope::dugout_entry_repair:
+        return x >= -3150 && x <= -2250 && y >= 200 && y <= 750 && z >= 40 && z <= 190 &&
+            pitch >= 2 && pitch <= 15 && yaw >= -110 && yaw <= -70 && p.fov >= 12 && p.fov <= 30;
+    case AuthoredScope::upward_home_repair:
+        return std::abs(x) <= 150 && y >= -350 && y <= -75 && z >= 50 && z <= 190 &&
+            pitch >= 2 && pitch <= 22 && yaw >= 30 && yaw <= 75 && p.fov >= 25 && p.fov <= 39;
+    case AuthoredScope::low_infield_closeup_repair:
+        return std::abs(x) <= 75 && y >= -410 && y <= -340 && z >= 20 && z <= 80 &&
+            pitch >= 4 && pitch <= 11 && yaw >= 47 && yaw <= 66 && p.fov >= 9 && p.fov <= 16;
+    case AuthoredScope::podium_closeup_repair:
+        return x >= 1150 && x <= 1450 && y >= -550 && y <= -320 && z >= 100 && z <= 230 &&
+            pitch >= 1 && pitch <= 10 && yaw >= -165 && yaw <= -125 && p.fov >= 25 && p.fov <= 39;
+    default: return false;
+    }
+}
+
+inline bool recorded_pan_target(const Request& r, const trace::NativeSource& source, AuthoredScope scope) noexcept {
+    const auto [x, y, z] = source.look_at;
+    const auto focus = source.focus_distance;
+    switch (scope) {
+    case AuthoredScope::dugout_entry_repair:
+        return std::abs(x - r.camera.location[0]) <= 300 && y >= -525 && y <= 300 &&
+            z >= 75 && z <= 240 && focus >= 300 && focus <= 950;
+    case AuthoredScope::upward_home_repair:
+        return std::abs(x) <= 250 && y >= -250 && y <= 150 && z >= 95 && z <= 240 &&
+            focus >= 125 && focus <= 450;
+    case AuthoredScope::low_infield_closeup_repair:
+        return x >= 175 && x <= 750 && y >= 30 && y <= 550 &&
+            z >= 100 && z <= 180 && focus >= 450 && focus <= 1200;
+    case AuthoredScope::podium_closeup_repair:
+        return x >= 875 && x <= 1350 && y >= -825 && y <= -450 && z >= 115 && z <= 250 &&
+            focus >= 170 && focus <= 400;
+    default: return false;
+    }
+}
+
+inline bool authored_offsets_supported(const Request& r, AuthoredScope scope) noexcept {
+    if (!recorded_pan_scope(scope)) {
+        return r.forward_offset == 0.0f && r.right_offset == 0.0f && r.up_offset == 0.0f;
+    }
+    return r.forward_offset * r.forward_offset + r.right_offset * r.right_offset +
+        r.up_offset * r.up_offset <= 30.0f * 30.0f;
+}
+
 inline bool crossing_candidate(const Request& r, bool presentation_camera,
     AuthoredScope scope = AuthoredScope::presentation) noexcept {
     return presentation_camera && r.enabled && r.prospi && r.mode == 3 && r.dolly_enabled &&
@@ -62,23 +118,27 @@ inline bool crossing_candidate(const Request& r, bool presentation_camera,
         ((scope != AuthoredScope::near_home_crossing && scope != AuthoredScope::interview_repair) || near_home_crossing_rig(r.camera)) &&
         (!dugout_scope(scope) || dugout_repair_rig(r.camera)) &&
         (scope != AuthoredScope::home_pan_repair || home_pan_repair_rig(r.camera)) &&
+        (!recorded_pan_scope(scope) || recorded_pan_rig(r.camera, scope)) &&
         std::abs(std::remainder(r.camera.rotation[2], 360.0f)) <= (repair_scope(scope) ? 25.0f : 0.01f) &&
         std::isfinite(r.dolly) && r.dolly > 0.0f && r.dolly <= 8000.0f &&
         std::isfinite(r.lift) && r.lift >= 0.0f && r.lift <= 600.0f &&
         std::isfinite(r.max_lift) && r.max_lift >= r.lift && r.max_lift <= 600.0f &&
         std::isfinite(r.floor) && r.floor >= -50.0f && r.floor <= 350.0f &&
         std::isfinite(r.base_fov) && r.base_fov >= 45.0f && r.base_fov <= 120.0f &&
-        r.forward_offset == 0.0f && r.right_offset == 0.0f && r.up_offset == 0.0f;
+        authored_offsets_supported(r, scope);
 }
 
-// A last-resort rail for presentation rigs outside the calibrated envelopes.
-// Change only a proved crossing of the game's current look-at point, not zoom
-// preferences, camera aim, lift, or any already-in-front endpoint.
-inline Decision bound_crossing(const Request& r, const trace::NativeSource& source, bool presentation_camera,
-    AuthoredScope scope = AuthoredScope::presentation) noexcept {
-    Decision out{.dolly = r.dolly, .lift = r.lift, .predicted_z = r.predicted_z};
-    if (!crossing_candidate(r, presentation_camera, scope)) { return out; }
-    out.status = Status::source_mismatch;
+struct AuthoredProjection {
+    double depth{}, x{}, y{}, camera_z{}, forward_z{}, up_z{}, cos_pitch{};
+    double half_width{}, half_height{}, authored_width{}, authored_height{};
+
+    double dolly_z(double dolly) const noexcept { return camera_z + forward_z * dolly; }
+    double end_z(double dolly, double lift) const noexcept { return dolly_z(dolly) + up_z * lift; }
+};
+
+// Called only after crossing_candidate validates the request geometry.
+inline std::optional<AuthoredProjection> project_authored_target(const Request& r,
+    const trace::NativeSource& source, AuthoredScope scope) noexcept {
     if (!trace::valid_source(source) || !source.object || !source.camera_actor || !r.camera_manager ||
         !source.pose.aspect_valid || !std::isfinite(source.pose.aspect) || source.pose.aspect < 0.5f || source.pose.aspect > 3.0f ||
         source.focus_distance < 100.0f || source.focus_distance >
@@ -90,10 +150,11 @@ inline Decision bound_crossing(const Request& r, const trace::NativeSource& sour
         trace::angle_delta(source.pose.rotation[0], r.camera.rotation[0]) > 0.1f ||
         trace::angle_delta(source.pose.rotation[1], r.camera.rotation[1]) > 0.1f ||
         trace::angle_delta(source.pose.rotation[2], r.camera.rotation[2]) > 0.01f ||
-        std::abs(source.pose.fov - r.camera.fov) > 0.1f) { return out; }
+        std::abs(source.pose.fov - r.camera.fov) > 0.1f ||
+        (recorded_pan_scope(scope) && !recorded_pan_target(r, source, scope))) { return {}; }
     if (scope == AuthoredScope::home_pan_repair &&
         (std::abs(source.look_at[0]) > 1500 || source.look_at[1] < -2000 || source.look_at[1] > 750 ||
-            source.look_at[2] < -50 || source.look_at[2] > 400)) { return out; }
+            source.look_at[2] < -50 || source.look_at[2] > 400)) { return {}; }
     constexpr double radians = 0.017453292519943295;
     const auto pitch = r.camera.rotation[0] * radians, yaw = r.camera.rotation[1] * radians;
     const auto roll = r.camera.rotation[2] * radians;
@@ -110,27 +171,55 @@ inline Decision bound_crossing(const Request& r, const trace::NativeSource& sour
     }
     if (!std::isfinite(depth) || !std::isfinite(lateral) || !std::isfinite(vertical) ||
         depth <= 0.0 || std::abs(depth - source.focus_distance) > 2.0 ||
-        std::hypot(lateral, vertical) > depth * std::tan(0.15 * radians)) { return out; }
+        std::hypot(lateral, vertical) > depth * std::tan(0.15 * radians)) { return {}; }
+
+    // Keep the original authored window, then translate into UEVR's saved
+    // camera-relative offsets before solving for the additional dolly/lift.
+    const auto width = depth * std::tan(source.pose.fov * radians * 0.5);
+    const auto half_width = std::tan(r.base_fov * radians * 0.5);
+    return AuthoredProjection{
+        depth - r.forward_offset, lateral - r.right_offset, vertical - r.up_offset,
+        r.camera.location[2] + s * r.forward_offset + right[2] * r.right_offset + up[2] * r.up_offset,
+        s, up[2], c, half_width, half_width / source.pose.aspect, width, width / source.pose.aspect};
+}
+
+inline bool authored_window_contains(const AuthoredProjection& p, float dolly, float lift,
+    double floor, float eye_margin) noexcept {
+    const auto remaining = p.depth - dolly;
+    return p.end_z(dolly, lift) + 0.001 >= floor && remaining >= eye_margin + 2.0 &&
+        std::abs(p.x) + p.authored_width + eye_margin <= (remaining - eye_margin) * (p.half_width * 0.95) + 0.0001 &&
+        std::abs(p.y - lift) + p.authored_height + eye_margin <= (remaining - eye_margin) * (p.half_height * 0.95) + 0.0001;
+}
+
+// A last-resort rail for presentation rigs outside the calibrated envelopes.
+// Change only a proved crossing of the game's current look-at point, not zoom
+// preferences, camera aim, lift, or any already-in-front endpoint.
+inline Decision bound_crossing(const Request& r, const trace::NativeSource& source, bool presentation_camera,
+    AuthoredScope scope = AuthoredScope::presentation) noexcept {
+    Decision out{.dolly = r.dolly, .lift = r.lift, .predicted_z = r.predicted_z};
+    if (!crossing_candidate(r, presentation_camera, scope)) { return out; }
+    const auto projection = project_authored_target(r, source, scope);
+    if (!projection) { out.status = Status::source_mismatch; return out; }
+    const auto& p = *projection;
     out.status = Status::unchanged;
-    if (r.dolly < depth) { return out; }
-    const auto half_width = std::tan(r.base_fov * radians * 0.5), half_height = half_width / source.pose.aspect;
-    const auto reserve = (std::max)({2.0, depth * std::tan(source.pose.fov * radians * 0.5) / half_width,
-        std::abs(lateral) / (half_width * 0.5), std::abs(vertical - r.lift) / (half_height * 0.5)});
-    const auto cap = (float)(depth - reserve - 0.01);
-    const auto old_z = r.camera.location[2] + s * r.dolly + up[2] * r.lift;
-    const auto end_z = r.camera.location[2] + s * cap + up[2] * r.lift;
+    if (r.dolly < p.depth) { return out; }
+    const auto reserve = (std::max)({2.0, p.authored_width / p.half_width,
+        std::abs(p.x) / (p.half_width * 0.5), std::abs(p.y - r.lift) / (p.half_height * 0.5)});
+    const auto cap = (float)(p.depth - reserve - 0.01);
+    const auto old_z = p.end_z(r.dolly, r.lift);
+    const auto end_z = p.end_z(cap, r.lift);
     const auto required_z = (std::min)((std::max)((double)r.floor, old_z), (double)r.floor + 2.0);
-    const auto remaining = depth - cap;
+    const auto remaining = p.depth - cap;
     // Match the existing float endpoint tolerance: 0.001 cm, not a lower floor.
     if (!std::isfinite(cap) || cap < 0.0f || cap >= r.dolly || !std::isfinite(end_z) ||
         end_z + 0.001 < required_z || remaining < reserve ||
-        std::abs(lateral) > remaining * half_width * 0.5 || std::abs(vertical - r.lift) > remaining * half_height * 0.5) {
+        std::abs(p.x) > remaining * p.half_width * 0.5 || std::abs(p.y - r.lift) > remaining * p.half_height * 0.5) {
         out.status = Status::no_safe_endpoint; return out;
     }
-    out.dolly = cap; out.predicted_z = (float)(r.camera.location[2] + s * cap);
+    out.dolly = cap; out.predicted_z = (float)p.dolly_z(cap);
     out.end_z = (float)end_z; out.target_depth = (float)remaining;
-    out.ndc_x = (float)(lateral / (remaining * half_width));
-    out.ndc_y = (float)((vertical - r.lift) / (remaining * half_height));
+    out.ndc_x = (float)(p.x / (remaining * p.half_width));
+    out.ndc_y = (float)((p.y - r.lift) / (remaining * p.half_height));
     out.status = Status::target_capped;
     return out;
 }
@@ -144,9 +233,14 @@ inline std::optional<bool> authored_endpoint_visible(const Request& r, const tra
     constexpr double rad = 0.017453292519943295;
     const double pitch = pose.rotation[0]*rad, yaw = pose.rotation[1]*rad, roll = pose.rotation[2]*rad;
     const auto f = trace::forward(pose);
+    const std::array<double,3> right{-std::sin(yaw)*std::cos(roll)+std::sin(pitch)*std::cos(yaw)*std::sin(roll),
+        std::cos(yaw)*std::cos(roll)+std::sin(pitch)*std::sin(yaw)*std::sin(roll), -std::cos(pitch)*std::sin(roll)};
     const std::array<double,3> up{-std::sin(pitch)*std::cos(yaw)*std::cos(roll)-std::sin(yaw)*std::sin(roll),
         -std::sin(pitch)*std::sin(yaw)*std::cos(roll)+std::cos(yaw)*std::sin(roll), std::cos(pitch)*std::cos(roll)};
-    for (size_t i=0;i<3;++i) { pose.location[i] += float(f[i]*r.dolly + up[i]*r.lift); }
+    for (size_t i = 0; i < 3; ++i) {
+        pose.location[i] += float(f[i] * (r.dolly + r.forward_offset) + right[i] * r.right_offset +
+            up[i] * (r.lift + r.up_offset));
+    }
     const auto framed = trace::target_framing(pose, source.look_at);
     if (!framed.valid) { return {}; }
     return !framed.behind && framed.clip_estimate_valid && !framed.offscreen_estimate;
@@ -157,48 +251,40 @@ inline std::optional<bool> authored_endpoint_visible(const Request& r, const tra
 // current authored target; an already-safe close/action shot is an exact no-op.
 inline Decision bound_authored_window(const Request& r, const trace::NativeSource& source,
     bool presentation_camera, float eye_margin = 0.0f, AuthoredScope scope = AuthoredScope::presentation) noexcept {
-    auto out = bound_crossing(r, source, presentation_camera, scope);
-    if (out.status == Status::off || out.status == Status::source_mismatch) { return out; }
-    out = {.status = Status::unchanged, .dolly = r.dolly, .lift = r.lift, .predicted_z = r.predicted_z};
+    Decision out{.dolly = r.dolly, .lift = r.lift, .predicted_z = r.predicted_z};
+    if (!crossing_candidate(r, presentation_camera, scope)) { return out; }
+    const auto projection = project_authored_target(r, source, scope);
+    if (!projection) { out.status = Status::source_mismatch; return out; }
+    const auto& p = *projection;
+    out.status = Status::unchanged;
     if (!std::isfinite(eye_margin) || eye_margin < 0 || eye_margin > 100) { return out; }
-    constexpr double radians = 0.017453292519943295;
-    const double pitch = r.camera.rotation[0] * radians, yaw = r.camera.rotation[1] * radians;
-    const double roll = r.camera.rotation[2] * radians;
-    const double s = std::sin(pitch), c = std::cos(pitch);
-    if (c <= 0.5) { return out; }
-    const std::array<double,3> forward{c * std::cos(yaw), c * std::sin(yaw), s};
-    const std::array<double,3> right{-std::sin(yaw) * std::cos(roll) + s * std::cos(yaw) * std::sin(roll),
-        std::cos(yaw) * std::cos(roll) + s * std::sin(yaw) * std::sin(roll), -c * std::sin(roll)};
-    const std::array<double,3> up{-s * std::cos(yaw) * std::cos(roll) - std::sin(yaw) * std::sin(roll),
-        -s * std::sin(yaw) * std::cos(roll) + std::cos(yaw) * std::sin(roll), c * std::cos(roll)};
-    double depth{}, x{}, y{};
-    for (size_t i = 0; i < 3; ++i) {
-        const double delta = double(source.look_at[i]) - r.camera.location[i];
-        depth += delta * forward[i]; x += delta * right[i]; y += delta * up[i];
-    }
-    const double half_width = std::tan(r.base_fov * radians * 0.5), half_height = half_width / source.pose.aspect;
-    const double remaining = depth - r.dolly;
+    if (p.cos_pitch <= 0.5) { return out; }
+    const double remaining = p.depth - r.dolly;
     const bool crossed = remaining <= 0.0;
-    if (scope == AuthoredScope::near_home_crossing && remaining > -2.0) { return out; }
-    const bool clipped = remaining > 0.0 &&
-        (std::abs(x) > remaining * half_width * 1.05 || std::abs(y - r.lift) > remaining * half_height * 1.05);
+    const bool low_infield = scope == AuthoredScope::low_infield_closeup_repair;
+    // This cut loses the focus below the view before dolly crosses it. Require
+    // a clear vertical miss from the lifted endpoint, not just a tight crop.
+    const bool clipped_below = low_infield && r.lift > 0 &&
+        p.y - r.lift < -(std::max)(remaining, 2.0) * p.half_height * 1.05;
+    if ((scope == AuthoredScope::near_home_crossing || recorded_pan_scope(scope)) &&
+        remaining > -2.0 && !clipped_below) { return out; }
+    const bool clipped = clipped_below || (remaining > 0.0 &&
+        (std::abs(p.x) > remaining * p.half_width * 1.05 || std::abs(p.y - r.lift) > remaining * p.half_height * 1.05));
     if (!crossed && !clipped) { return out; }
-    const double authored_width = depth * std::tan(source.pose.fov * radians * 0.5);
-    const double authored_height = authored_width / source.pose.aspect;
-    const double old_z = r.camera.location[2] + s * r.dolly + up[2] * r.lift;
+    const double old_z = p.end_z(r.dolly, r.lift);
+    if (recorded_pan_scope(scope) && old_z <= double(r.floor) + 2.0) { return out; }
     const double required_z = (std::min)((std::max)(double(r.floor), old_z), double(r.floor) + 2.0);
-    const double a = (required_z - r.camera.location[2]) / up[2], b = -s / up[2];
-    const double width = half_width * 0.95, height = half_height * 0.95;
-    struct Endpoint { float dolly{}, lift{}; double z{}, depth{}, x{}, y{}; };
+    const double a = (required_z - p.camera_z) / p.up_z, b = -p.forward_z / p.up_z;
+    const auto lift_limit = low_infield ? r.lift : r.max_lift;
+    const double width = p.half_width * 0.95, height = p.half_height * 0.95;
+    struct Endpoint { float dolly{}, lift{}; };
     const auto endpoint = [&](double dolly) {
         const auto d = float(dolly), lift = float((std::max)(0.0, a + b * d));
-        return Endpoint{d, lift, r.camera.location[2] + s * d + up[2] * lift, depth - d, x, y - lift};
+        return Endpoint{d, lift};
     };
     const auto safe = [&](const Endpoint& e) {
-        return std::isfinite(e.z) && e.dolly >= 0 && e.dolly < r.dolly && e.lift >= 0 && e.lift <= r.max_lift &&
-            e.z + 0.001 >= required_z && e.depth >= eye_margin + 2.0 &&
-            std::abs(e.x) + authored_width + eye_margin <= (e.depth - eye_margin) * width + 0.0001 &&
-            std::abs(e.y) + authored_height + eye_margin <= (e.depth - eye_margin) * height + 0.0001;
+        return e.dolly >= 0 && e.dolly < r.dolly && e.lift >= 0 && e.lift <= lift_limit &&
+            authored_window_contains(p, e.dolly, e.lift, required_z, eye_margin);
     };
     double best = -1.0;
     // Two linear lift regimes suffice; no game trace, actor search or iterative camera movement.
@@ -211,20 +297,21 @@ inline Decision bound_authored_window(const Request& r, const trace::NativeSourc
             return lo <= hi;
         };
         if (!constrain(lifted ? -b : b, lifted ? a : -a) ||
-            !constrain(slope, r.max_lift - intercept) || !constrain(1.0, depth - eye_margin - 2.0) ||
-            !constrain(width, (depth - eye_margin) * width - std::abs(x) - authored_width - eye_margin) ||
-            !constrain(height - slope, (depth - eye_margin) * height - y + intercept - authored_height - eye_margin) ||
-            !constrain(height + slope, (depth - eye_margin) * height + y - intercept - authored_height - eye_margin)) { return; }
+            !constrain(slope, lift_limit - intercept) || !constrain(1.0, p.depth - eye_margin - 2.0) ||
+            !constrain(width, (p.depth - eye_margin) * width - std::abs(p.x) - p.authored_width - eye_margin) ||
+            !constrain(height - slope, (p.depth - eye_margin) * height - p.y + intercept - p.authored_height - eye_margin) ||
+            !constrain(height + slope, (p.depth - eye_margin) * height + p.y - intercept - p.authored_height - eye_margin)) { return; }
         const auto d = (std::max)(lo, hi - 0.01);
         if (d >= 0 && d <= r.dolly && safe(endpoint(d))) { best = (std::max)(best, d); }
     };
     solve(0, 0, false); solve(a, b, true);
     if (best < 0) { out.status = Status::no_safe_endpoint; return out; }
     const auto e = endpoint(best);
+    const auto depth = p.depth - e.dolly;
     out.status = Status::target_capped; out.dolly = e.dolly; out.lift = e.lift;
-    out.predicted_z = float(r.camera.location[2] + s * e.dolly);
-    out.end_z = float(e.z); out.target_depth = float(e.depth);
-    out.ndc_x = float(e.x / (e.depth * half_width)); out.ndc_y = float(e.y / (e.depth * half_height));
+    out.predicted_z = float(p.dolly_z(e.dolly));
+    out.end_z = float(p.end_z(e.dolly, e.lift)); out.target_depth = float(depth);
+    out.ndc_x = float(p.x / (depth * p.half_width)); out.ndc_y = float((p.y - e.lift) / (depth * p.half_height));
     return out;
 }
 

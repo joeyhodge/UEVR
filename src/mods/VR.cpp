@@ -13145,24 +13145,36 @@ void VR::update_game_fov() {
                                 prospi_preset == ProSpiCameraPreset::HomePlateWaistHighReverse,
                             .celebration = dugout_celebration_tracking_camera || pre_celebration_line_camera,
                         });
+                        const auto recorded_pan = uevr::prospi::repair::admit_recorded_pan(focus_pose, {
+                            .dugout_entry = safety_zone == ProSpiCameraSafetyZone::StandCrowd &&
+                                play_mode == ProSpiPlayCameraMode::CrowdStandRisk && prospi_preset == ProSpiCameraPreset::None,
+                            .upward_home = safety_zone == ProSpiCameraSafetyZone::FieldFloor &&
+                                play_mode == ProSpiPlayCameraMode::ReplayCutscene && prospi_preset == ProSpiCameraPreset::LowInfieldSideCloseUp,
+                            .podium_closeup = safety_zone == ProSpiCameraSafetyZone::FieldFloor &&
+                                play_mode == ProSpiPlayCameraMode::PitchBatterView && prospi_preset == ProSpiCameraPreset::FirstBaseWideTelephoto,
+                        });
+                        const bool recorded = uevr::prospi::focus_guard::recorded_pan_scope(recorded_pan);
                         auto repair_camera = current_request;
                         repair_camera.protected_camera = false;
                         repair_camera.sequencer_enabled = m_match_game_fov_prospi_auto_camera_sequencer->value();
-                        repair_camera.automatic_source = source == ProSpiAutoCameraSource::RuleAssist ||
-                            source == ProSpiAutoCameraSource::LearnedNearest || source == ProSpiAutoCameraSource::ExactCalibration;
+                        repair_camera.automatic_source = request.automatic_source ||
+                            (!recorded && source == ProSpiAutoCameraSource::ExactCalibration);
                         prospi_framing_repair = {
                             .camera = repair_camera, .field_floor = field_min_z, .legacy_floor = safety_min_z,
                             .smoothing = m_match_game_fov_prospi_auto_camera_sequencer_smoothing->value(),
                             .rendering_method = m_rendering_method->value(),
                             .ebaseball = true,
-                            .manual_controls = prospi_tv_override_applied || generic_camera_preset_applied ||
+                            .manual_controls = (recorded && prospi_calibration_applied) ||
+                                prospi_tv_override_applied || generic_camera_preset_applied ||
                                 generic_camera_presets_apply_enabled || camera_cut_stabilizer_enabled ||
                                 m_match_game_fov_prospi_actual_clamp->value() || is_decoupled_pitch_enabled() ||
                                 m_match_game_fov_prospi_cinematic_camera_assist->value() || m_prospi_cutscene_segment_active,
                             .protected_camera = (home_plate_pitch_view && !home_pan_presentation) || third_base_outfield_line_replay_camera ||
                                 play_mode == ProSpiPlayCameraMode::BallFollow || play_mode == ProSpiPlayCameraMode::AerialEstablishing ||
-                                framing_status == uevr::prospi::framing::Status::accepted,
+                                framing_status == uevr::prospi::framing::Status::accepted ||
+                                (recorded && (dugout_celebration_tracking_camera || pre_celebration_line_camera)),
                             .home_pan = home_pan_presentation,
+                            .recorded_pan = recorded_pan,
                         };
                         if (uevr::prospi::repair::candidate(prospi_framing_repair)) {
                             prospi_native_layout = m_prospi_native_focus_probe.validated_native_layout().value_or(
@@ -13263,9 +13275,10 @@ VR::CameraViewOffsets VR::get_camera_view_offsets(const uevr::prospi::trace::Pos
     const auto now = uevr::prospi::trace::Recorder::clock_ns();
     auto decision = snapshot ? uevr::prospi::cut_guard::evaluate(*snapshot, input, now) :
         uevr::prospi::cut_guard::Decision{uevr::prospi::cut_guard::Status::unavailable};
+    const auto base_forward = m_camera_forward_offset->value(), base_up = m_camera_up_offset->value();
     const bool repair_enabled = snapshot && uevr::prospi::repair::candidate(snapshot->framing_repair) &&
         snapshot->framing_repair.rendering_method == m_rendering_method->value() &&
-        m_camera_forward_offset->value() == 0 && m_camera_right_offset->value() == 0 && m_camera_up_offset->value() == 0 &&
+        uevr::prospi::repair::matches_offsets(snapshot->framing_repair, base_forward, legacy.right, base_up) &&
         m_match_game_fov_prospi_camera_safety_guard->value() && m_match_game_fov_prospi_camera_safety_field_rule->value() &&
         m_match_game_fov_prospi_camera_safety_dolly_cap_strength->value() == 1 &&
         !is_decoupled_pitch_enabled() && !m_match_game_fov_prospi_actual_clamp->value() &&
@@ -13317,8 +13330,8 @@ VR::CameraViewOffsets VR::get_camera_view_offsets(const uevr::prospi::trace::Pos
     }
     m_prospi_current_view_status.store((int32_t)decision.status, std::memory_order_relaxed);
     m_prospi_framing_repair_status.store((int32_t)decision.repair_reason, std::memory_order_relaxed);
-    return {m_camera_forward_offset->value() + decision.dolly, legacy.right,
-        m_camera_up_offset->value() + decision.lift, decision.status, decision.current_source, decision.repair_reason};
+    return {base_forward + decision.dolly, legacy.right,
+        base_up + decision.lift, decision.status, decision.current_source, decision.repair_reason};
 }
 
 float VR::get_game_fov() const {

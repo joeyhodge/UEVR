@@ -57,7 +57,8 @@ template<class Expect> void verify_projection(const rp::Request& r, const tr::Na
     for(size_t i=0;i<3;++i) {
         right[i]=std::cos(roll)*right0[i]-std::sin(roll)*up0[i];
         up[i]=std::sin(roll)*right0[i]+std::cos(roll)*up0[i];
-        view.location[i]+=f[i]*d.dolly+up[i]*d.lift;
+        view.location[i] += f[i] * (d.dolly + r.camera.forward_offset) + right[i] * r.camera.right_offset +
+            up[i] * (d.lift + r.camera.up_offset);
     }
     const auto width=native.focus_distance*std::tan(native.pose.fov*rad*.5f);
     for(int x : {-1,1}) for(int y : {-1,1}) for(size_t axis=0;axis<3;++axis) for(int sign : {-1,1}) {

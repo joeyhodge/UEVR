@@ -12,7 +12,7 @@ namespace uevr::prospi::repair {
 enum class Reason : uint8_t {
     off, unchanged, protected_controls, unsupported_rig, source_unavailable,
     source_mismatch, no_safe_endpoint, interview_focus, dugout_focus, dugout_height, release_hold,
-    home_pan_focus, home_pan_height
+    home_pan_focus, home_pan_height, dugout_entry, upward_home, podium_closeup, low_infield_closeup
 };
 inline const char* reason_name(Reason reason) noexcept {
     switch (reason) {
@@ -28,6 +28,10 @@ inline const char* reason_name(Reason reason) noexcept {
     case Reason::release_hold: return "Safe pullback retained during recovery";
     case Reason::home_pan_focus: return "Home/plate authored window recovered";
     case Reason::home_pan_height: return "Home/plate excess lift recovered";
+    case Reason::dugout_entry: return "Dugout entry framing recovered";
+    case Reason::upward_home: return "Near-home close-up framing recovered";
+    case Reason::podium_closeup: return "Interview close-up framing recovered";
+    case Reason::low_infield_closeup: return "Low infield close-up framing recovered";
     default: return "Off / unsupported build";
     }
 }
@@ -37,6 +41,7 @@ struct Request {
     float field_floor{}, legacy_floor{}, smoothing{0.25f};
     int32_t rendering_method{};
     bool ebaseball{}, manual_controls{}, protected_camera{}, home_pan{};
+    focus_guard::AuthoredScope recorded_pan{};
 };
 struct Decision {
     Reason reason{};
@@ -52,7 +57,28 @@ inline bool admit_home_pan(const trace::Pose& camera, HomePanGates gates) noexce
         !gates.protected_preset && !gates.celebration && focus_guard::home_pan_repair_rig(camera);
 }
 
+struct RecordedPanGates {
+    bool dugout_entry{}, upward_home{}, podium_closeup{};
+};
+inline focus_guard::AuthoredScope admit_recorded_pan(const trace::Pose& camera, RecordedPanGates gates) noexcept {
+    using Scope = focus_guard::AuthoredScope;
+    if (gates.dugout_entry && focus_guard::recorded_pan_rig(camera, Scope::dugout_entry_repair)) {
+        return Scope::dugout_entry_repair;
+    }
+    if (gates.upward_home && focus_guard::recorded_pan_rig(camera, Scope::upward_home_repair)) {
+        return Scope::upward_home_repair;
+    }
+    if (gates.upward_home && focus_guard::recorded_pan_rig(camera, Scope::low_infield_closeup_repair)) {
+        return Scope::low_infield_closeup_repair;
+    }
+    if (gates.podium_closeup && focus_guard::recorded_pan_rig(camera, Scope::podium_closeup_repair)) {
+        return Scope::podium_closeup_repair;
+    }
+    return Scope::presentation;
+}
+
 inline focus_guard::AuthoredScope scope(const Request& r) noexcept {
+    if (focus_guard::recorded_pan_scope(r.recorded_pan)) { return r.recorded_pan; }
     if (r.home_pan) { return focus_guard::AuthoredScope::home_pan_repair; }
     if (focus_guard::near_home_crossing_rig(r.camera.camera)) { return focus_guard::AuthoredScope::interview_repair; }
     return focus_guard::AuthoredScope::dugout_repair;
@@ -73,37 +99,33 @@ inline bool candidate(const Request& r) noexcept {
             !(r.home_pan && r.camera.zone == 0)) ||
         !std::isfinite(r.field_floor) || r.field_floor < -50 || r.field_floor > 350 ||
         !std::isfinite(r.legacy_floor) || !std::isfinite(r.smoothing)) { return false; }
+    using Scope = focus_guard::AuthoredScope;
+    if (r.recorded_pan == Scope::dugout_entry_repair &&
+        (r.camera.zone != 3 || r.legacy_floor <= r.field_floor + 350)) { return false; }
+    if ((r.recorded_pan == Scope::upward_home_repair || r.recorded_pan == Scope::podium_closeup_repair) &&
+        r.camera.zone != 1) { return false; }
+    if (r.recorded_pan == Scope::low_infield_closeup_repair &&
+        (r.camera.zone != 1 || r.legacy_floor != r.field_floor)) { return false; }
     const auto c = geometry(r, r.camera.camera, r.camera.now_ns, r.camera.dolly, r.camera.lift);
     return focus_guard::crossing_candidate(c, true, scope(r));
+}
+
+inline bool matches_offsets(const Request& r, float forward, float right, float up) noexcept {
+    return forward == r.camera.forward_offset && right == r.camera.right_offset && up == r.camera.up_offset;
+}
+
+inline bool window_contains(const focus_guard::Request& c, const focus_guard::AuthoredProjection& p, float dolly, float lift,
+    float eye_margin) noexcept {
+    return dolly >= 0 && dolly <= c.dolly && lift >= 0 && lift <= c.max_lift &&
+        eye_margin >= 0 && eye_margin <= 100 && focus_guard::authored_window_contains(p, dolly, lift, c.floor, eye_margin);
 }
 
 inline bool window_contains(const Request& r, const trace::NativeSource& native, float dolly, float lift,
     float eye_margin) noexcept {
     if (!candidate(r)) { return false; }
     const auto c = geometry(r, r.camera.camera, r.camera.now_ns, r.camera.dolly, r.camera.lift);
-    const auto checked = focus_guard::bound_crossing(c, native, true, scope(r));
-    if (checked.status == focus_guard::Status::off || checked.status == focus_guard::Status::source_mismatch ||
-        !std::isfinite(dolly) || !std::isfinite(lift) || dolly < 0 || dolly > c.dolly || lift < 0 || lift > c.max_lift ||
-        !std::isfinite(eye_margin) || eye_margin < 0 || eye_margin > 100) { return false; }
-    constexpr double rad = std::numbers::pi_v<double> / 180;
-    const auto pitch = c.camera.rotation[0] * rad, yaw = c.camera.rotation[1] * rad, roll = c.camera.rotation[2] * rad;
-    const auto s = std::sin(pitch), cp = std::cos(pitch), cr = std::cos(roll), sr = std::sin(roll);
-    const std::array<double,3> forward{cp * std::cos(yaw), cp * std::sin(yaw), s};
-    const std::array<double,3> right{-std::sin(yaw)*cr+s*std::cos(yaw)*sr, std::cos(yaw)*cr+s*std::sin(yaw)*sr, -cp*sr};
-    const std::array<double,3> up{-s*std::cos(yaw)*cr-std::sin(yaw)*sr, -s*std::sin(yaw)*cr+std::cos(yaw)*sr, cp*cr};
-    double depth{}, x{}, y{};
-    for (size_t i = 0; i < 3; ++i) {
-        const auto delta = double(native.look_at[i]) - c.camera.location[i];
-        depth += delta * forward[i]; x += delta * right[i]; y += delta * up[i];
-    }
-    const auto half_width = std::tan(c.base_fov * rad * 0.5), half_height = half_width / native.pose.aspect;
-    const auto authored_width = depth * std::tan(native.pose.fov * rad * 0.5);
-    const auto remaining = depth - dolly;
-    const auto end_z = c.camera.location[2] + s * dolly + up[2] * lift;
-    return end_z + 0.001 >= r.field_floor && remaining >= eye_margin + 2 &&
-        std::abs(x) + authored_width + eye_margin <= (remaining - eye_margin) * half_width * 0.95 + 0.0001 &&
-        std::abs(y - lift) + authored_width / native.pose.aspect + eye_margin <=
-            (remaining - eye_margin) * half_height * 0.95 + 0.0001;
+    const auto projection = focus_guard::project_authored_target(c, native, scope(r));
+    return projection && window_contains(c, *projection, dolly, lift, eye_margin);
 }
 
 inline Decision evaluate(const Request& r, const trace::NativeSource& native, float eye_margin = 0) noexcept {
@@ -123,6 +145,13 @@ inline Decision evaluate(const Request& r, const trace::NativeSource& native, fl
     }
     if (!correction.applied()) { out.reason = Reason::unchanged; return out; }
     out.dolly = correction.dolly; out.lift = correction.lift; out.applied = true;
+    switch (selected) {
+    case focus_guard::AuthoredScope::dugout_entry_repair: out.reason = Reason::dugout_entry; return out;
+    case focus_guard::AuthoredScope::upward_home_repair: out.reason = Reason::upward_home; return out;
+    case focus_guard::AuthoredScope::podium_closeup_repair: out.reason = Reason::podium_closeup; return out;
+    case focus_guard::AuthoredScope::low_infield_closeup_repair: out.reason = Reason::low_infield_closeup; return out;
+    default: break;
+    }
     out.reason = selected == focus_guard::AuthoredScope::home_pan_repair ?
         (r.legacy_floor > 350 && out.lift < r.camera.lift - 1 ? Reason::home_pan_height : Reason::home_pan_focus) :
         selected == focus_guard::AuthoredScope::interview_repair ? Reason::interview_focus :
@@ -140,7 +169,8 @@ public:
         auto result = evaluate(r, native, eye_margin);
         const auto now = r.camera.now_ns;
         const auto change = shot::compare(m_identity, identity);
-        const Context context{r.rendering_method, r.field_floor, r.camera.max_lift, r.camera.base_fov, r.smoothing, r.home_pan};
+        const Context context{r.rendering_method, r.field_floor, r.camera.max_lift, r.camera.base_fov, r.smoothing, r.home_pan,
+            r.recorded_pan, r.camera.forward_offset, r.camera.right_offset, r.camera.up_offset};
         const bool continuous = m_valid && identity.valid && change == shot::Change::unchanged &&
             context == m_context &&
             now > m_time && now - m_time <= 250'000'000 &&
@@ -170,17 +200,15 @@ public:
                     allowed = return_smoothing::apply(result.dolly, m_dolly, retention);
                 }
             }
-            auto held_request = geometry(r, r.camera.camera, now, allowed, 0);
-            // Recompute signed clearance for the held dolly on the current pose.
-            const auto f = trace::forward(held_request.camera);
-            const auto pitch = held_request.camera.rotation[0] * std::numbers::pi_v<double> / 180;
-            const auto roll = held_request.camera.rotation[2] * std::numbers::pi_v<double> / 180;
-            const auto up_z = std::cos(pitch) * std::cos(roll);
-            const auto z = held_request.camera.location[2] + f[2] * allowed;
-            held_request.lift = up_z > 0 ? float((std::max)(0.0, (double(r.field_floor) + 2 - z) / up_z)) : r.camera.max_lift + 1;
-            if (window_contains(r, native, allowed, held_request.lift, eye_margin)) {
-                result.dolly = allowed; result.lift = held_request.lift;
-                result.applied = true; result.reason = Reason::release_hold;
+            const auto c = geometry(r, r.camera.camera, now, r.camera.dolly, r.camera.lift);
+            const auto selected = scope(r);
+            if (const auto p = focus_guard::project_authored_target(c, native, selected); p && p->up_z > 0) {
+                const auto lift = float((std::max)(0.0, (double(c.floor) + 2 - p->dolly_z(allowed)) / p->up_z));
+                if ((selected != focus_guard::AuthoredScope::low_infield_closeup_repair || lift <= c.lift) &&
+                    window_contains(c, *p, allowed, lift, eye_margin)) {
+                    result.dolly = allowed; result.lift = lift;
+                    result.applied = true; result.reason = Reason::release_hold;
+                }
             }
         }
         if (!continuous || result.dolly < m_dolly - 0.001f) { m_last_tighten = now; }
@@ -195,6 +223,8 @@ private:
         int32_t rendering_method{};
         float floor{}, max_lift{}, base_fov{}, smoothing{};
         bool home_pan{};
+        focus_guard::AuthoredScope recorded_pan{};
+        float forward_offset{}, right_offset{}, up_offset{};
         bool operator==(const Context&) const = default;
     };
     bool m_valid{};
