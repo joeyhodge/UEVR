@@ -1,0 +1,78 @@
+{
+  "provenance": "Raw EXE code, RIP and vtable witnesses for eBaseball 2.4.0 (Steam 26723217). Getter ownership verified from the independently matched camera/sentinel constructors.",
+  "sha256": "6c884bca589ceca5d22cabb6b557bf4e7c41e594c3cff57ef16bc5e35e8ce10d",
+  "base": 5368709120,
+  "timestamp": 1794475923,
+  "image_size": 862302208,
+  "vertical_fov_offset": 28,
+  "blocks": [
+    {
+      "rva": 92904736,
+      "bytes": "488bc44889580848897010574881ecc00000000f2970e80f2978d8440f2940c8"
+    },
+    {
+      "rva": 92904848,
+      "bytes": "4885db480f44d84038b0140400007405488bd8eb08488bc8e8c3010000488bcf"
+    },
+    {
+      "rva": 92904902,
+      "bytes": "440f285370440f295424300f2883800000000f29442420f3410f5cc20f28d045"
+    },
+    {
+      "rva": 92871627,
+      "bytes": "b801000000f00fc1053852f10d8b0d3252f10d908b0d2b52f10d9048ffc983e1"
+    },
+    {
+      "rva": 92895376,
+      "bytes": "40534883ec20488bd9488d0dba6a4d15e8bb29b801488b430833c9488b400848"
+    },
+    {
+      "rva": 92902096,
+      "bytes": "40534883ec20488bd9488d0d2d514d15e87b0fb801488bc34883c4205bc3cccc"
+    },
+    {
+      "rva": 92895152,
+      "bytes": "4883ec28488d0d9f6b4d15e8a02ab80133c04883c428c3cccccccccccccccccc"
+    },
+    {
+      "rva": 92874288,
+      "bytes": "4883ec28488d0d22bc4d15e8207cb801488b05994ff00d488b40104883c428c3"
+    },
+    {
+      "rva": 52056976,
+      "bytes": "4883ec48f20f101a8b42080f28e3f30f100dce487a040f28c389442438f30f10"
+    },
+    {
+      "rva": 52055024,
+      "bytes": "40534883ec50f20f1012488bd98b4208488d4c24300f28ca89442448f30f1044"
+    },
+    {
+      "rva": 52056208,
+      "bytes": "48895c2408574883ec30488b5910488bf90f297424204885db7411488b832802"
+    },
+    {
+      "rva": 92895407,
+      "bytes": "483b05f202f00d"
+    },
+    {
+      "rva": 92874304,
+      "bytes": "488b05994ff00d"
+    },
+    {
+      "rva": 92871632,
+      "bytes": "f00fc1053852f10d"
+    },
+    {
+      "rva": 92905023,
+      "bytes": "488b4360f30f10701c"
+    },
+    {
+      "rva": 139038016,
+      "bytes": "b077894501000000"
+    },
+    {
+      "rva": 129187392,
+      "bytes": "90531a4301000000f04b1a430100000090501a4301000000"
+    }
+  ]
+}

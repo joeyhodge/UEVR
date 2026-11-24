@@ -11,11 +11,12 @@ struct VerifiedBuild {
     std::array<CodeFingerprint, 11> code;
     uint32_t counter_instruction;
     uint32_t vertical_fov_instruction{};
+    bool ebaseball{};
 };
 
 // The publisher/bridge contract is shared; ProSpi 2025 has an earlier lens FOV field.
 // Code, globals and vtables move independently; never apply a single RVA delta.
-inline constexpr std::array<VerifiedBuild, 3> verified_builds{{
+inline constexpr std::array<VerifiedBuild, 4> verified_builds{{
     {1786532279, {0, 783106048, 0x12f98f20, 0x12f994e8, 0x12fa8740,
         0x083be008, 0x07a4e7c0, 0x05818b20, 0x05817000}, {{
         {0x05819570, "488bc44889580848897010574881ecc00000000f2970e80f2978d8440f2940c8"},
@@ -29,7 +30,7 @@ inline constexpr std::array<VerifiedBuild, 3> verified_builds{{
         {0x030ddb50, "4883ec48f20f101a8b42080f28e3f30f100d0e6578040f28c389442438f30f10"},
         {0x030dd3b0, "40534883ec50f20f1012488bd98b4208488d4c24300f28ca89442448f30f1044"},
         {0x030dd850, "48895c2408574883ec30488b5910488bf90f297424204885db7411488b832802"},
-    }}, 0x05811420},
+    }}, 0x05811420, 0, true},
     {1790730967, {0, 771923968, 0x132bf3e0, 0x132bf9a8, 0x132cec10,
         0x0838d708, 0x07a28668, 0x057e5400, 0x057e38e0}, {{
         {0x057e5e50, "488bc44889580848897010574881ecc00000000f2970e80f2978d8440f2940c8"},
@@ -43,7 +44,7 @@ inline constexpr std::array<VerifiedBuild, 3> verified_builds{{
         {0x030f1190, "4883ec48f20f101a8b42080f28e3f30f100dced174040f28c389442438f30f10"},
         {0x030f09f0, "40534883ec50f20f1012488bd98b4208488d4c24300f28ca89442448f30f1044"},
         {0x030f0e90, "48895c2408574883ec30488b5910488bf90f297424204885db7411488b832802"},
-    }}, 0x057ddd00},
+    }}, 0x057ddd00, 0, true},
     {1773341438, {0, 737062912, 0x10693620, 0x10693b88, 0x106a2de0,
         0x0849eef8, 0x07ab58e0, 0x055a2ef0, 0x055a13d0, 0x18}, {{
         {0x055a3980, "488bc44889580848897010574881ecc00000000f2970e80f2978d8440f2940c8"},
@@ -58,6 +59,20 @@ inline constexpr std::array<VerifiedBuild, 3> verified_builds{{
         {0x02e93130, "40534883ec50f20f1012488bd98b4208488d4c24300f28ca89442448f30f1044"},
         {0x02e935d0, "48895c2408574883ec30488b5910488bf90f297424204885db7411488b832802"},
     }}, 0x0559c490, 0x055a3aa3},
+    {1794475923, {0, 862302208, 0x137975e0, 0x13797ba8, 0x137a6e10,
+        0x08498d08, 0x07b33e38, 0x058992d0, 0x058977b0}, {{
+        {0x05899d20, "488bc44889580848897010574881ecc00000000f2970e80f2978d8440f2940c8"},
+        {0x05899d90, "4885db480f44d84038b0140400007405488bd8eb08488bc8e8c3010000488bcf"},
+        {0x05899dc6, "440f285370440f295424300f2883800000000f29442420f3410f5cc20f28d045"},
+        {0x05891bcb, "b801000000f00fc1053852f10d8b0d3252f10d908b0d2b52f10d9048ffc983e1"},
+        {0x05897890, "40534883ec20488bd9488d0dba6a4d15e8bb29b801488b430833c9488b400848"},
+        {0x058992d0, "40534883ec20488bd9488d0d2d514d15e87b0fb801488bc34883c4205bc3cccc"},
+        {0x058977b0, "4883ec28488d0d9f6b4d15e8a02ab80133c04883c428c3cccccccccccccccccc"},
+        {0x05892630, "4883ec28488d0d22bc4d15e8207cb801488b05994ff00d488b40104883c428c3"},
+        {0x031a5390, "4883ec48f20f101a8b42080f28e3f30f100dce487a040f28c389442438f30f10"},
+        {0x031a4bf0, "40534883ec50f20f1012488bd98b4208488d4c24300f28ca89442448f30f1044"},
+        {0x031a5090, "48895c2408574883ec30488b5910488bf90f297424204885db7411488b832802"},
+    }}, 0x05891bd0, 0x05899e43, true},
 }};
 
 inline const VerifiedBuild* verified_build(uint32_t timestamp, size_t image_size) noexcept {
@@ -71,8 +86,9 @@ inline const VerifiedBuild* verified_build(uint32_t timestamp, size_t image_size
 // Both games share an executable name; a renamed 2025 install is not eBaseball.
 inline bool ebaseball_layout(const Layout& layout) noexcept {
     if (!layout.base) { return false; }
-    for (size_t i = 0; i < 2; ++i) {
-        const auto& expected = verified_builds[i].layout;
+    for (const auto& build : verified_builds) {
+        if (!build.ebaseball) { continue; }
+        const auto& expected = build.layout;
         if (layout.image_size == expected.image_size && layout.context_rva == expected.context_rva &&
             layout.sentinel_rva == expected.sentinel_rva && layout.frame_rva == expected.frame_rva &&
             layout.sentinel_vtable_rva == expected.sentinel_vtable_rva && layout.bridge_vtable_rva == expected.bridge_vtable_rva &&

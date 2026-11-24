@@ -12,10 +12,11 @@ zero is valid and UINT64_MAX is the invalid dummy observed in the live roster.
 
 | Edition | Image size | PE timestamp | Handoff RVA | Enabled | Bounds | Transform object | Visibility byte |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| eBaseball | 0x2e02a000 | 1790730967 | 0x5851c98 | +0x6e0 | +0x7e0 | +0x388 | R12B |
+| eBaseball 2.3.0 | 0x2e02a000 | 1790730967 | 0x5851c98 | +0x6e0 | +0x7e0 | +0x388 | R12B |
+| eBaseball 2.4.0 | 0x3365b000 | 1794475923 | 0x5905d08 | +0x6e0 | +0x7e0 | +0x388 | R12B |
 | ProSpi 2025 | 0x2beeb000 | 1773341438 | 0x5600809 | +0x6d8 | +0x990 | +0x380 | R15B |
 
-Both editions are checked independently against their enabled-flag branch,
+Each build is checked independently against its enabled-flag branch,
 bounds setup, native bounds-pointer setter, matrix-copy producer and renderer
 handoff. Unwind ownership must also cover the handoff. Identity alone is not
 permission to assume the other edition's layout. Unknown builds retain the

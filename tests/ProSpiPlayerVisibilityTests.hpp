@@ -16,9 +16,11 @@ inline std::vector<uint8_t> hex(std::string_view value) {
 }
 template<class Expect> void run(const Expect& expect) {
     const auto fixtures = std::filesystem::path{__FILE__}.parent_path()/"fixtures";
-    nlohmann::json contracts, roster;
+    nlohmann::json contracts, updated, roster;
     try {
         std::ifstream cf{fixtures/"prospi-player-contracts-20261105.json"}; cf >> contracts;
+        std::ifstream uf{fixtures/"prospi-player-contract-ebaseball-240.json"}; uf >> updated;
+        contracts.push_back(updated);
         std::ifstream rf{fixtures/"prospi-player-roster-20261105.json"}; rf >> roster;
     } catch (const std::exception&) { expect(false, "ProSpi native code and read-only roster fixtures load"); return; }
     for (const auto& contract : contracts) {

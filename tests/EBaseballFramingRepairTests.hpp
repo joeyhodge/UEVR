@@ -253,9 +253,10 @@ template<class Expect> void run(Expect&& expect) {
         }
     }
     expect(repaired>500 && preserved>500, "randomized coverage exercises both repairs and unchanged good shots");
-    for(size_t build=0;build<3;++build) {
-        auto layout=tr::native::verified_builds[build].layout; layout.base=0x140000000;
-        expect(tr::native::ebaseball_layout(layout)==(build<2), "both validated eBaseball builds are isolated from ProSpi 2025");
+    for (const auto& build : tr::native::verified_builds) {
+        auto layout=build.layout; layout.base=0x140000000;
+        expect(tr::native::ebaseball_layout(layout)==(build.timestamp != 1773341438u),
+            "validated eBaseball builds are isolated from ProSpi 2025");
         layout.bridge_vtable_rva++;
         expect(!tr::native::ebaseball_layout(layout), "partial or foreign layout contracts cannot pass the variant gate");
     }

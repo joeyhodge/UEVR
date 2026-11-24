@@ -39,6 +39,19 @@ template<class Read> std::optional<Layout> verified_layout(Read read, uintptr_t 
         for (const auto proof : proofs) { if (!native_code::matches(read, base, image_size, proof)) { return {}; } }
         return Layout{base, image_size, 0x6d8, 0x990, 0x380, 0x5600809, true};
     }
+    if (image_size == 0x3365b000 && timestamp == 1794475923u) { // eBaseball 2.4.0
+        constexpr CodeProof proofs[]{
+            {0x5905420, "488db7e0070000f30f110ef30f1187f4070000f30f1187ec070000"},
+            {0x590543d, "488db7e0070000488bd6488b8f88030000e88d75f9ff"},
+            {0x590560a, "80bfe006000000740984db7405"},
+            {0x5905d00, "e8cbcbf8ff4c8b08450fb6c4488b5708488bc841ff91e8000000f30f108f70070000488bcfe8c6e4"},
+            {0x589c9e0, "48895c2408574883ec20488bd9488bfa488d0dfa1a4d15e864d8b7014885ff74124889bba0010000488b5c24304883c4205fc3488b83880100004885c0740f488b40304883c014488983a0010000488b5c24304883c4205fc3"},
+            {0x59052f4, "488d4d10e863d2fbff"},
+            {0x58c2560, "48895c2408574883ec20488bf9488bda488d0df6c94a15e8e47cb5010f1003488bc70f11070f104b100f114f100f1043200f1147200f104b30488b5c24300f114f304883c4205fc3"},
+        };
+        for (const auto proof : proofs) { if (!native_code::matches(read, base, image_size, proof)) { return {}; } }
+        return Layout{base, image_size, 0x6e0, 0x7e0, 0x388, 0x5905d08, false};
+    }
     return {};
 }
 }

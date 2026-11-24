@@ -135,7 +135,8 @@ void native_layout_guards(const char* current_fixture) {
     }
     require(current_fixture != nullptr, "Current EXE slices were not supplied");
     const std::filesystem::path current_path{current_fixture};
-    for (const auto& path : {current_path, current_path.parent_path() / "prospi-native-layout-2025.json"}) {
+    for (const auto& path : {current_path, current_path.parent_path() / "prospi-native-layout-2025.json",
+            current_path.parent_path() / "prospi-native-layout-ebaseball-240.json"}) {
         std::ifstream file(path); nlohmann::json captured; file >> captured;
         const auto expected = native::verified_build(captured.at("timestamp"), captured.at("image_size"));
         require(expected != nullptr, "Captured EXE identity is not supported");

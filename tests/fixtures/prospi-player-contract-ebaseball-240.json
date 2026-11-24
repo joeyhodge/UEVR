@@ -1,0 +1,43 @@
+{
+  "edition": "ebaseball 2.4.0",
+  "sha256": "6c884bca589ceca5d22cabb6b557bf4e7c41e594c3cff57ef16bc5e35e8ce10d",
+  "image_size": 862302208,
+  "timestamp": 1794475923,
+  "updater_rva": 93344032,
+  "handoff_rva": 93347080,
+  "enabled": 1760,
+  "bounds": 2016,
+  "transform": 904,
+  "register": "r12b",
+  "source": "Steam 26723217 EXE. Same caller-owned bounds arguments and low-byte visibility handoff. The actual matrix call links to the matched matrix copy body.",
+  "witnesses": [
+    {
+      "rva": 93344800,
+      "bytes": "488db7e0070000f30f110ef30f1187f4070000f30f1187ec070000"
+    },
+    {
+      "rva": 93344829,
+      "bytes": "488db7e0070000488bd6488b8f88030000e88d75f9ff"
+    },
+    {
+      "rva": 93345290,
+      "bytes": "80bfe006000000740984db7405"
+    },
+    {
+      "rva": 93347072,
+      "bytes": "e8cbcbf8ff4c8b08450fb6c4488b5708488bc841ff91e8000000f30f108f70070000488bcfe8c6e4"
+    },
+    {
+      "rva": 92916192,
+      "bytes": "48895c2408574883ec20488bd9488bfa488d0dfa1a4d15e864d8b7014885ff74124889bba0010000488b5c24304883c4205fc3488b83880100004885c0740f488b40304883c014488983a0010000488b5c24304883c4205fc3"
+    },
+    {
+      "rva": 93070688,
+      "bytes": "48895c2408574883ec20488bf9488bda488d0df6c94a15e8e47cb5010f1003488bc70f11070f104b100f114f100f1043200f1147200f104b30488b5c24300f114f304883c4205fc3"
+    },
+    {
+      "rva": 93344500,
+      "bytes": "488d4d10e863d2fbff"
+    }
+  ]
+}
