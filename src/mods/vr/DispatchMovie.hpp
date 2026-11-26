@@ -18,6 +18,9 @@ struct Frame {
 void update(Scope scope, sdk::UObject* world);
 std::optional<Frame> read();
 bool current(const Frame& frame);
+bool handoff_current(uint64_t submitted_epoch, uint64_t submitted_ms);
+uint64_t invalidate_presentation() noexcept;
+uint64_t presentation_revision() noexcept;
 // Only succeeds on the engine's post-flush Present thread, on its own queue.
 std::optional<D3D12_RESOURCE_STATES> source_state(const Frame&, ID3D12Device*, ID3D12CommandQueue*, IDXGISwapChain*);
 void note_submission(bool requested, bool presented);

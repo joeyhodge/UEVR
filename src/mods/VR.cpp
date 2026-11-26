@@ -18126,6 +18126,7 @@ void VR::set_standing_origin(const Vector4f& origin) {
     std::unique_lock _{ get_runtime()->pose_mtx };
     
     m_standing_origin = origin;
+    if (m_compatibility_dispatch_world_locked_movies->value()) { uevr::dispatch_movie::invalidate_presentation(); }
 }
 
 glm::quat VR::get_rotation_offset() {
@@ -18150,6 +18151,7 @@ void VR::recenter_view() {
     const auto new_rotation_offset = glm::normalize(glm::inverse(utility::math::flatten(glm::quat{get_rotation(0)})));
 
     set_rotation_offset(new_rotation_offset);
+    if (m_compatibility_dispatch_world_locked_movies->value()) { uevr::dispatch_movie::invalidate_presentation(); }
 }
 
 void VR::recenter_horizon() {
@@ -18158,6 +18160,7 @@ void VR::recenter_horizon() {
     const auto new_rotation_offset = glm::normalize(glm::inverse(glm::quat{get_rotation(0)}));
 
     set_rotation_offset(new_rotation_offset);
+    if (m_compatibility_dispatch_world_locked_movies->value()) { uevr::dispatch_movie::invalidate_presentation(); }
 }
 
 void VR::gamepad_snapturn(XINPUT_STATE& state) {
