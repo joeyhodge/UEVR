@@ -103,6 +103,7 @@
 #include "Mods.hpp"
 #include "mods/UObjectHook.hpp"
 #include "mods/GameSpecific.hpp"
+#include "UE426RendererExtent.hpp"
 #include "StellarBladeRendererEntry.hpp"
 #include "StellarBladeSlate.hpp"
 #include "HiFiRushRendererEntry.hpp"
@@ -10631,14 +10632,13 @@ bool has_source_validated_ue4_begin_rendering_viewfamily_shape(
     // The chained parent plus callback region can be smaller than 0x200 while
     // still containing both source-derived signatures.
     constexpr size_t UE425_MIN_RENDERER_SIZE = 0x180;
-    constexpr size_t DEFAULT_MIN_RENDERER_SIZE = 0x200;
     const auto uses_ue425_layout =
         frame_number_offset == UE425_FRAME_NUMBER_OFFSET ||
         frame_number_offset == UE425PLUS_FRAME_NUMBER_OFFSET ||
         frame_number_offset == HELLBLADE_UE425_FRAME_NUMBER_OFFSET;
     const auto minimum_size = uses_ue425_layout
         ? UE425_MIN_RENDERER_SIZE
-        : DEFAULT_MIN_RENDERER_SIZE;
+        : uevr::ue426_renderer::minimum_size;
 
     if (function.size() < minimum_size || function.size() > 0x4000 ||
         !is_readable_process_range(function.begin, function.size()))
@@ -10697,6 +10697,61 @@ bool has_source_validated_ue4_begin_rendering_viewfamily_shape(
     }
 
     return false;
+}
+
+std::optional<RuntimeFunctionRange> get_short_chained_ue426_renderer_range(
+    uintptr_t callback_return, uintptr_t game_module, uintptr_t excluded_viewport_draw)
+{
+    namespace renderer = uevr::ue426_renderer;
+    const auto image_size = utility::get_module_size(reinterpret_cast<HMODULE>(game_module)).value_or(0);
+    if (game_module == 0 || image_size > std::numeric_limits<uint32_t>::max() ||
+        image_size > std::numeric_limits<uintptr_t>::max() - game_module ||
+        callback_return < game_module || callback_return - game_module >= image_size ||
+        !indirect_virtual_call_returns_to(callback_return, 0x28))
+    {
+        return {};
+    }
+
+    const auto read = [&](size_t offset, void* output, size_t size) {
+        if (offset >= image_size || size > image_size - offset ||
+            !is_readable_process_range(game_module + offset, size))
+        {
+            return false;
+        }
+        std::memcpy(output, reinterpret_cast<const void*>(game_module + offset), size);
+        return true;
+    };
+    const auto lookup = [&](uint32_t rva) -> std::optional<renderer::FunctionRecord> {
+        if (rva >= image_size) {
+            return {};
+        }
+        DWORD64 found_base{};
+        const auto entry = RtlLookupFunctionEntry(game_module + rva, &found_base, nullptr);
+        const auto entry_address = reinterpret_cast<uintptr_t>(entry);
+        RUNTIME_FUNCTION record{};
+        if (found_base != game_module || entry_address < game_module ||
+            !read(entry_address - game_module, &record, sizeof(record)))
+        {
+            return {};
+        }
+        return renderer::FunctionRecord{record.BeginAddress, record.EndAddress, record.UnwindData};
+    };
+
+    const auto extent = renderer::extend_short_renderer(
+        static_cast<uint32_t>(callback_return - game_module), image_size, lookup, read);
+    if (!extent) {
+        return {};
+    }
+    const RuntimeFunctionRange range{game_module + extent->begin, game_module + extent->end, game_module};
+    if (range.begin == excluded_viewport_draw || !is_executable_process_range(range.begin, range.size()) ||
+        !has_source_validated_ue4_begin_rendering_viewfamily_shape(range, UE426_427_FRAME_NUMBER_OFFSET))
+    {
+        return {};
+    }
+
+    SPDLOG_INFO_ONCE("[UE4.26/4.27][ViewFamilySelector] Validated renderer extent through a chained continuation "
+        "target={:x} size={:x} return={:x}", range.begin, range.size(), callback_return);
+    return range;
 }
 
 std::optional<RuntimeFunctionRange> get_source_validated_ue4_begin_rendering_viewfamily_range(
@@ -11621,8 +11676,12 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
             // No legacy fallback on a rejected Stellar Blade root.
             return get_stellar_blade_callable_renderer_range(callback_return);
         }
-        return get_source_validated_ue4_begin_rendering_viewfamily_range(
+        const auto candidate = get_source_validated_ue4_begin_rendering_viewfamily_range(
             callback_return, source_frame_number_offset, observer_ue425plus || hellblade_ue425);
+        if (candidate || !source_validated_ue426_427 || vr == nullptr || !vr->is_native_stereo_fix_enabled()) {
+            return candidate;
+        }
+        return get_short_chained_ue426_renderer_range(callback_return, game_module, excluded_viewport_draw);
     };
 
     // UE4.25-4.27 call slot 5 directly from FRendererModule::
