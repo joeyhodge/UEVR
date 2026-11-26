@@ -176,6 +176,27 @@ static void dispatch_movie_layers() {
     layer=valid; layer.pose.orientation.w=0;
     expect(!movie::opaque_layer(layers,stage,handle,64,32),"zero movie orientation rejected");
     expect(!movie::opaque_layer({},stage,handle,64,32),"no movie image means normal projection submission");
+
+    const auto session=reinterpret_cast<XrSession>(uintptr_t{4});
+    movie::ReleasedMovie last;
+    const movie::Submission fresh{10,20};
+    const movie::Submission hold{.allow_handoff=true};
+    last.finish(nullptr,session,fresh,20,950);
+    expect(!last.matches(session,stage,handle,64,32,20),"a refused fresh submit cannot become a reusable movie image");
+    last.finish(&valid,session,fresh,21,950);
+    expect(!last.matches(session,stage,handle,64,32,21),"a copy receipt invalidated before acceptance cannot be cached");
+    last.finish(&valid,session,fresh,20,950);
+    expect(last.matches(session,stage,handle,64,32,20) && last.quad.pose.position.z==-2,
+        "a completed fresh submit stores its exact stage-space pose and image proof");
+    expect(!last.matches(session,stage,handle,64,32,21) && !last.matches(session,stage,handle,32,32,20) &&
+        !last.matches(reinterpret_cast<XrSession>(uintptr_t{5}),stage,handle,64,32,20) &&
+        !last.matches(session,reinterpret_cast<XrSpace>(uintptr_t{5}),handle,64,32,20) &&
+        !last.matches(session,stage,reinterpret_cast<XrSwapchain>(uintptr_t{5}),64,32,20),
+        "copy attempts, image changes, session changes and space changes all revoke the hold");
+    last.finish(&last.quad,session,hold,20,1050);
+    expect(last.epoch==10 && last.submitted_ms==950,"a successful held submit cannot refresh or change its receipt");
+    last.finish(nullptr,session,hold,20,1060);
+    expect(!last.epoch,"failed or omitted held layers discard the old receipt");
 }
 static void dispatch_movie_images() {
     namespace movie=uevr::dispatch_movie;

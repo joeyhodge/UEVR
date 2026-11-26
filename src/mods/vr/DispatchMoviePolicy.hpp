@@ -41,6 +41,24 @@ struct Owner {
         int32_t(weak_texture) >= 0 && uint32_t(weak_texture >> 32) != 0; }
     bool operator==(const Owner&) const = default;
 };
+inline constexpr uint64_t handoff_max_ms = 180;
+struct Handoff {
+    uint64_t from{}, to{}, started_ms{};
+    bool permits(uint64_t submitted_epoch, uint64_t current_epoch, uint64_t submitted_ms, uint64_t now) const noexcept {
+        constexpr uint64_t max_pre_cut_age_ms = 50;
+        return from && from == submitted_epoch && to == current_epoch && started_ms &&
+            submitted_ms && now >= submitted_ms && now >= started_ms && now-started_ms < handoff_max_ms &&
+            (submitted_ms >= started_ms || started_ms-submitted_ms <= max_pre_cut_age_ms);
+    }
+};
+inline Handoff begin_handoff(const Owner& previous, const Owner& next, uint64_t epoch, uint64_t now) noexcept {
+    if (!previous.valid() || !next.valid() || !epoch || epoch == UINT64_MAX || !now ||
+        previous.world != next.world || previous.subsystem != next.subsystem ||
+        (previous.source == next.source && previous.player == next.player)) {
+        return {};
+    }
+    return {epoch,epoch+1,now};
+}
 inline bool extent(uint32_t width, uint32_t height) noexcept {
     return width >= 16 && width <= 8192 && height >= 16 && height <= 8192 &&
         double(width)/height >= 0.5 && double(width)/height <= 3.0;

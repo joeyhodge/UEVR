@@ -25,6 +25,7 @@
 #include <sdk/Math.hpp>
 
 #include "Mod.hpp"
+#include "../DispatchMovieOpenXR.hpp"
 #include "../ControllerTouchBindings.hpp"
 #include "../NativeOpenXRArrayPolicy.hpp"
 #include "../NativeOpenXRWaitOnly.hpp"
@@ -181,7 +182,9 @@ public:
         bool submitted{};
     };
     XrResult end_frame(const std::vector<XrCompositionLayerBaseHeader*>& quad_layers, bool has_depth = false,
-        PackedStereoSubmission* packed_stereo = nullptr, uint64_t dispatch_movie_epoch = 0);
+        PackedStereoSubmission* packed_stereo = nullptr,
+        uevr::dispatch_movie::Submission dispatch_movie = {});
+    uevr::dispatch_movie::ReleasedMovie last_dispatch_movie; // Protected by sync_mtx.
     XrResult recover_wedged_frame(const char* reason);
     bool close_synced_frame_without_layers(const char* reason);
     void prepare_resolution_scale_reconfigure(const char* reason);
