@@ -33,6 +33,7 @@
 #include "CVarExistingPriorityTests.hpp"
 #include "B1RendererTests.hpp"
 #include "StellarBladeSlateTests.hpp"
+#include "UE426RendererExtentTests.hpp"
 #include "UE521ViewExtensionTests.hpp"
 #include "UE59RenderTests.hpp"
 
@@ -2586,6 +2587,7 @@ int main(int argc, char** argv) {
     abzu_tests::run(expect);
     if (argc == 3 && std::string_view{argv[1]} == "--abzu-image") { abzu_tests::shipping_image(argv[2],expect); }
     ue59_render_tests::run(expect);
+    ue426_renderer_tests::run(expect);
     ue521_view_extension_tests::run(expect);
     ue58_native_tests::run(expect);
     paradoxdrive_rhi_tests::run(expect);
