@@ -1905,6 +1905,8 @@ VRRuntime::Error OpenXR::consume_events(std::function<void(void*)> callback) {
         if (bh->type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED) {
             std::scoped_lock frame_lock{sync_mtx};
             const auto ev = (XrEventDataSessionStateChanged*)&edb;
+            uevr::dispatch_movie::invalidate_presentation();
+            last_dispatch_movie={};
             ++native_async_session_generation;
             native_wait_only_handoff.reset();
             this->session_state = ev->state;
@@ -1999,6 +2001,7 @@ VRRuntime::Error OpenXR::consume_events(std::function<void(void*)> callback) {
                 this->session_ready_since = {};
             }
         } else if (bh->type == XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING) {
+            uevr::dispatch_movie::invalidate_presentation();
             this->wants_reset_origin = true;
         }
 
@@ -2499,6 +2502,8 @@ void OpenXR::destroy() {
     }
 
     std::scoped_lock _{sync_mtx};
+    uevr::dispatch_movie::invalidate_presentation();
+    last_dispatch_movie={};
     ++native_async_session_generation;
     native_wait_only_handoff.reset();
     if (VR::get()->mono_generation() != 0) { reset_mono_projection_history(); }
@@ -4129,14 +4134,15 @@ void OpenXR::note_native_array_copy(bool success) {
 }
 
 XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& quad_layers, bool has_depth,
-    uevr::ui_composition::Compositor* ui_composition, PackedStereoSubmission* packed_stereo, uint64_t dispatch_movie_epoch) {
+    uevr::ui_composition::Compositor* ui_composition, PackedStereoSubmission* packed_stereo, uevr::dispatch_movie::Submission dispatch_movie) {
     std::scoped_lock _{sync_mtx};
     if (packed_stereo) { packed_stereo->submitted = false; }
-    if (native_wait_only_handoff.faulted()) { return XR_ERROR_SESSION_NOT_READY; }
+    if (native_wait_only_handoff.faulted()) { last_dispatch_movie={}; return XR_ERROR_SESSION_NOT_READY; }
 
     emit_openxr_state_probes(this, "end_frame");
 
     if (!this->can_run_frame_loop() || !this->got_first_poses || !this->frame_synced) {
+        last_dispatch_movie={};
         this->log_frame_lifecycle_state("end_frame refused because runtime was not ready");
 
         if (this->frame_began) {
@@ -4147,6 +4153,7 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
     }
 
     if (!this->frame_began) {
+        last_dispatch_movie={};
         this->log_frame_lifecycle_state("end_frame called while frame not begun");
         return XR_ERROR_CALL_ORDER_INVALID;
     }
@@ -4154,21 +4161,30 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
     auto vr = VR::get();
     const auto is_afr = vr->is_using_afr();
     const bool mono = vr->is_using_mono();
-    bool movie_override=false;
-    if (dispatch_movie_epoch && !is_afr && !mono && !vr->is_dibr_rendering_method_selected() &&
+    const bool movie_eligible=(dispatch_movie.epoch || (dispatch_movie.allow_handoff && last_dispatch_movie.epoch)) &&
+        !is_afr && !mono && !vr->is_dibr_rendering_method_selected() &&
         !vr->is_stereo_emulation_enabled() && !vr->is_mono_transition_pending() &&
-        vr->is_using_native_stereo() && !vr->is_using_2d_screen()) {
-        const auto image=swapchains.find(static_cast<uint32_t>(SwapchainIndex::DISPATCH_MOVIE));
+        vr->is_using_native_stereo() && !vr->is_using_2d_screen();
+    constexpr auto movie_index=static_cast<uint32_t>(SwapchainIndex::DISPATCH_MOVIE);
+    const XrCompositionLayerQuad* fresh_movie{};
+    if (movie_eligible && dispatch_movie.epoch && dispatch_movie.revision &&
+        dispatch_movie.revision == uevr::dispatch_movie::presentation_revision()) {
+        const auto image=swapchains.find(movie_index);
         const auto movie=uevr::dispatch_movie::read();
-        movie_override=movie && movie->epoch == dispatch_movie_epoch && image != swapchains.end() &&
-            image->second.width == movie->width && image->second.height == movie->height &&
-            uevr::dispatch_movie::opaque_layer(quad_layers,stage_space,image->second.handle,image->second.width,image->second.height);
+        if (movie && movie->epoch == dispatch_movie.epoch && image != swapchains.end() &&
+            image->second.width == movie->width && image->second.height == movie->height) {
+            fresh_movie=uevr::dispatch_movie::opaque_layer(quad_layers,stage_space,image->second.handle,
+                image->second.width,image->second.height);
+        }
     }
+    bool movie_override=fresh_movie != nullptr;
+    bool held_movie=false;
+    if (!movie_eligible && last_dispatch_movie.epoch) { last_dispatch_movie={}; }
     if (!uevr::ui_composition::eligible(true, mono, vr->is_dibr_rendering_method_selected(),
             vr->is_mono_transition_pending(), vr->is_using_2d_screen()) ||
         !(vr->get_overlay_component().get_ui_composition_request() & 1)) { ui_composition = nullptr; }
     if (mono) { has_depth = false; }
-    if (dispatch_movie_epoch) { ui_composition=nullptr; }
+    if (dispatch_movie.epoch) { ui_composition=nullptr; }
     if (movie_override) { has_depth=false; }
     if (is_afr && is_dead_island_2_ue425_executable()) {
         has_depth = false;
@@ -4183,6 +4199,7 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
     if (is_afr || has_native_stereo_array) {
         if (!this->swapchains.contains((uint32_t)OpenXR::SwapchainIndex::AFR_LEFT_EYE) || !this->swapchains.contains((uint32_t)OpenXR::SwapchainIndex::AFR_RIGHT_EYE)) {
             if (!has_native_stereo_array) {
+                last_dispatch_movie={};
                 spdlog::error("[VR] AFR swapchains not created");
                 return XR_ERROR_VALIDATION_FAILURE;
             }
@@ -4199,6 +4216,7 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
             this->swapchains.contains((uint32_t)OpenXR::SwapchainIndex::AFR_DEPTH_RIGHT_EYE);
     } else {
         if (!this->swapchains.contains((uint32_t)OpenXR::SwapchainIndex::DOUBLE_WIDE)) {
+            last_dispatch_movie={};
             spdlog::error("[VR] Double wide swapchain not created");
             return XR_ERROR_VALIDATION_FAILURE;
         }
@@ -4393,6 +4411,21 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
         layer.views = projection_layer_views.data();
         layer.layerFlags = 0;
 
+        if (movie_eligible && dispatch_movie.allow_handoff && !dispatch_movie.epoch &&
+            session_state == XR_SESSION_STATE_FOCUSED && !wants_reinitialize && !wants_reset_origin) {
+            const auto image=swapchains.find(movie_index);
+            const auto revision=uevr::dispatch_movie::presentation_revision();
+            if (image != swapchains.end() && last_dispatch_movie.matches(session,stage_space,image->second.handle,
+                    image->second.width,image->second.height,revision) &&
+                uevr::dispatch_movie::handoff_current(last_dispatch_movie.epoch,last_dispatch_movie.submitted_ms) &&
+                revision == uevr::dispatch_movie::presentation_revision()) {
+                // OpenXR uses the last released image. No acquire, wait or game texture is needed here.
+                layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader*>(&last_dispatch_movie.quad));
+                ui_composition=nullptr;
+                movie_override=held_movie=true;
+            }
+        }
+
         if (should_push_dummy && !movie_override) {
             layers.push_back((XrCompositionLayerBaseHeader*)&dummy_projection_layer);
         }
@@ -4424,7 +4457,7 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
             for (uint32_t i = 0; i < composed_ui.count; ++i) { layers.push_back(composed_ui.layers[i]); }
         } else {
             for (auto* l : quad_layers) {
-                const auto movie=dispatch_movie_epoch ? swapchains.find(static_cast<uint32_t>(SwapchainIndex::DISPATCH_MOVIE)) : swapchains.end();
+                const auto movie=dispatch_movie.epoch ? swapchains.find(movie_index) : swapchains.end();
                 if (!movie_override && movie != swapchains.end() && l && l->type == XR_TYPE_COMPOSITION_LAYER_QUAD &&
                     reinterpret_cast<XrCompositionLayerQuad*>(l)->subImage.swapchain == movie->second.handle) { continue; }
                 layers.push_back(l);
@@ -4467,7 +4500,17 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
     pacing_end.data().display_time = frame_end_info.displayTime;
     auto result = xrEndFrame(this->session, &frame_end_info);
     pacing_end.finish(static_cast<int32_t>(result));
-    uevr::dispatch_movie::note_submission(movie_override,result == XR_SUCCESS && !debug_submit_empty && !layers.empty());
+    const auto* submitted_quad=held_movie ? &last_dispatch_movie.quad : fresh_movie;
+    const bool movie_presented=result == XR_SUCCESS && submitted_quad &&
+        std::find(layers.begin(),layers.end(),reinterpret_cast<const XrCompositionLayerBaseHeader*>(submitted_quad)) != layers.end();
+    if (movie_presented || last_dispatch_movie.epoch) {
+        last_dispatch_movie.finish(movie_presented ? submitted_quad : nullptr,session,dispatch_movie,
+            uevr::dispatch_movie::presentation_revision(),movie_presented && fresh_movie ? GetTickCount64() : 0);
+        if (held_movie && movie_presented && last_dispatch_movie.epoch) {
+            SPDLOG_INFO_EVERY_N_SEC(2,"[Dispatch][Movie] Held released image across a same-world clip cut (epoch={})",last_dispatch_movie.epoch);
+        }
+    }
+    uevr::dispatch_movie::note_submission(movie_override,movie_presented);
     if (packed_stereo) {
         packed_stereo->submitted = result == XR_SUCCESS && !projection_layer_cache.empty() &&
             projection_layer_views.size() == 2 &&

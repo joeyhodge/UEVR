@@ -5508,17 +5508,19 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             quad_layers.clear();
 
             auto& openxr_overlay = vr->get_overlay_component().get_openxr();
-            uint64_t dispatch_movie_epoch{};
+            uevr::dispatch_movie::Submission dispatch_movie{.allow_handoff=true};
             if (const auto movie=uevr::dispatch_movie::read(); movie && movie->texture12 &&
                 vr->is_using_native_stereo() && !use_2d_screen && !vr->is_using_mono() &&
                 !vr->is_dibr_rendering_method_selected() && !vr->is_stereo_emulation_enabled() && !vr->is_mono_transition_pending() &&
-                vr->m_openxr->frame_began &&
-                uevr::dispatch_movie::source_state(*movie,m_openxr.binding.device,m_openxr.binding.queue,g_framework->get_d3d12_hook()->get_swap_chain()) &&
-                m_openxr.ensure_dispatch_movie(movie->width,movie->height,movie->epoch)) {
-                if (m_openxr.copy_dispatch_movie(*movie) && uevr::dispatch_movie::current(*movie)) {
+                vr->m_openxr->frame_began) {
+                dispatch_movie.allow_handoff=false;
+                const auto revision=uevr::dispatch_movie::invalidate_presentation();
+                if (uevr::dispatch_movie::source_state(*movie,m_openxr.binding.device,m_openxr.binding.queue,g_framework->get_d3d12_hook()->get_swap_chain()) &&
+                    m_openxr.ensure_dispatch_movie(movie->width,movie->height,movie->epoch) &&
+                    m_openxr.copy_dispatch_movie(*movie) && uevr::dispatch_movie::current(*movie)) {
                     if (const auto layer=openxr_overlay.generate_dispatch_movie_layer()) {
                         quad_layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader*>(&layer->get()));
-                        dispatch_movie_epoch=movie->epoch;
+                        dispatch_movie={movie->epoch,revision};
                     }
                 }
             }
@@ -5604,7 +5606,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 scene_depth_tex.Get() != nullptr &&
                     !native_stereo_array_submit_active &&
                     !dead_island_2_afr_depth_disabled,
-                (ui_composition_request & 1) ? &m_openxr.ui_composition : nullptr, nullptr, dispatch_movie_epoch);
+                (ui_composition_request & 1) ? &m_openxr.ui_composition : nullptr, nullptr, dispatch_movie);
             record_native_submit(frame_diag::Runtime::openxr, frame_diag::Stage::submit_result, static_cast<int32_t>(result));
 
             if (result == XR_ERROR_LAYER_INVALID) {
@@ -5614,7 +5616,8 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
                 spdlog::info("[VR] Calling xrEndFrame again");
                 record_native_submit(frame_diag::Runtime::openxr, frame_diag::Stage::submit_attempt, 0, 2, 1);
-                result = vr->m_openxr->end_frame(quad_layers,false,nullptr,nullptr,dispatch_movie_epoch);
+                dispatch_movie.allow_handoff=false;
+                result = vr->m_openxr->end_frame(quad_layers,false,nullptr,nullptr,dispatch_movie);
                 record_native_submit(frame_diag::Runtime::openxr, frame_diag::Stage::submit_result, static_cast<int32_t>(result), 2, 1);
             }
 
@@ -7441,6 +7444,9 @@ void D3D12Component::OpenXR::destroy_swapchains() {
     
     std::scoped_lock __{vr->m_openxr->swapchain_mtx};
 
+    if (contexts.contains(static_cast<uint32_t>(runtimes::OpenXR::SwapchainIndex::DISPATCH_MOVIE))) {
+        uevr::dispatch_movie::invalidate_presentation();
+    }
     spdlog::info("[VR] Destroying swapchains.");
 
     this->wait_for_all_copies(true);

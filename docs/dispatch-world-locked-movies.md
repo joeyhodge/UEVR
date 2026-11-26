@@ -54,6 +54,18 @@ stage-space movie quad eligible to replace that frame's movie-bearing projection
 layer. Normal game/framework UI stays above it. No game render target is cleared,
 no final-backbuffer screenshot is used, and no persistent rendering mode changes.
 
+A direct clip change in the same live world and AdHocMedia subsystem may bridge
+the missing source for up to 180 ms. The publisher must verify the owners on
+both sides of its call; an update found by polling does not arm a hold.
+OpenXR uses the last released image; the
+adapter resubmits the exact previously accepted stage-space quad without
+reacquiring an image or retaining the old game's texture. The receipt must
+come from a recent successful fresh submit and match the current session,
+space, swapchain, extent and image revision. Holds do not refresh the deadline.
+A movie exit, a second unpresented clip change, failed submission, mode change,
+recenter or any new copy attempt revokes reuse. The ordinary presentation
+remains the fallback if any proof fails.
+
 ## Reviewed binary contract
 
 Dispatch-Win64-Shipping.exe, UE4.27.2, PE timestamp 1769654770, image size
@@ -91,7 +103,9 @@ WARP DX11/DX12 tests copy spatially distinct pixels from three-mip media sources
 to single-mip outputs, including alpha-zero pixels and every border. DX12 debug
 validation checks mip-zero restoration while other mips have different states.
 Mocked XR checks cover opaque BOTH-eye stage-space layer eligibility, ownership
-transfer, failed creation/enumeration and rollback.
+transfer, failed creation/enumeration and rollback. Handoff checks cover direct
+clip changes, exit/travel, successive cuts, expiration, changed XR ownership
+and failed submits.
 
 Build/test success is not HMD confirmation. Test DX11 and DX12 independently:
 playing, pause/menu, resume, movie-to-movie and movie-to-nonmovie transitions,
