@@ -29,6 +29,22 @@ template<class Expect> void run(Expect&& expect) {
     expect(replacement != owner,"world replacement retires the old movie");
     replacement=owner; replacement.source=7;
     expect(replacement != owner,"a new movie source cannot inherit the prior movie epoch even if MediaTexture is reused");
+    const auto handoff=movie::begin_handoff(owner,replacement,10,1000);
+    expect(handoff.permits(10,11,950,1000) && handoff.permits(10,11,999,1179),
+        "a recently presented image can bridge only the direct same-world clip change");
+    expect(!handoff.permits(10,11,999,1180) && !handoff.permits(10,11,949,1000) &&
+        !handoff.permits(10,11,1001,1000) && !handoff.permits(10,11,990,999),
+        "expiry, a stale pre-cut image and clock rollback do not hold a movie");
+    expect(!handoff.permits(10,12,999,1000) && !handoff.permits(9,11,999,1000),
+        "holding cannot skip or chain across movie generations");
+    auto other=replacement; other.subsystem=9;
+    expect(!movie::begin_handoff(owner,other,10,1000).from,"another subsystem cannot use the previous movie");
+    other=replacement; other.world=9;
+    expect(!movie::begin_handoff(owner,other,10,1000).from,"level travel cannot reuse the previous movie");
+    other=owner; other.texture=9;
+    expect(!movie::begin_handoff(owner,other,10,1000).from,"a texture-only change does not prove a cut");
+    expect(!movie::begin_handoff(owner,{},10,1000).from && !movie::begin_handoff({},replacement,11,1001).from,
+        "a movie exit is never bridged, even if another source immediately starts");
     owner.weak_texture=42;
     expect(!owner.valid(),"uninitialized weak serial rejected");
     expect(movie::current(3,3,1000,1000) && movie::current(3,3,1000,1500),"paused decoder can republish the same valid source");

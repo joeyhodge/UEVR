@@ -76,23 +76,53 @@ template<class Image> std::optional<Images<Image>> create_images(XrSession sessi
     result.images.resize(count);
     return result;
 }
-inline bool opaque_layer(std::span<XrCompositionLayerBaseHeader* const> layers, XrSpace stage,
+inline bool opaque_quad(const XrCompositionLayerQuad& layer, XrSpace stage,
     XrSwapchain swapchain, uint32_t width, uint32_t height) noexcept {
-    if (stage == XR_NULL_HANDLE || swapchain == XR_NULL_HANDLE || !extent(width,height)) { return false; }
+    return stage != XR_NULL_HANDLE && swapchain != XR_NULL_HANDLE && extent(width,height) &&
+        layer.type == XR_TYPE_COMPOSITION_LAYER_QUAD && layer.subImage.swapchain == swapchain &&
+        layer.space == stage && !layer.next && !layer.layerFlags && layer.eyeVisibility == XR_EYE_VISIBILITY_BOTH &&
+        layer.subImage.imageArrayIndex == 0 && layer.subImage.imageRect.offset.x == 0 && layer.subImage.imageRect.offset.y == 0 &&
+        layer.subImage.imageRect.extent.width == width && layer.subImage.imageRect.extent.height == height &&
+        std::isfinite(layer.size.width) && std::isfinite(layer.size.height) && layer.size.width > 0 && layer.size.height > 0 &&
+        std::isfinite(layer.pose.position.x) && std::isfinite(layer.pose.position.y) && std::isfinite(layer.pose.position.z) &&
+        std::isfinite(layer.pose.orientation.x) && std::isfinite(layer.pose.orientation.y) &&
+        std::isfinite(layer.pose.orientation.z) && std::isfinite(layer.pose.orientation.w) &&
+        std::abs(layer.pose.orientation.x*layer.pose.orientation.x+layer.pose.orientation.y*layer.pose.orientation.y+
+            layer.pose.orientation.z*layer.pose.orientation.z+layer.pose.orientation.w*layer.pose.orientation.w-1.0f) < 0.01f;
+}
+inline const XrCompositionLayerQuad* opaque_layer(std::span<XrCompositionLayerBaseHeader* const> layers, XrSpace stage,
+    XrSwapchain swapchain, uint32_t width, uint32_t height) noexcept {
     for (const auto* base:layers) {
         if (!base || base->type != XR_TYPE_COMPOSITION_LAYER_QUAD) { continue; }
         const auto& layer=*reinterpret_cast<const XrCompositionLayerQuad*>(base);
         if (layer.subImage.swapchain != swapchain) { continue; }
-        return layer.space == stage && !layer.next && !layer.layerFlags && layer.eyeVisibility == XR_EYE_VISIBILITY_BOTH &&
-            layer.subImage.imageArrayIndex == 0 && layer.subImage.imageRect.offset.x == 0 && layer.subImage.imageRect.offset.y == 0 &&
-            layer.subImage.imageRect.extent.width == width && layer.subImage.imageRect.extent.height == height &&
-            std::isfinite(layer.size.width) && std::isfinite(layer.size.height) && layer.size.width > 0 && layer.size.height > 0 &&
-            std::isfinite(layer.pose.position.x) && std::isfinite(layer.pose.position.y) && std::isfinite(layer.pose.position.z) &&
-            std::isfinite(layer.pose.orientation.x) && std::isfinite(layer.pose.orientation.y) &&
-            std::isfinite(layer.pose.orientation.z) && std::isfinite(layer.pose.orientation.w) &&
-            std::abs(layer.pose.orientation.x*layer.pose.orientation.x+layer.pose.orientation.y*layer.pose.orientation.y+
-                layer.pose.orientation.z*layer.pose.orientation.z+layer.pose.orientation.w*layer.pose.orientation.w-1.0f) < 0.01f;
+        return opaque_quad(layer,stage,swapchain,width,height) ? &layer : nullptr;
     }
-    return false;
+    return nullptr;
 }
+struct Submission {
+    uint64_t epoch{}, revision{};
+    bool allow_handoff{};
+};
+// A value copy of the submitted quad, not a decoder resource or an acquired XR image.
+struct ReleasedMovie {
+    XrCompositionLayerQuad quad{};
+    XrSession session{XR_NULL_HANDLE};
+    uint64_t epoch{}, revision{}, submitted_ms{};
+    bool matches(XrSession active_session, XrSpace stage, XrSwapchain chain,
+        uint32_t width, uint32_t height, uint64_t active_revision) const noexcept {
+        return epoch && submitted_ms && revision && revision == active_revision &&
+            session != XR_NULL_HANDLE && session == active_session && opaque_quad(quad,stage,chain,width,height);
+    }
+    void finish(const XrCompositionLayerQuad* accepted, XrSession active_session,
+        Submission submission, uint64_t active_revision, uint64_t now) noexcept {
+        if (accepted && accepted != &quad && submission.epoch && submission.revision && submission.revision == active_revision &&
+            active_session != XR_NULL_HANDLE && now) {
+            *this={*accepted,active_session,submission.epoch,submission.revision,now};
+        } else if (accepted != &quad || !submission.allow_handoff || submission.epoch ||
+            session != active_session || revision != active_revision) {
+            *this={};
+        }
+    }
+};
 }
