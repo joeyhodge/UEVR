@@ -24,6 +24,7 @@ struct State {
     std::atomic_bool presenting{};
     Owner owner;
     Frame frame;
+    Handoff handoff;
     uintptr_t game_world{}, base{}, klass{}, observed_subsystem{};
     bool attempted{}, supported{}, previously_enabled{}, dx12_supported{};
     int32_t bootstrap_cursor{}, bootstrap_limit{};
@@ -33,6 +34,7 @@ struct State {
 // Entry patches are disabled explicitly, but trampolines stay immutable and
 // alive through CRT teardown. Never free one underneath a native game call.
 State& state() { static auto* value=new State; return *value; }
+std::atomic<uint64_t> movie_revision{1};
 thread_local uintptr_t present_viewport{};
 uint64_t clock_ms() { return GetTickCount64(); }
 
@@ -90,16 +92,19 @@ bool native_path_ready(const Owner& owner) {
     return material_path ? live(load<uintptr_t>(load<uintptr_t>(owner.extension+0x40)+0x10))
         : load<uintptr_t>(owner.extension+0x50) != 0;
 }
-bool owner_current(const Owner& owner) {
+bool owner_identity_current(const Owner& owner) {
     return owner.valid() && live(owner.subsystem) && live(owner.world) && live(owner.texture,owner.weak_texture) &&
         load<uintptr_t>(owner.subsystem+0x10) == state().klass && load<uintptr_t>(owner.subsystem+0x20) == owner.world &&
         load<uintptr_t>(owner.subsystem+0x40) == owner.source &&
         load<uintptr_t>(owner.subsystem+0x48) == owner.player && load<uintptr_t>(owner.subsystem+0x50) == owner.texture &&
         load<uintptr_t>(owner.subsystem+0xa0) == owner.extension &&
         load<uintptr_t>(owner.extension) == state().base+extension_vtable_rva &&
-        load<uint64_t>(owner.extension+0x30) == owner.weak_texture && native_path_ready(owner);
+        load<uint64_t>(owner.extension+0x30) == owner.weak_texture;
 }
-void select_owner(uintptr_t subsystem) {
+bool owner_current(const Owner& owner) {
+    return owner_identity_current(owner) && native_path_ready(owner);
+}
+void select_owner(uintptr_t subsystem, uint64_t previous_epoch = 0) {
     auto& s=state();
     if (!s.enabled.load(std::memory_order_acquire) || s.stopping.load() || !live(subsystem) || load<uintptr_t>(subsystem+0x10) != s.klass) { return; }
     Owner next{subsystem,load<uintptr_t>(subsystem+0xa0),load<uintptr_t>(subsystem+0x50),load<uintptr_t>(subsystem+0x20)};
@@ -112,6 +117,8 @@ void select_owner(uintptr_t subsystem) {
     if (!world || world != s.game_world) { return; }
     s.observed_subsystem=subsystem;
     if (next != s.owner) {
+        const auto epoch=s.epoch.load();
+        s.handoff=previous_epoch == epoch ? begin_handoff(s.owner,next,epoch,clock_ms()) : Handoff{};
         s.owner=next; s.frame={}; s.refusal.store(nullptr); s.epoch.fetch_add(1,std::memory_order_acq_rel);
         s.message.store(next.valid() ? "Waiting for the movie post-process source" : "No active story movie");
         SPDLOG_INFO("[Dispatch][Movie] Media ownership active={} world={:#x} source={:#x} player={:#x} texture={:#x}",
@@ -120,8 +127,19 @@ void select_owner(uintptr_t subsystem) {
 }
 void* setter_hook(void* self, void* objects) {
     auto& s=state();
+    const auto subsystem=reinterpret_cast<uintptr_t>(self);
+    uint64_t previous_epoch{};
+    // Adjacent publisher states are proof of a cut; polling alone can miss an exit.
+    if (s.enabled.load(std::memory_order_acquire) && s.presenting.load() && !s.stopping.load()) {
+        try {
+            std::unique_lock lock{s.mutex,std::try_to_lock};
+            if (lock && s.owner.subsystem == subsystem && owner_identity_current(s.owner)) {
+                previous_epoch=s.epoch.load();
+            }
+        } catch (...) {}
+    }
     auto* result=s.setter.unsafe_call<void*>(self,objects);
-    try { select_owner(reinterpret_cast<uintptr_t>(self)); } catch (...) {}
+    try { select_owner(subsystem,previous_epoch); } catch (...) {}
     return result;
 }
 // Member/sret ABI: the native callback returns a 24-byte screen-pass value
@@ -245,7 +263,7 @@ void update(Scope scope, sdk::UObject* world) {
         s.enabled.store(false,std::memory_order_release);
         std::scoped_lock lock{s.mutex};
         if (s.previously_enabled || s.game_world != world_address) {
-            s.owner={}; s.frame={}; s.observed_subsystem=0; s.refusal.store(nullptr); s.epoch.fetch_add(1); s.bootstrap_cursor=0; s.bootstrap_limit=0; s.bootstrap_done=false;
+            s.owner={}; s.frame={}; s.handoff={}; s.observed_subsystem=0; s.refusal.store(nullptr); s.epoch.fetch_add(1); s.bootstrap_cursor=0; s.bootstrap_limit=0; s.bootstrap_done=false;
         }
         s.game_world=world_address;
     }
@@ -294,6 +312,21 @@ bool current(const Frame& frame) {
     if (!s.enabled.load(std::memory_order_acquire) || s.stopping.load() || !current(frame.epoch,s.epoch.load(),frame.sampled_ms,clock_ms())) { return false; }
     std::unique_lock lock{s.mutex,std::try_to_lock};
     return lock && frame.epoch == s.epoch.load() && owner_current(s.owner);
+}
+bool handoff_current(uint64_t submitted_epoch, uint64_t submitted_ms) {
+    auto& s=state();
+    if (!s.enabled.load(std::memory_order_acquire) || s.stopping.load()) { return false; }
+    std::unique_lock lock{s.mutex,std::try_to_lock};
+    return lock && s.enabled.load(std::memory_order_acquire) && !s.stopping.load() &&
+        s.handoff.permits(submitted_epoch,s.epoch.load(),submitted_ms,clock_ms()) &&
+        s.owner.world == s.game_world && owner_identity_current(s.owner) && live(s.owner.source) && live(s.owner.player);
+}
+// Recenter can revoke the receipt without dereferencing a replaceable OpenXR runtime.
+uint64_t invalidate_presentation() noexcept {
+    return movie_revision.fetch_add(1,std::memory_order_acq_rel)+1;
+}
+uint64_t presentation_revision() noexcept {
+    return movie_revision.load(std::memory_order_acquire);
 }
 std::optional<D3D12_RESOURCE_STATES> source_state(const Frame& frame, ID3D12Device* device, ID3D12CommandQueue* queue, IDXGISwapChain* swapchain) {
     auto& s=state();
@@ -353,7 +386,7 @@ void shutdown() {
     s.enabled.store(false,std::memory_order_release);
     std::scoped_lock control{s.control_mutex};
     s.presenting.store(false); s.message.store("Off");
-    { std::scoped_lock lock{s.mutex}; s.owner={}; s.frame={}; s.observed_subsystem=0; s.epoch.fetch_add(1); }
+    { std::scoped_lock lock{s.mutex}; s.owner={}; s.frame={}; s.handoff={}; s.observed_subsystem=0; s.epoch.fetch_add(1); }
     if (s.setter) { (void)s.setter.disable(); }
     if (s.draw) { (void)s.draw.disable(); }
     if (s.present) { (void)s.present.disable(); }

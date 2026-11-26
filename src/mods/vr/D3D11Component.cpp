@@ -1492,15 +1492,19 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
 
             auto& openxr_overlay = vr->get_overlay_component().get_openxr();
 
-            uint64_t dispatch_movie_epoch{};
+            uevr::dispatch_movie::Submission dispatch_movie{.allow_handoff=true};
             if (const auto movie=uevr::dispatch_movie::read(); movie && movie->texture &&
                 vr->is_using_native_stereo() && !vr->is_using_2d_screen() &&
                 !vr->is_stereo_emulation_enabled() &&
-                vr->m_openxr->frame_began && m_openxr.ensure_dispatch_movie(movie->width,movie->height,movie->epoch)) {
-                if (m_openxr.copy_dispatch_movie(*movie) && uevr::dispatch_movie::current(*movie)) {
+                vr->m_openxr->frame_began) {
+                // Even a failed acquire/copy can change which image OpenXR will see.
+                dispatch_movie.allow_handoff=false;
+                const auto revision=uevr::dispatch_movie::invalidate_presentation();
+                if (m_openxr.ensure_dispatch_movie(movie->width,movie->height,movie->epoch) &&
+                    m_openxr.copy_dispatch_movie(*movie) && uevr::dispatch_movie::current(*movie)) {
                     if (const auto layer=openxr_overlay.generate_dispatch_movie_layer()) {
                         quad_layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader*>(&layer->get()));
-                        dispatch_movie_epoch=movie->epoch;
+                        dispatch_movie={movie->epoch,revision};
                     }
                 }
             }
@@ -1536,7 +1540,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
             
             record_native_submit(frame_diag::Runtime::openxr, frame_diag::Stage::submit_attempt);
             auto result = vr->m_openxr->end_frame(quad_layers, scene_depth_tex != nullptr,
-                ue59_dx11_split ? &packed_stereo : nullptr, dispatch_movie_epoch);
+                ue59_dx11_split ? &packed_stereo : nullptr, dispatch_movie);
             record_native_submit(frame_diag::Runtime::openxr, frame_diag::Stage::submit_result, static_cast<int32_t>(result));
             if (packed_stereo.submitted && ue59_dx11_packet &&
                 get_ue59_native_fix_binding() == native_stereo_packet->ue59_dx11_binding) {
@@ -3431,6 +3435,7 @@ void D3D11Component::OpenXR::destroy_swapchains() {
         const auto i = it.first;
 
         if (i == static_cast<uint32_t>(runtimes::OpenXR::SwapchainIndex::DISPATCH_MOVIE)) {
+            uevr::dispatch_movie::invalidate_presentation();
             const auto chain=VR::get()->m_openxr->swapchains.find(i);
             if (chain == VR::get()->m_openxr->swapchains.end() ||
                 !ctx.movie_access.retire(chain->second.handle,[]{return true;})) {
