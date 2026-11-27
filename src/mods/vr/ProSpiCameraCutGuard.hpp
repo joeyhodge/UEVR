@@ -26,6 +26,7 @@ struct Snapshot {
     bool presentation{};
     focus_guard::AuthoredScope scope{};
     repair::Request framing_repair{};
+    bool framing_identity_only{};
 };
 
 enum class Status : uint8_t { unchanged, unavailable, stale, discontinuity, authored_focus, identity_changed, authored_window, revalidated };
@@ -68,6 +69,8 @@ inline Decision evaluate(const Snapshot& s, const trace::Pose& input, uint64_t n
 inline Decision evaluate_current(const Snapshot& s, const trace::Pose& input, uint64_t now,
     const shot::Identity& current, const trace::NativeSource& native, float eye_margin = 0.0f) noexcept {
     const auto baseline = evaluate(s, input, now);
+    // A new observer must not opt previously unobserved shots into cut resets.
+    if (s.framing_identity_only) { return baseline; }
     auto decision = evaluate(s, input, now, &current);
     if (!s.automatic || !s.identity.valid || !current.valid ||
         (decision.status != Status::unchanged && decision.status != Status::identity_changed)) { return decision; }
@@ -99,8 +102,9 @@ inline Decision evaluate_current(const Snapshot& s, const trace::Pose& input, ui
 
 inline Decision repair_current(const Snapshot& s, const trace::Pose& input, uint64_t now,
     const shot::Identity& current, const trace::NativeSource& native, float eye_margin,
-    Decision baseline, repair::Continuity& continuity) noexcept {
-    if (!repair::candidate(s.framing_repair)) { continuity.reset(); return baseline; }
+    Decision baseline, repair::Continuity& continuity, focus_guard::StereoWindow stereo = {}) noexcept {
+    const auto selected = repair::select(s.framing_repair);
+    if (!selected) { continuity.reset(); return baseline; }
     const auto change = shot::compare(s.identity, current);
     if (!s.identity.valid || !current.valid || !s.identity.view_target.valid() || !current.view_target.valid() ||
         s.framing_repair.camera.camera_manager != s.identity.manager.address || change == shot::Change::unavailable ||
@@ -121,6 +125,10 @@ inline Decision repair_current(const Snapshot& s, const trace::Pose& input, uint
     request.camera.camera.aspect = native.pose.aspect; request.camera.camera.aspect_valid = native.pose.aspect_valid;
     request.camera.now_ns = now;
     request.camera.dolly = baseline.dolly; request.camera.lift = baseline.lift;
+    request.stereo_window = stereo;
+    if (*selected == focus_guard::AuthoredScope::automatic_window && repair::select(request) != selected) {
+        continuity.reset(); return baseline;
+    }
     const auto correction = continuity.update(request, native, current, eye_margin);
     baseline.repair_reason = correction.reason;
     if (correction.reason == repair::Reason::unchanged || correction.reason == repair::Reason::no_safe_endpoint) {

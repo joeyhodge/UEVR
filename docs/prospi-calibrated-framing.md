@@ -414,3 +414,29 @@ This is not a player/podium detector or a collision fix. In particular, a
 high-foul black stadium still needs a failing capture to distinguish camera
 penetration from game-authored visibility/culling. No speculative visibility
 override, global floor reduction, CVar or frame-lag change is included.
+
+### Automatic authored-window fallback
+
+On verified eBaseball builds with D3D12/OpenXR Native Stereo, Mode 3 and
+**Authored Focus / Low-Camera Safety** also protect eligible ground-level
+presentations outside the recorded rig envelopes. No new toggle, shot mark or
+camera trace is required. Existing recorded repairs have priority. The new
+fallback does not apply to ProSpi 2025, other rendering modes, ball-follow,
+aerial or fixed gameplay presets, explicit calibrations, or manual camera
+overrides. Small saved camera offsets are included in the proof, not edited.
+
+At the pre-HMD view callback, the current native publisher must agree with the
+view pose, camera manager and live view-target owner. A correction requires the
+automatic translation to put the authored look-at point behind the view or well
+below the centered framing window. A tight but still-framed view is unchanged.
+The existing solver chooses the least necessary pullback at the configured floor
+and can shed excess lift without changing the lens or aim. It preserves the
+authored focus-plane window within conservative bounds from both OpenXR eyes,
+including eye rotation and separation. Unsupported geometry, stale inputs and
+an endpoint that cannot satisfy both the floor and framing keep the previous offsets.
+
+The November 23 eBaseball 2.4.0 regression covers two unmarked third-base pans,
+including a frame where the authored focus is below the view before the
+crossing. It does not identify those pans as the post-game podium. Nearby
+in-frame samples must remain unchanged. This fallback bounds framing; it does
+not identify the subject, measure stadium collision, or alter render pacing.

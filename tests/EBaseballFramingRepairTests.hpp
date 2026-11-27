@@ -214,7 +214,7 @@ template<class Expect> void run(Expect&& expect) {
         const auto value=state.update(r,s,i,20);
         expect(value.reason==rp::Reason::unchanged && value.dolly==r.camera.dolly,
             "a currently good shot is bit-identical even after a previous repair, not subject to a recovery hold");
-        const auto held=rp::geometry(r,r.camera.camera,r.camera.now_ns,850,0);
+        const auto held=rp::geometry(r,r.camera.camera,r.camera.now_ns,850,0,rp::scope(r));
         const auto point=fg::authored_endpoint_visible(held,s,rp::scope(r));
         expect(point && *point && !rp::window_contains(r,s,850,0,3.3f),
             "a visible target point alone cannot authorize a hold that crops its authored window");

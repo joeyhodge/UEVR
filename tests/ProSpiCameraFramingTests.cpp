@@ -854,6 +854,101 @@ void recorded_pan_repairs(const Json& fixture, const std::array<size_t, 8>& expe
         " first-base corner=" << counts[6] << " dugout=" << counts[7] << "; controls unchanged=" << counts[0] << '\n';
 }
 
+void automatic_window_repairs(const Json& fixture) {
+    namespace cg = uevr::prospi::cut_guard;
+    namespace rp = uevr::prospi::repair;
+    namespace helpers = ebaseball_framing_tests;
+    const auto eyes = fixture.at("eyes").get<std::array<std::array<float, 4>, 2>>();
+    const auto stereo = fg::common_openxr_window(eyes, .004f);
+    constexpr float margin = 3.4f;
+    require(stereo.valid() && stereo.half_width < -eyes[1][0] && stereo.half_height < -eyes[1][3],
+        "The automatic window must fit both eyes, including canted eye orientations");
+    auto invalid_eyes = eyes;
+    invalid_eyes[1][3] = -invalid_eyes[1][3];
+    require(!fg::common_openxr_window(invalid_eyes).valid(), "Nonperspective or invalid optics must not authorize a pullback");
+
+    size_t crossed{}, below{}, controls{};
+    for (const auto& row : fixture.at("samples")) {
+        const auto label = row.at("expected").get<std::string>();
+        const auto name = "Automatic framing sequence " + row.at("sequence").dump() + ": ";
+        const auto [forward, right, up] = row.at("base_offsets").get<trace::Vector>();
+        auto r = helpers::request();
+        r.camera.camera = read_trace_pose(row.at("camera"));
+        r.camera.dolly = row.at("dolly"); r.camera.lift = row.at("lift");
+        r.camera.zone = row.at("zone"); r.camera.base_fov = row.at("base_fov"); r.camera.max_lift = row.at("max_lift");
+        r.camera.floor = r.field_floor = r.legacy_floor = row.at("field_floor");
+        r.camera.forward_offset = forward; r.camera.right_offset = right; r.camera.up_offset = up;
+        r.allow_automatic_window = true;
+        const auto owner = helpers::identity();
+        const auto input = read_trace_pose(row.at("view"));
+        const auto source = read_native_source(row.at("native_source"));
+        const auto now = r.camera.now_ns;
+        const cg::Snapshot packet{.camera = r.camera.camera, .dolly = r.camera.dolly, .lift = r.camera.lift,
+            .time_ns = now, .automatic = true, .identity = owner, .framing_repair = r, .framing_identity_only = true};
+        const auto before = cg::evaluate(packet, input, now);
+        rp::Continuity continuity;
+        const auto after = cg::repair_current(packet, input, now, owner, source, margin, before, continuity, stereo);
+        auto actual = r;
+        actual.camera.camera = input; actual.camera.camera.fov = source.pose.fov; actual.stereo_window = stereo;
+        const auto original = focus_endpoint(actual.camera, {.dolly = before.dolly, .lift = before.lift}, source.pose.aspect);
+        require(trace::distance(original.location, read_trace_pose(row.at("recorded_neutral")).location) < .025f,
+            name + "The composed original endpoint differs from the recorded view");
+        if (label == "control") {
+            require(after.status == before.status && after.dolly == before.dolly && after.lift == before.lift,
+                name + "Still-framed control moved");
+            ++controls;
+            continue;
+        }
+        require(rp::scope(r) == fg::AuthoredScope::automatic_window, name + "Not testing the generic fallback");
+        const auto failure = trace::target_framing(original, source.look_at);
+        require(failure.valid && (label == "crossed" ? failure.behind : !failure.behind && failure.pitch_error < -30),
+            name + "Missing measured look-at loss");
+        require(after.status == cg::Status::authored_window && after.repair_reason == rp::Reason::automatic_focus && after.dolly < before.dolly,
+            name + "Did not recover the current lookup (" + rp::reason_name(after.repair_reason) + ")");
+        require(rp::window_contains(actual, source, after.dolly, after.lift, margin), name + "Recovered stereo window/floor not safe");
+        helpers::verify_projection(actual, source, {after.repair_reason, after.dolly, after.lift, true}, margin,
+            [&](bool passed, const char* message) { require(passed, name + message); });
+        crossed += label == "crossed"; below += label == "below";
+
+        auto replaced = owner; ++replaced.view_target.serial;
+        const auto original_on_change = cg::evaluate_current(packet, input, now, replaced, source, margin);
+        require(original_on_change.dolly == before.dolly && original_on_change.lift == before.lift && original_on_change.status == before.status,
+            name + "Observation opted a previously unobserved camera into the legacy cut reset");
+        auto stale = source; stale.time_ns = now - 50'000'001;
+        const auto rejected = [&](const cg::Snapshot& s, const auto& identity, const auto& native, fg::StereoWindow optics) {
+            const auto d = cg::repair_current(s, input, now, identity, native, margin, before, continuity, optics);
+            return d.status == before.status && d.dolly == before.dolly && d.lift == before.lift;
+        };
+        require(rejected(packet, replaced, source, stereo) && rejected(packet, owner, stale, stereo) &&
+            rejected(packet, owner, source, {}), name + "Stale identity, source or optics changed framing");
+        auto blocked = packet; blocked.framing_repair.protected_camera = true;
+        require(rejected(blocked, owner, source, stereo), name + "Protected camera moved");
+        blocked = packet; blocked.framing_repair.camera.zone = 3;
+        require(rejected(blocked, owner, source, stereo), name + "An unproven stand floor was relaxed");
+        blocked = packet; blocked.framing_repair.manual_controls = true;
+        require(rejected(blocked, owner, source, stereo), name + "Manual controls were overridden");
+    }
+    require(crossed == 10 && below == 2 && controls == 6, "Missing captured automatic-window coverage");
+
+    auto r = helpers::request();
+    r.camera.camera = {{-2350, 70, 240}, {0, -60, 0}, 19, 0, 0, true};
+    r.camera.forward_offset = -13;
+    r.camera.dolly = 0; r.camera.lift = 240;
+    r.allow_automatic_window = true; r.stereo_window = stereo;
+    const auto native = helpers::source(r, 250);
+    const auto lower = rp::evaluate(r, native, margin);
+    require(lower.applied && lower.dolly == 0 && lower.lift < r.camera.lift &&
+        rp::window_contains(r, native, lower.dolly, lower.lift, margin),
+        "Lift-only recovery must keep the authored origin and work without a dolly");
+    r.legacy_floor = 350; r.camera.camera.location[2] = -100;
+    require(!rp::evaluate(r, helpers::source(r, 250), margin).applied, "An impossible legacy floor must stay unchanged");
+    auto old = helpers::request(true);
+    old.allow_automatic_window = true; old.stereo_window = stereo;
+    require(rp::evaluate(old, helpers::source(old, 267), margin).reason == rp::Reason::interview_focus,
+        "Existing measured framing corrections must retain priority");
+    std::cout << "Automatic window: crossed=" << crossed << " below=" << below << " controls unchanged=" << controls << '\n';
+}
+
 void crossing_focus_guards() {
     namespace cg = uevr::prospi::cut_guard;
     // Synthetic validated targets exercise the missing presentation envelopes;
@@ -1348,6 +1443,7 @@ int main(int argc, char** argv) {
             {36, 0, 0, 0, 4, 18});
         recorded_pan_repairs(read_json(std::filesystem::path{argv[1]}.parent_path() / "prospi-20261123-first-base-pans.json"),
             {22, 0, 0, 0, 0, 0, 8, 24});
+        automatic_window_repairs(read_json(std::filesystem::path{argv[1]}.parent_path() / "prospi-20261123-automatic-framing.json"));
         std::cout << "Authored framing: 5000 geometry trials, per-eye margin and shot-identity preservation passed\n";
         baseline_pan_fixtures(read_json(std::filesystem::path{argv[1]}.parent_path() / "prospi-20261010-baseline-pan.json"));
         std::cout << "ProSpi calibrated-framing guards passed\n";

@@ -13,7 +13,7 @@ enum class Reason : uint8_t {
     off, unchanged, protected_controls, unsupported_rig, source_unavailable,
     source_mismatch, no_safe_endpoint, interview_focus, dugout_focus, dugout_height, release_hold,
     home_pan_focus, home_pan_height, dugout_entry, upward_home, podium_closeup, low_infield_closeup,
-    first_base_corner, first_base_dugout
+    first_base_corner, first_base_dugout, automatic_focus
 };
 inline const char* reason_name(Reason reason) noexcept {
     switch (reason) {
@@ -35,6 +35,7 @@ inline const char* reason_name(Reason reason) noexcept {
     case Reason::low_infield_closeup: return "Low infield close-up framing recovered";
     case Reason::first_base_corner: return "First-base corner framing recovered";
     case Reason::first_base_dugout: return "First-base dugout pan framing recovered";
+    case Reason::automatic_focus: return "Current authored framing recovered automatically";
     default: return "Off / unsupported build";
     }
 }
@@ -45,6 +46,8 @@ struct Request {
     int32_t rendering_method{};
     bool ebaseball{}, manual_controls{}, protected_camera{}, home_pan{};
     focus_guard::AuthoredScope recorded_pan{};
+    bool allow_automatic_window{};
+    focus_guard::StereoWindow stereo_window{};
 };
 struct Decision {
     Reason reason{};
@@ -86,7 +89,7 @@ inline focus_guard::AuthoredScope admit_recorded_pan(const trace::Pose& camera, 
     return Scope::presentation;
 }
 
-inline focus_guard::AuthoredScope scope(const Request& r) noexcept {
+inline focus_guard::AuthoredScope legacy_scope(const Request& r) noexcept {
     if (focus_guard::recorded_pan_scope(r.recorded_pan)) { return r.recorded_pan; }
     if (r.home_pan) { return focus_guard::AuthoredScope::home_pan_repair; }
     if (focus_guard::near_home_crossing_rig(r.camera.camera)) { return focus_guard::AuthoredScope::interview_repair; }
@@ -94,20 +97,25 @@ inline focus_guard::AuthoredScope scope(const Request& r) noexcept {
 }
 
 inline focus_guard::Request geometry(const Request& r, const trace::Pose& input, uint64_t now,
-    float dolly, float lift) noexcept {
+    float dolly, float lift, focus_guard::AuthoredScope selected) noexcept {
     auto c = r.camera;
     c.camera = input; c.now_ns = now; c.dolly = dolly; c.lift = lift;
-    c.floor = r.field_floor; c.zone = 1;
+    c.floor = selected == focus_guard::AuthoredScope::automatic_window ? (std::max)(r.field_floor, r.legacy_floor) : r.field_floor;
+    c.zone = 1;
     return c;
 }
 
-inline bool candidate(const Request& r) noexcept {
+inline bool valid_request(const Request& r) noexcept {
     if (!r.ebaseball || r.manual_controls || r.protected_camera ||
-        // FieldFloor / BaselineDugout / a misclassified low StandCrowd rig.
-        (r.camera.zone != 1 && r.camera.zone != 2 && r.camera.zone != 3 &&
-            !(r.home_pan && r.camera.zone == 0)) ||
         !std::isfinite(r.field_floor) || r.field_floor < -50 || r.field_floor > 350 ||
         !std::isfinite(r.legacy_floor) || !std::isfinite(r.smoothing)) { return false; }
+    return true;
+}
+
+inline bool legacy_candidate(const Request& r, focus_guard::AuthoredScope selected) noexcept {
+    // FieldFloor / BaselineDugout / a previously verified misclassified StandCrowd rig.
+    if (r.camera.zone != 1 && r.camera.zone != 2 && r.camera.zone != 3 &&
+        !(r.home_pan && r.camera.zone == 0)) { return false; }
     using Scope = focus_guard::AuthoredScope;
     if (r.recorded_pan == Scope::dugout_entry_repair &&
         (r.camera.zone != 3 || r.legacy_floor <= r.field_floor + 350)) { return false; }
@@ -120,8 +128,33 @@ inline bool candidate(const Request& r) noexcept {
         const bool false_crowd = r.camera.zone == 3 && r.legacy_floor > r.field_floor + 350;
         if (!field && !false_crowd) { return false; }
     }
-    const auto c = geometry(r, r.camera.camera, r.camera.now_ns, r.camera.dolly, r.camera.lift);
-    return focus_guard::crossing_candidate(c, true, scope(r));
+    const auto c = geometry(r, r.camera.camera, r.camera.now_ns, r.camera.dolly, r.camera.lift, selected);
+    return focus_guard::crossing_candidate(c, true, selected);
+}
+
+inline bool automatic_window_candidate(const Request& r) noexcept {
+    if (!r.allow_automatic_window || (r.camera.zone != 1 && r.camera.zone != 2)) { return false; }
+    const auto c = geometry(r, r.camera.camera, r.camera.now_ns, r.camera.dolly, r.camera.lift,
+        focus_guard::AuthoredScope::automatic_window);
+    // Ground-level presentations only. No X/Y rig classifier and no relaxation of stand/floor clearance.
+    return (std::max)(c.dolly, c.lift) >= 75 && c.dolly <= 2500 && c.camera.fov >= 5 &&
+        c.camera.location[2] >= r.field_floor - 300 && c.camera.location[2] <= r.field_floor + 500 &&
+        trace::angle_delta(c.camera.rotation[0], 0) <= 35 &&
+        focus_guard::crossing_candidate(c, true, focus_guard::AuthoredScope::automatic_window);
+}
+
+inline std::optional<focus_guard::AuthoredScope> select(const Request& r) noexcept {
+    if (!valid_request(r)) { return {}; }
+    const auto selected = legacy_scope(r);
+    if (legacy_candidate(r, selected)) { return selected; }
+    if (automatic_window_candidate(r)) { return focus_guard::AuthoredScope::automatic_window; }
+    return {};
+}
+
+inline bool candidate(const Request& r) noexcept { return select(r).has_value(); }
+
+inline focus_guard::AuthoredScope scope(const Request& r) noexcept {
+    return select(r).value_or(legacy_scope(r));
 }
 
 inline bool matches_offsets(const Request& r, float forward, float right, float up) noexcept {
@@ -136,9 +169,12 @@ inline bool window_contains(const focus_guard::Request& c, const focus_guard::Au
 
 inline bool window_contains(const Request& r, const trace::NativeSource& native, float dolly, float lift,
     float eye_margin) noexcept {
-    if (!candidate(r)) { return false; }
-    const auto c = geometry(r, r.camera.camera, r.camera.now_ns, r.camera.dolly, r.camera.lift);
-    const auto projection = focus_guard::project_authored_target(c, native, scope(r));
+    const auto selected = select(r);
+    if (!selected) { return false; }
+    const auto c = geometry(r, r.camera.camera, r.camera.now_ns, r.camera.dolly, r.camera.lift, *selected);
+    const auto projection = focus_guard::project_authored_target(c, native, *selected, r.stereo_window);
+    if (*selected == focus_guard::AuthoredScope::automatic_window && projection &&
+        projection->end_z(dolly, lift) + 0.001 < double(c.floor) + 2.0) { return false; }
     return projection && window_contains(c, *projection, dolly, lift, eye_margin);
 }
 
@@ -146,11 +182,14 @@ inline Decision evaluate(const Request& r, const trace::NativeSource& native, fl
     Decision out{Reason::off, r.camera.dolly, r.camera.lift};
     if (!r.ebaseball || !r.camera.enabled) { return out; }
     if (r.manual_controls || r.protected_camera) { out.reason = Reason::protected_controls; return out; }
-    if (!candidate(r)) { out.reason = Reason::unsupported_rig; return out; }
+    const auto selected = select(r);
+    if (!selected) { out.reason = Reason::unsupported_rig; return out; }
     if (!trace::valid_source(native)) { out.reason = Reason::source_unavailable; return out; }
-    const auto c = geometry(r, r.camera.camera, r.camera.now_ns, out.dolly, out.lift);
-    const auto selected = scope(r);
-    const auto correction = focus_guard::bound_authored_window(c, native, true, eye_margin, selected);
+    if (*selected == focus_guard::AuthoredScope::automatic_window && !r.stereo_window.valid()) {
+        out.reason = Reason::no_safe_endpoint; return out;
+    }
+    const auto c = geometry(r, r.camera.camera, r.camera.now_ns, out.dolly, out.lift, *selected);
+    const auto correction = focus_guard::bound_authored_window(c, native, true, eye_margin, *selected, r.stereo_window);
     switch (correction.status) {
     case focus_guard::Status::source_mismatch: out.reason = Reason::source_mismatch; return out;
     case focus_guard::Status::off: out.reason = Reason::unsupported_rig; return out;
@@ -159,18 +198,19 @@ inline Decision evaluate(const Request& r, const trace::NativeSource& native, fl
     }
     if (!correction.applied()) { out.reason = Reason::unchanged; return out; }
     out.dolly = correction.dolly; out.lift = correction.lift; out.applied = true;
-    switch (selected) {
+    switch (*selected) {
     case focus_guard::AuthoredScope::dugout_entry_repair: out.reason = Reason::dugout_entry; return out;
     case focus_guard::AuthoredScope::upward_home_repair: out.reason = Reason::upward_home; return out;
     case focus_guard::AuthoredScope::podium_closeup_repair: out.reason = Reason::podium_closeup; return out;
     case focus_guard::AuthoredScope::low_infield_closeup_repair: out.reason = Reason::low_infield_closeup; return out;
     case focus_guard::AuthoredScope::first_base_corner_repair: out.reason = Reason::first_base_corner; return out;
     case focus_guard::AuthoredScope::first_base_dugout_repair: out.reason = Reason::first_base_dugout; return out;
+    case focus_guard::AuthoredScope::automatic_window: out.reason = Reason::automatic_focus; return out;
     default: break;
     }
-    out.reason = selected == focus_guard::AuthoredScope::home_pan_repair ?
+    out.reason = *selected == focus_guard::AuthoredScope::home_pan_repair ?
         (r.legacy_floor > 350 && out.lift < r.camera.lift - 1 ? Reason::home_pan_height : Reason::home_pan_focus) :
-        selected == focus_guard::AuthoredScope::interview_repair ? Reason::interview_focus :
+        *selected == focus_guard::AuthoredScope::interview_repair ? Reason::interview_focus :
         r.legacy_floor > 350 && out.lift < r.camera.lift - 1 ? Reason::dugout_height : Reason::dugout_focus;
     return out;
 }
@@ -185,8 +225,10 @@ public:
         auto result = evaluate(r, native, eye_margin);
         const auto now = r.camera.now_ns;
         const auto change = shot::compare(m_identity, identity);
+        const auto selected = select(r);
         const Context context{r.rendering_method, r.field_floor, r.camera.max_lift, r.camera.base_fov, r.smoothing, r.home_pan,
-            r.recorded_pan, r.camera.forward_offset, r.camera.right_offset, r.camera.up_offset};
+            r.recorded_pan, r.camera.forward_offset, r.camera.right_offset, r.camera.up_offset,
+            selected == focus_guard::AuthoredScope::automatic_window};
         const bool continuous = m_valid && identity.valid && change == shot::Change::unchanged &&
             context == m_context &&
             now > m_time && now - m_time <= 250'000'000 &&
@@ -197,7 +239,7 @@ public:
                 (identity.native_camera != native.object || identity.camera_actor != native.camera_actor))) {
             reset(); return {Reason::source_mismatch, r.camera.dolly, r.camera.lift};
         }
-        if (!candidate(r) || !trace::source_matches_input(native, r.camera.camera,
+        if (!selected || !trace::source_matches_input(native, r.camera.camera,
                 r.camera.camera_manager, now) || result.reason == Reason::source_mismatch ||
             result.reason == Reason::source_unavailable || result.reason == Reason::no_safe_endpoint ||
             result.reason == Reason::unsupported_rig) {
@@ -216,9 +258,8 @@ public:
                     allowed = return_smoothing::apply(result.dolly, m_dolly, retention);
                 }
             }
-            const auto c = geometry(r, r.camera.camera, now, r.camera.dolly, r.camera.lift);
-            const auto selected = scope(r);
-            if (const auto p = focus_guard::project_authored_target(c, native, selected); p && p->up_z > 0) {
+            const auto c = geometry(r, r.camera.camera, now, r.camera.dolly, r.camera.lift, *selected);
+            if (const auto p = focus_guard::project_authored_target(c, native, *selected, r.stereo_window); p && p->up_z > 0) {
                 const auto lift = float((std::max)(0.0, (double(c.floor) + 2 - p->dolly_z(allowed)) / p->up_z));
                 if ((selected != focus_guard::AuthoredScope::low_infield_closeup_repair || lift <= c.lift) &&
                     window_contains(c, *p, allowed, lift, eye_margin)) {
@@ -241,6 +282,7 @@ private:
         bool home_pan{};
         focus_guard::AuthoredScope recorded_pan{};
         float forward_offset{}, right_offset{}, up_offset{};
+        bool automatic_window{};
         bool operator==(const Context&) const = default;
     };
     bool m_valid{};

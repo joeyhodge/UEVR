@@ -7,7 +7,7 @@ namespace uevr::prospi::focus_guard {
 enum class AuthoredScope : uint8_t {
     presentation, near_home_crossing, interview_repair, dugout_repair, home_pan_repair,
     dugout_entry_repair, upward_home_repair, podium_closeup_repair, low_infield_closeup_repair,
-    first_base_corner_repair, first_base_dugout_repair
+    first_base_corner_repair, first_base_dugout_repair, automatic_window
 };
 
 inline bool recorded_first_base_scope(AuthoredScope scope) noexcept {
@@ -22,7 +22,7 @@ inline bool recorded_pan_scope(AuthoredScope scope) noexcept {
 
 inline bool repair_scope(AuthoredScope scope) noexcept {
     return scope == AuthoredScope::interview_repair || scope == AuthoredScope::dugout_repair ||
-        scope == AuthoredScope::home_pan_repair || recorded_pan_scope(scope);
+        scope == AuthoredScope::home_pan_repair || scope == AuthoredScope::automatic_window || recorded_pan_scope(scope);
 }
 
 inline bool dugout_scope(AuthoredScope scope) noexcept {
@@ -124,7 +124,7 @@ inline bool recorded_pan_target(const Request& r, const trace::NativeSource& sou
 }
 
 inline bool authored_offsets_supported(const Request& r, AuthoredScope scope) noexcept {
-    if (!recorded_pan_scope(scope)) {
+    if (!recorded_pan_scope(scope) && scope != AuthoredScope::automatic_window) {
         return r.forward_offset == 0.0f && r.right_offset == 0.0f && r.up_offset == 0.0f;
     }
     return r.forward_offset * r.forward_offset + r.right_offset * r.right_offset +
@@ -137,13 +137,13 @@ inline bool crossing_candidate(const Request& r, bool presentation_camera,
         r.sequencer_enabled && r.safety_enabled && r.automatic_source && !r.protected_camera &&
         (r.zone == 1 || r.zone == 2) && trace::valid_pose(r.camera) && r.camera.fov >= 0.5f &&
         r.camera.fov <= (scope == AuthoredScope::near_home_crossing || scope == AuthoredScope::interview_repair ||
-            scope == AuthoredScope::home_pan_repair ? 60.0f : 40.0f) &&
+            scope == AuthoredScope::home_pan_repair || scope == AuthoredScope::automatic_window ? 60.0f : 40.0f) &&
         ((scope != AuthoredScope::near_home_crossing && scope != AuthoredScope::interview_repair) || near_home_crossing_rig(r.camera)) &&
         (!dugout_scope(scope) || dugout_repair_rig(r.camera)) &&
         (scope != AuthoredScope::home_pan_repair || home_pan_repair_rig(r.camera)) &&
         (!recorded_pan_scope(scope) || recorded_pan_rig(r.camera, scope)) &&
         std::abs(std::remainder(r.camera.rotation[2], 360.0f)) <= (repair_scope(scope) ? 25.0f : 0.01f) &&
-        std::isfinite(r.dolly) && r.dolly > 0.0f && r.dolly <= 8000.0f &&
+        std::isfinite(r.dolly) && (scope == AuthoredScope::automatic_window ? r.dolly >= 0.0f : r.dolly > 0.0f) && r.dolly <= 8000.0f &&
         std::isfinite(r.lift) && r.lift >= 0.0f && r.lift <= 600.0f &&
         std::isfinite(r.max_lift) && r.max_lift >= r.lift && r.max_lift <= 600.0f &&
         std::isfinite(r.floor) && r.floor >= -50.0f && r.floor <= 350.0f &&
@@ -159,10 +159,40 @@ struct AuthoredProjection {
     double end_z(double dolly, double lift) const noexcept { return dolly_z(dolly) + up_z * lift; }
 };
 
+struct StereoWindow {
+    float half_width{}, half_height{}, rotation_slack{};
+
+    bool valid() const noexcept {
+        return half_width >= 0.2f && half_width <= 5.0f && half_height >= 0.2f && half_height <= 5.0f &&
+            rotation_slack >= 0 && rotation_slack <= 2;
+    }
+};
+
+inline StereoWindow common_openxr_window(const std::array<std::array<float, 4>, 2>& eyes,
+    float rotation_slack = 0) noexcept {
+    StereoWindow out{5, 5, 0};
+    for (const auto& eye : eyes) {
+        // OpenXR tangents: left and down are negative. Use the window common to both eyes.
+        const auto [left, right, up, down] = eye;
+        if (!(-left >= 0.2f && -left <= 5 && right >= 0.2f && right <= 5 &&
+            up >= 0.2f && up <= 5 && -down >= 0.2f && -down <= 5)) { return {}; }
+        out.half_width = (std::min)({out.half_width, -left, right});
+        out.half_height = (std::min)({out.half_height, up, -down});
+    }
+    // ||eye rotation - I|| bounds error in each coordinate, including depth.
+    const float delta = rotation_slack * std::hypot(1.0f, out.half_width, out.half_height);
+    out.half_width -= delta * (1 + out.half_width);
+    out.half_height -= delta * (1 + out.half_height);
+    out.rotation_slack = rotation_slack;
+    return out;
+}
+
 // Called only after crossing_candidate validates the request geometry.
 inline std::optional<AuthoredProjection> project_authored_target(const Request& r,
-    const trace::NativeSource& source, AuthoredScope scope) noexcept {
+    const trace::NativeSource& source, AuthoredScope scope, StereoWindow stereo = {}) noexcept {
+    const bool automatic = scope == AuthoredScope::automatic_window;
     if (!trace::valid_source(source) || !source.object || !source.camera_actor || !r.camera_manager ||
+        (automatic && (!stereo.valid() || source.focus_distance < 150.0f || source.focus_distance > 4500.0f)) ||
         !source.pose.aspect_valid || !std::isfinite(source.pose.aspect) || source.pose.aspect < 0.5f || source.pose.aspect > 3.0f ||
         source.focus_distance < 100.0f || source.focus_distance >
             (dugout_scope(scope) ? 1250.0f : scope == AuthoredScope::home_pan_repair ? 6000.0f :
@@ -200,10 +230,12 @@ inline std::optional<AuthoredProjection> project_authored_target(const Request& 
     // camera-relative offsets before solving for the additional dolly/lift.
     const auto width = depth * std::tan(source.pose.fov * radians * 0.5);
     const auto half_width = std::tan(r.base_fov * radians * 0.5);
+    const auto half_height = half_width / source.pose.aspect;
     return AuthoredProjection{
         depth - r.forward_offset, lateral - r.right_offset, vertical - r.up_offset,
         r.camera.location[2] + s * r.forward_offset + right[2] * r.right_offset + up[2] * r.up_offset,
-        s, up[2], c, half_width, half_width / source.pose.aspect, width, width / source.pose.aspect};
+        s, up[2], c, automatic ? (std::min)(half_width, double(stereo.half_width)) : half_width,
+        automatic ? (std::min)(half_height, double(stereo.half_height)) : half_height, width, width / source.pose.aspect};
 }
 
 inline bool authored_window_contains(const AuthoredProjection& p, float dolly, float lift,
@@ -273,10 +305,11 @@ inline std::optional<bool> authored_endpoint_visible(const Request& r, const tra
 // bounding box. Enter only after the assist demonstrably crossed or clipped its
 // current authored target; an already-safe close/action shot is an exact no-op.
 inline Decision bound_authored_window(const Request& r, const trace::NativeSource& source,
-    bool presentation_camera, float eye_margin = 0.0f, AuthoredScope scope = AuthoredScope::presentation) noexcept {
+    bool presentation_camera, float eye_margin = 0.0f, AuthoredScope scope = AuthoredScope::presentation,
+    StereoWindow stereo = {}) noexcept {
     Decision out{.dolly = r.dolly, .lift = r.lift, .predicted_z = r.predicted_z};
     if (!crossing_candidate(r, presentation_camera, scope)) { return out; }
-    const auto projection = project_authored_target(r, source, scope);
+    const auto projection = project_authored_target(r, source, scope, stereo);
     if (!projection) { out.status = Status::source_mismatch; return out; }
     const auto& p = *projection;
     out.status = Status::unchanged;
@@ -293,11 +326,23 @@ inline Decision bound_authored_window(const Request& r, const trace::NativeSourc
         remaining > -2.0 && !clipped_below) { return out; }
     const bool clipped = clipped_below || (remaining > 0.0 &&
         (std::abs(p.x) > remaining * p.half_width * 1.05 || std::abs(p.y - r.lift) > remaining * p.half_height * 1.05));
-    if (!crossed && !clipped) { return out; }
+    const bool automatic = scope == AuthoredScope::automatic_window;
+    if (automatic) {
+        // Ignore tight but still visible cuts and misses already present in the saved offsets alone.
+        const bool saved_view_visible = p.depth > eye_margin + 2.0 &&
+            std::abs(p.x) + eye_margin <= (p.depth - eye_margin) * p.half_width &&
+            std::abs(p.y) + eye_margin <= (p.depth - eye_margin) * p.half_height;
+        // A wide headset can still display a subject that the broadcast framing has lost below its center window.
+        const double y = p.y - r.lift, bottom = (std::max)(p.half_height * 1.05, 0.57735);
+        const double slack = eye_margin + stereo.rotation_slack * std::hypot(p.x, y, remaining);
+        const bool lost_below = y + (std::max)(remaining, 2.0) * bottom + slack * std::hypot(1.0, bottom) < 0.0;
+        if (!saved_view_visible || (remaining > -2.0 && !lost_below)) { return out; }
+    } else if (!crossed && !clipped) { return out; }
     const double old_z = p.end_z(r.dolly, r.lift);
     // A level first-base shot can cross its target without excessive lift.
     if (recorded_pan_scope(scope) && !recorded_first_base_scope(scope) && old_z <= double(r.floor) + 2.0) { return out; }
-    const double required_z = (std::min)((std::max)(double(r.floor), old_z), double(r.floor) + 2.0);
+    const double required_z = automatic ? double(r.floor) + 2.0 :
+        (std::min)((std::max)(double(r.floor), old_z), double(r.floor) + 2.0);
     const double a = (required_z - p.camera_z) / p.up_z, b = -p.forward_z / p.up_z;
     const auto lift_limit = low_infield ? r.lift : r.max_lift;
     const double width = p.half_width * 0.95, height = p.half_height * 0.95;
@@ -307,7 +352,8 @@ inline Decision bound_authored_window(const Request& r, const trace::NativeSourc
         return Endpoint{d, lift};
     };
     const auto safe = [&](const Endpoint& e) {
-        return e.dolly >= 0 && e.dolly < r.dolly && e.lift >= 0 && e.lift <= lift_limit &&
+        const bool improves = e.dolly < r.dolly || (automatic && e.dolly == r.dolly && e.lift < r.lift - 0.01f);
+        return e.dolly >= 0 && improves && e.lift >= 0 && e.lift <= lift_limit &&
             authored_window_contains(p, e.dolly, e.lift, required_z, eye_margin);
     };
     double best = -1.0;
