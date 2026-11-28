@@ -16,6 +16,7 @@
 #include <cwctype>
 #include <fstream>
 #include <future>
+#include <initializer_list>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -88,6 +89,7 @@
 #include <sdk/UE59ViewLayout.hpp>
 #include "UE59Slate.hpp"
 #include "UE59ViewExtension.hpp"
+#include "MibChaseHud.hpp"
 #include <sdk/FMalloc.hpp>
 
 #include <sdk/UGameplayStatics.hpp>
@@ -21884,6 +21886,286 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
     }
 }
 
+namespace {
+namespace mib_hud = uevr::mib_chase_hud;
+
+uintptr_t mib_hud_image_base() {
+    static const auto base = []() -> uintptr_t {
+        const auto module = GetModuleHandleW(nullptr);
+        const auto path = utility::get_module_pathw(module);
+        if (!path || !mib_hud::executable_matches(*path)) { return 0; }
+        const auto image = reinterpret_cast<uintptr_t>(module);
+        IMAGE_DOS_HEADER dos{};
+        IMAGE_NT_HEADERS64 nt{};
+        if (!safe_read_value(image, dos) || dos.e_magic != IMAGE_DOS_SIGNATURE ||
+            dos.e_lfanew < sizeof(dos) || dos.e_lfanew > 0x1000 ||
+            !safe_read_value(image + static_cast<uintptr_t>(dos.e_lfanew), nt) ||
+            nt.Signature != IMAGE_NT_SIGNATURE || nt.FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 ||
+            nt.FileHeader.TimeDateStamp != mib_hud::image_timestamp ||
+            nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
+            nt.OptionalHeader.SizeOfImage != mib_hud::image_size)
+        {
+            return 0;
+        }
+        // These callers tie the two vtable entries to the owned canvas, and the
+        // flush signature ties the game-thread target to the queued render pass.
+        const auto match = [&](uintptr_t rva, std::initializer_list<uint8_t> code) {
+            return is_executable_process_range(image + rva, code.size()) &&
+                std::memcmp(reinterpret_cast<void*>(image + rva), code.begin(), code.size()) == 0;
+        };
+        return match(mib_hud::hud_draw_rva, {0x40,0x55,0x53,0x48,0x8d,0x6c,0x24,0xb1,0x48,0x81,0xec,0xf8,0,0,0,0x48,0x8b,0xd9,0xe8,0xd9,0xa5,0xea,0xfd}) &&
+            match(mib_hud::hud_draw_return_rva - 6, {0xff,0x90,0xc8,0x07,0,0}) &&
+            match(mib_hud::tile_draw_rva, {0x48,0x89,0x5c,0x24,0x10,0x55,0x56,0x57,0x41,0x54,0x41,0x55,0x41,0x56,0x41,0x57}) &&
+            match(mib_hud::tile_draw_return_rva - 9, {0x49,0x8b,0xc8,0x48,0x8b,0xd3,0xff,0x50,0x18}) &&
+            match(mib_hud::flush_canvas_rva + 0x1e, {0xf6,0x41,0x78,1,0x4c,0x8b,0xe9,0x48,0x89,0x4d,0xef,0x75,8,0x84,0xd2}) &&
+            match(0x31c8562, {0x48,0x8b,0x58,0x58,0x48,0x8b,0x78,0x38,0x48,0x8b,0x70,0x40,0x4c,0x8b,0x70,0x48,0x4c,0x8b,0x78,0x50}) &&
+            match(mib_hud::render_target_rdg_rva, {0x48,0x89,0x5c,0x24,0x10,0x57,0x48,0x83,0xec,0x20,0x48,0x8b,0x01,0x48,0x8b,0xda,0xff,0x50,0x10}) &&
+            match(mib_hud::set_root_flags_rva + 0x39, {0xf0,0x49,0x0f,0xb1,0x0a,0x75,0xd0,0x41,0xf7,0xc0,0,0,0x50,0x4e,0x75,0x0d,0x45,0x85,0xc9,0x75,0x08,0x49,0x8b,0xca,0xe8,0x2a,0x33,0xff,0xff}) &&
+            match(mib_hud::clear_root_flags_rva + 0x3b, {0xf0,0x49,0x0f,0xb1,0x0a,0x75,0xce,0x41,0xf7,0xc0,0,0,0x50,0x4e,0x74,0x19,0x45,0x23,0xc3,0x41,0xf7,0xc0,0,0,0x50,0x4e,0x75,0x0d,0x45,0x85,0xc9,0x75,0x08,0x49,0x8b,0xca,0xe8,0x7c,0xdb,0,0})
+            ? image : 0;
+    }();
+    return base;
+}
+
+bool mib_hud_set_native_root(const sdk::object_liveness::Identity& identity, bool root) {
+    const auto base = mib_hud_image_base();
+    if (base == 0 || !GameThreadWorker::get().is_same_thread() ||
+        !sdk::is_current_object(identity))
+    {
+        return false;
+    }
+    auto* const array = sdk::FUObjectArray::get();
+    if (reinterpret_cast<uintptr_t>(array) != base + mib_hud::object_array_rva ||
+        !sdk::FUObjectArray::uses_ue58_chunked_layout() || !sdk::FUObjectArray::uses_flags_and_refcount_layout() ||
+        sdk::FUObjectArray::get_item_distance() != 0x18 || sdk::FUObjectArray::get_item_flags_offset() != 0)
+    {
+        return false;
+    }
+    auto* const item = array->get_object(identity.index);
+    if (!item || reinterpret_cast<uintptr_t>(item->get_object()) != identity.object ||
+        !is_writable_process_range(reinterpret_cast<uintptr_t>(item), sizeof(uint64_t)))
+    {
+        return false;
+    }
+    if (bool(item->get_flags() & mib_hud::root_set_flag) == root) {
+        return !root; // Do not assume ownership of an already rooted object.
+    }
+    using RootFlags = bool (*)(sdk::FUObjectItem*, uint32_t);
+    const auto function = root ? mib_hud::set_root_flags_rva : mib_hud::clear_root_flags_rva;
+    // Unlike a raw item flag write, this schedules the root-cache update.
+    return reinterpret_cast<RootFlags>(base + function)(item, mib_hud::root_set_flag) &&
+        reinterpret_cast<uintptr_t>(item->get_object()) == identity.object &&
+        bool(item->get_flags() & mib_hud::root_set_flag) == root;
+}
+
+bool mib_hud_native_mode() {
+    const auto& vr = VR::get();
+    const auto* xr = vr != nullptr ? vr->get_openxr_runtime() : nullptr;
+    return sdk::ue59::reviewed_runtime() && is_ue58_dx12_backend() && xr != nullptr &&
+        vr->get_runtime() == xr && vr->is_hmd_active() && vr->is_using_native_stereo() &&
+        !vr->is_using_2d_screen() && !vr->is_stereo_emulation_enabled() &&
+        !vr->is_splitscreen_compatibility_enabled() && !vr->is_ahud_compatibility_enabled() &&
+        !xr->debug_skip_ui_copy->value() && !xr->debug_submit_empty_frame->value();
+}
+
+struct MibHudDraw {
+    sdk::FViewport* viewport{};
+    sdk::FCanvas* canvas{};
+    bool redirected{};
+};
+
+thread_local MibHudDraw* mib_hud_draw{};
+thread_local sdk::FCanvas* mib_hud_tile_canvas{};
+
+template <typename T, size_t Offset, size_t N>
+T mib_hud_field(const std::array<std::byte, N>& block) {
+    static_assert(Offset + sizeof(T) <= N);
+    T value{};
+    std::memcpy(&value, block.data() + Offset, sizeof(value));
+    return value;
+}
+}
+
+bool FFakeStereoRenderingHook::attempt_hook_mib_chase_hud() {
+    const auto base = mib_hud_image_base();
+    if (base == 0 || !mib_hud_native_mode()) { return false; }
+    if (m_mib_chase_draw_hud_hook) { return true; }
+    if (std::exchange(m_mib_chase_hud_attempted, true)) { return false; }
+
+    const auto hud_slot = base + mib_hud::hud_draw_slot_rva;
+    const auto tile_slot = base + mib_hud::tile_draw_slot_rva;
+    uintptr_t orig_hud{}, orig_tile{};
+    if (!safe_read_value(hud_slot, orig_hud) || orig_hud != base + mib_hud::hud_draw_rva ||
+        !safe_read_value(tile_slot, orig_tile) || orig_tile != base + mib_hud::tile_draw_rva)
+    {
+        SPDLOG_WARN("[MIBChase][HUD] Original draw slots do not match; leaving them unchanged");
+        return false;
+    }
+    try {
+        auto tile = std::make_unique<PointerHook>(reinterpret_cast<void**>(tile_slot),
+            reinterpret_cast<void*>(&mib_chase_draw_tile_hook));
+        if (tile->get_original<uintptr_t>() != orig_tile) { return false; }
+        auto hud = std::make_unique<PointerHook>(reinterpret_cast<void**>(hud_slot),
+            reinterpret_cast<void*>(&mib_chase_draw_hud_hook));
+        if (hud->get_original<uintptr_t>() != orig_hud) { return false; }
+        m_mib_chase_draw_tile_hook = std::move(tile);
+        m_mib_chase_draw_hud_hook = std::move(hud);
+        SPDLOG_INFO("[MIBChase][HUD] Installed build-verified ChaseHUD canvas adapter");
+        return true;
+    } catch (const std::exception& e) {
+        SPDLOG_WARN("[MIBChase][HUD] Original draw retained: {}", e.what());
+        return false;
+    }
+}
+
+void FFakeStereoRenderingHook::mib_chase_draw_tile_hook(void* item, sdk::FCanvas* canvas) {
+    const auto base = mib_hud_image_base();
+    const auto original = reinterpret_cast<void (*)(void*, sdk::FCanvas*)>(base + mib_hud::tile_draw_rva);
+    const auto blend_address = reinterpret_cast<uintptr_t>(item) + 0x1c;
+    int32_t blend{};
+    if (canvas == nullptr || canvas != mib_hud_tile_canvas ||
+        reinterpret_cast<uintptr_t>(_ReturnAddress()) != base + mib_hud::tile_draw_return_rva ||
+        !safe_read_value(blend_address, blend))
+    {
+        original(item, canvas);
+        return;
+    }
+    const auto replacement = mib_hud::tile_blend(blend, true);
+    if (replacement == blend || !is_writable_process_range(blend_address, sizeof(blend))) {
+        original(item, canvas);
+        return;
+    }
+    std::memcpy(reinterpret_cast<void*>(blend_address), &replacement, sizeof(replacement));
+    utility::ScopeGuard restore{[&] {
+        std::memcpy(reinterpret_cast<void*>(blend_address), &blend, sizeof(blend));
+    }};
+    original(item, canvas);
+}
+
+void FFakeStereoRenderingHook::mib_chase_draw_hud_hook(void* hud) {
+    const auto base = mib_hud_image_base();
+    const auto original = reinterpret_cast<void (*)(void*)>(base + mib_hud::hud_draw_rva);
+    const auto call_original = [&] { original(hud); };
+    auto* const draw = mib_hud_draw;
+    if (draw == nullptr || draw->redirected || mib_hud_tile_canvas != nullptr ||
+        reinterpret_cast<uintptr_t>(_ReturnAddress()) != base + mib_hud::hud_draw_return_rva)
+    {
+        call_original();
+        return;
+    }
+
+    const auto wait = [&](const char* reason) {
+        SPDLOG_INFO_EVERY_N_SEC(5, "[MIBChase][HUD] Preserving original canvas: {}", reason);
+        call_original();
+    };
+    const auto hud_address = reinterpret_cast<uintptr_t>(hud);
+    const auto scene_canvas = reinterpret_cast<uintptr_t>(draw->canvas);
+    const auto scene_target = reinterpret_cast<uintptr_t>(draw->viewport);
+    uintptr_t table{}, canvas{}, view{};
+    std::array<std::byte, 0x90> ui{};
+    std::array<std::byte, 0xd0> render{};
+    if (!safe_read_value(hud_address, table) || table != base + mib_hud::hud_draw_slot_rva - 0x7c8 ||
+        !safe_read_value(hud_address + 0x2f8, canvas) || canvas == 0 ||
+        !safe_read_value(canvas, ui) || !safe_read_value(canvas + 0x2e8, table) || table != scene_canvas ||
+        !safe_read_value(canvas + 0x2f0, view) || view == 0 || !safe_read_value(scene_canvas, render))
+    {
+        wait("ChaseHUD does not own the current viewport canvas");
+        return;
+    }
+
+    const auto hwnd = g_framework->get_window();
+    DWORD pid{};
+    RECT client{};
+    if (!GetWindowThreadProcessId(hwnd, &pid) || pid != GetCurrentProcessId() ||
+        IsIconic(hwnd) || !GetClientRect(hwnd, &client) || client.left != 0 || client.top != 0)
+    {
+        wait("no current game-window extent");
+        return;
+    }
+    const mib_hud::Extent window{static_cast<int32_t>(client.right), static_cast<int32_t>(client.bottom)};
+    const auto& vr = VR::get();
+    const mib_hud::Extent eye{static_cast<int32_t>(vr->get_hmd_width()), static_cast<int32_t>(vr->get_hmd_height())};
+    const auto original_size = mib_hud_field<mib_hud::Extent, 0x40>(ui);
+    const auto original_clip = mib_hud_field<std::array<float, 2>, 0x30>(ui);
+    mib_hud::Rect view_rect{};
+    if (!safe_read_value(view + 0x3a0, view_rect) ||
+        !mib_hud::can_redirect(window, original_size, eye,
+            mib_hud_field<mib_hud::Rect, 0x38>(render), mib_hud_field<mib_hud::Rect, 0x48>(render), view_rect,
+            mib_hud_field<int32_t, 0xc8>(render), mib_hud_field<uintptr_t, 0x60>(render) != 0) ||
+        mib_hud_field<std::array<float, 2>, 0x28>(ui) != std::array<float, 2>{} ||
+        original_clip != std::array{static_cast<float>(eye.width), static_cast<float>(eye.height)} ||
+        mib_hud_field<mib_hud::Extent, 0x88>(ui) != original_size ||
+        mib_hud_field<mib_hud::Extent, 0xa8>(render) != original_size ||
+        mib_hud_field<uintptr_t, 0x58>(render) != scene_target ||
+        (mib_hud_field<uint32_t, 0x78>(render) & 3) != 3 ||
+        mib_hud_field<uint8_t, 0x98>(render) != 1 || mib_hud_field<uint8_t, 0xa2>(render) != 1 ||
+        mib_hud_field<uint8_t, 0xa3>(render) != 0 || mib_hud_field<int32_t, 0xb0>(render) != 0 ||
+        mib_hud_field<int16_t, 0xb8>(render) != -1)
+    {
+        wait("not the empty, full-window primary HUD canvas");
+        return;
+    }
+
+    const auto transforms = mib_hud_field<uintptr_t, 0x28>(render);
+    mib_hud::Matrix bottom{}, top{};
+    if (transforms == 0 || mib_hud_field<int32_t, 0x30>(render) != 2 ||
+        mib_hud_field<int32_t, 0x34>(render) < 2 ||
+        !safe_read_value(transforms, bottom) || !safe_read_value(transforms + 0x90, top) ||
+        !mib_hud::window_projection(bottom, top, window) ||
+        !is_writable_process_range(canvas, ui.size()) || !is_writable_process_range(scene_canvas, render.size()))
+    {
+        wait("the canvas projection or origin does not match the window");
+        return;
+    }
+
+    auto* const rtm = g_hook->get_render_target_manager();
+    const char* reason = "the viewport render-target manager is unavailable";
+    const auto target = rtm != nullptr
+        ? rtm->try_retain_mib_hud_target(window.width, window.height, reason) : std::nullopt;
+    if (!target || target->render_target == scene_target) {
+        wait(target ? "the dedicated UI target aliases the scene" : reason);
+        return;
+    }
+    const auto write = [](uintptr_t address, const auto& value) {
+        std::memcpy(reinterpret_cast<void*>(address), &value, sizeof(value));
+    };
+    utility::ScopeGuard restore{[&] {
+        mib_hud_tile_canvas = nullptr;
+        write(canvas + 0x30, original_clip);
+        write(canvas + 0x40, original_size);
+        write(canvas + 0x88, original_size);
+        write(scene_canvas + 0x58, scene_target);
+        write(scene_canvas + 0x7c, mib_hud_field<uint8_t, 0x7c>(render));
+        write(scene_canvas + 0xa4, mib_hud_field<uint8_t, 0xa4>(render));
+        write(scene_canvas + 0xa8, original_size);
+    }};
+    draw->redirected = true;
+    mib_hud_tile_canvas = draw->canvas;
+    write(canvas + 0x30, std::array{static_cast<float>(window.width), static_cast<float>(window.height)});
+    write(canvas + 0x40, window);
+    write(canvas + 0x88, window);
+    write(scene_canvas + 0x58, target->render_target);
+    write(scene_canvas + 0xa4, uint8_t{1});
+    write(scene_canvas + 0xa8, window);
+    call_original();
+
+    int32_t queued_elements{};
+    if (!safe_read_value(scene_canvas + 0xc8, queued_elements) || queued_elements <= 0) {
+        return;
+    }
+    const auto current = rtm->try_retain_mib_hud_target(window.width, window.height, reason);
+    if (!current || current->owner != target->owner || current->render_target != target->render_target) {
+        // Do not enqueue against an old owner. The engine's normal flush can
+        // still draw the queued items after the original canvas is restored.
+        return;
+    }
+    // The engine queues the flush before any later game-thread retirement of
+    // the rooted owner, just as it would for an ordinary Canvas render target.
+    reinterpret_cast<void (*)(sdk::FCanvas*, bool)>(base + mib_hud::flush_canvas_rva)(draw->canvas, false);
+    SPDLOG_INFO_ONCE("[MIBChase][HUD] Routed ChaseHUD from eye canvas {}x{} to owned window UI {}x{}",
+        eye.width, eye.height, window.width, window.height);
+}
+
 void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewportClient* viewport_client, sdk::FViewport* viewport, sdk::FCanvas* canvas, void* a4) {
     ZoneScopedN(__FUNCTION__);
 
@@ -22020,7 +22302,16 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
         utility::ScopeGuard menu_observation{[&] { dune_mono_menu::sample(draw_dispatch_this, viewport); }};
         {
             breathedge_inventory::DrawScope inventory_world{draw_dispatch_this, viewport};
-            g_hook->call_game_viewport_draw_original(draw_dispatch_this, viewport, canvas, a4);
+            if (viewport != nullptr && canvas != nullptr && mib_hud_image_base() != 0 &&
+                g_framework->is_game_data_intialized() && g_hook->attempt_hook_mib_chase_hud())
+            {
+                MibHudDraw draw{viewport, canvas};
+                auto* const previous = std::exchange(mib_hud_draw, &draw);
+                utility::ScopeGuard restore{[&] { mib_hud_draw = previous; }};
+                g_hook->call_game_viewport_draw_original(draw_dispatch_this, viewport, canvas, a4);
+            } else {
+                g_hook->call_game_viewport_draw_original(draw_dispatch_this, viewport, canvas, a4);
+            }
         }
 
         // ES2 can replace the viewport texture during a Draw when a cinematic
@@ -42150,6 +42441,10 @@ struct VRRenderTargetManager_Base::UE58UITextureOwner {
     bool recognized_stock_layout{};
     bool rooted{};
     UE58UITextureOwner* next_retired{};
+    std::optional<sdk::object_liveness::Identity> mib_root;
+    uevr::ue58_owned_ui::Resource mib_hud_resource{};
+    uintptr_t mib_hud_native{};
+    ID3D12Device* mib_hud_device{};
 
     struct RetireQueue {
         std::mutex mutex{};
@@ -42182,7 +42477,11 @@ struct VRRenderTargetManager_Base::UE58UITextureOwner {
             std::unique_ptr<UE58UITextureOwner> owner{head};
             head = owner->next_retired;
             try {
-                if (owner->rooted && owner->texture.valid()) {
+                if (owner->mib_root) {
+                    if (!mib_hud_set_native_root(*owner->mib_root, false)) {
+                        SPDLOG_WARN("[MIBChase][HUD] Retired UI root did not validate; leaving it untouched");
+                    }
+                } else if (owner->rooted && owner->texture.valid()) {
                     unroot_dedicated_ui_texture(owner->texture.get());
                 }
             } catch (...) {
@@ -42191,6 +42490,60 @@ struct VRRenderTargetManager_Base::UE58UITextureOwner {
         }
     }
 };
+
+std::optional<VRRenderTargetManager_Base::MibHudTarget>
+VRRenderTargetManager_Base::try_retain_mib_hud_target(uint32_t width, uint32_t height, const char*& reason) try {
+    namespace layout = uevr::ue58_owned_ui;
+    reason = "no published UI target at the current window extent";
+    const auto ticket = ue58_ui_initialization.try_retain_published(width, height);
+    if (!ticket || !ticket->owner) { return std::nullopt; }
+    const auto& owner = *ticket->owner;
+    reason = "the UI owner no longer has its validated GC root";
+    const auto observed = owner.mib_root
+        ? sdk::observe_uobject(reinterpret_cast<const sdk::UObjectBase*>(owner.mib_root->object))
+        : std::nullopt;
+    if (!observed || !sdk::object_liveness::matches(*owner.mib_root, observed->identity) ||
+        (observed->flags & mib_hud::root_set_flag) == 0 || !owner.texture.valid())
+    {
+        return std::nullopt;
+    }
+    const auto& identity = owner.mib_hud_resource;
+    const auto& hook = g_framework->get_d3d12_hook();
+    reason = "the retained UI texture does not match the current D3D12 device";
+    if (!hook || !owner.mib_hud_device || hook->get_device() != owner.mib_hud_device) {
+        return std::nullopt;
+    }
+    reason = "the UI owner/resource chain changed after publication";
+    if (identity.resource == 0 ||
+        !layout::resource_matches(owner.mib_root->object, identity, width, height,
+            [](uintptr_t address, auto& out) { return safe_read_value(address, out); }))
+    {
+        return std::nullopt;
+    }
+    const auto target = identity.resource + layout::render_target_offset;
+    const auto base = mib_hud_image_base();
+    uintptr_t resource_table{}, table{}, register_rdg{}, d3d_resource{}, native{};
+    reason = "the UI resource does not expose MIB's owned FRenderTarget RDG contract";
+    if (base == 0 || !safe_read_value(identity.resource, resource_table) ||
+        !safe_read_value(target, table) || table != base + mib_hud::render_target_vtable_rva ||
+        !safe_read_value(table + mib_hud::render_target_rdg_slot * sizeof(void*), register_rdg) ||
+        !mib_hud::owned_canvas_target(base, resource_table, table, register_rdg))
+    {
+        return std::nullopt;
+    }
+    reason = "the native UI texture changed after publication";
+    if (!safe_read_value(identity.rhi_texture + layout::d3d_resource_offset, d3d_resource) ||
+        !safe_read_value(d3d_resource + layout::native_resource_offset, native) ||
+        native == 0 || native != owner.mib_hud_native)
+    {
+        return std::nullopt;
+    }
+    reason = "ready";
+    return MibHudTarget{target, ticket};
+} catch (...) {
+    reason = "UI owner validation failed";
+    return std::nullopt;
+}
 
 bool VRRenderTargetManager_Base::create_ue58_ui_texture() {
     if (!should_harden_ue58_ui_initialization() || get_dedicated_ui_target() != nullptr ||
@@ -42255,7 +42608,8 @@ void VRRenderTargetManager_Base::service_ue58_ui_game_thread() {
             return;
         }
         auto* world_context = static_cast<sdk::UObject*>(world);
-        if (pbz_ue574_dx12_runtime()) {
+        const bool mib = mib_hud_image_base() != 0;
+        if (pbz_ue574_dx12_runtime() || mib) {
             world_context = engine->get_property<sdk::UObject*>(L"GameInstance");
             if (world_context == nullptr) {
                 fail("persistent GameInstance is not ready");
@@ -42264,7 +42618,7 @@ void VRRenderTargetManager_Base::service_ue58_ui_game_thread() {
         }
         auto owner = std::shared_ptr<UE58UITextureOwner>{new UE58UITextureOwner{}, &UE58UITextureOwner::retire};
         const float clear_color[4]{};
-        // Use PBZ's persistent context across map changes; retain other titles'
+        // Use a persistent context for PBZ and MIB across map changes; retain other titles'
         // existing Outer, format and flags.
         // This engine call can flush rendering, so no lifecycle/worker lock is held.
         auto* texture = kismet->create_render_target_2d(
@@ -42273,7 +42627,17 @@ void VRRenderTargetManager_Base::service_ue58_ui_game_thread() {
             fail("CreateRenderTarget2D returned no texture");
             return;
         }
-        root_dedicated_ui_texture(texture);
+        if (mib) {
+            const auto observed = sdk::observe_uobject(texture);
+            if (!observed || !mib_hud_set_native_root(observed->identity, true)) {
+                fail("MIB native UI root was not established");
+                return;
+            }
+            owner->mib_root = observed->identity;
+            SPDLOG_INFO("[MIBChase][HUD] Registered UI owner with native GC for generation {}", ticket->generation);
+        } else {
+            root_dedicated_ui_texture(texture);
+        }
         owner->rooted = true;
         owner->texture = texture;
         if (ue58_ui_initialization.created(ticket, std::move(owner), uevr::ue58_ui::now_ms())) {
@@ -42362,6 +42726,12 @@ void VRRenderTargetManager_Base::service_ue58_ui_initialization(uevr::ue58_ui::S
                 }
                 set_dedicated_ui_target_unlocked(ready_texture, ticket->width, ticket->height);
                 get_fallback_ui_target_ref() = nullptr;
+                if (validated && owner.mib_root && g_framework->is_dx12()) {
+                    const auto& hook = g_framework->get_d3d12_hook();
+                    owner.mib_hud_resource = validated->identity;
+                    owner.mib_hud_native = reinterpret_cast<uintptr_t>(validated->native.Get());
+                    owner.mib_hud_device = hook != nullptr ? hook->get_device() : nullptr;
+                }
                 return true;
             }))
         {

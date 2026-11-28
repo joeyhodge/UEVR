@@ -73,6 +73,16 @@ public:
         return m_state;
     }
 
+    std::shared_ptr<const Request> try_retain_published(uint32_t width, uint32_t height) const {
+        std::unique_lock lock{m_gate, std::try_to_lock};
+        if (!lock || m_state.stage != Stage::Published || !m_current ||
+            m_current->width != width || m_current->height != height)
+        {
+            return {};
+        }
+        return m_current;
+    }
+
     bool pending() const {
         std::scoped_lock lock{m_gate};
         return m_current != nullptr && m_state.stage != Stage::Published;
