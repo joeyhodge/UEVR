@@ -949,6 +949,105 @@ void automatic_window_repairs(const Json& fixture) {
     std::cout << "Automatic window: crossed=" << crossed << " below=" << below << " controls unchanged=" << controls << '\n';
 }
 
+void outward_outfield_repairs(const Json& fixture) {
+    namespace cg = uevr::prospi::cut_guard;
+    namespace rp = uevr::prospi::repair;
+    namespace helpers = ebaseball_framing_tests;
+    const auto stereo = fg::common_openxr_window({{
+        {-1.1572031f, .993744f, 1.0542353f, -1.0564262f}, {-.99332553f, 1.1648751f, 1.0618129f, -1.0478526f}}}, .004f);
+    constexpr float margin = 3.4f;
+    const auto owner = helpers::identity();
+    size_t crossed{}, inward{};
+    for (const auto& row : fixture.at("samples")) {
+        const auto name = "Outfield sequence " + row.at("sequence").dump() + ": ";
+        const auto [forward, right, up] = row.at("base_offsets").get<trace::Vector>();
+        auto r = helpers::request();
+        r.camera.camera = read_trace_pose(row.at("camera"));
+        r.camera.zone = 4; r.camera.dolly = row.at("dolly"); r.camera.lift = row.at("lift");
+        r.camera.base_fov = row.at("base_fov"); r.camera.max_lift = row.at("max_lift");
+        r.camera.floor = r.legacy_floor = row.at("floor");
+        r.camera.forward_offset = forward; r.camera.right_offset = right; r.camera.up_offset = up;
+        r.ball_follow = r.allow_outward_outfield = true;
+        const auto input = read_trace_pose(row.at("view"));
+        const auto source = read_native_source(row.at("native_source"));
+        const auto now = r.camera.now_ns;
+        const cg::Snapshot packet{.camera = r.camera.camera, .dolly = r.camera.dolly, .lift = r.camera.lift,
+            .time_ns = now, .automatic = true, .identity = owner, .framing_repair = r, .framing_identity_only = true};
+        const auto before = cg::evaluate(packet, input, now);
+        rp::Continuity continuity;
+        const auto after = cg::repair_current(packet, input, now, owner, source, margin, before, continuity, stereo);
+        auto actual = r;
+        actual.camera.camera = input; actual.camera.camera.fov = source.pose.fov; actual.stereo_window = stereo;
+        const auto original = focus_endpoint(actual.camera, {.dolly = before.dolly, .lift = before.lift}, source.pose.aspect);
+        require(trace::distance(original.location, read_trace_pose(row.at("recorded_neutral")).location) < .025f,
+            name + "The proposed endpoint does not reproduce the recorded view");
+        if (row.at("expected") == "inward") {
+            require(!rp::candidate(r) && after.status == before.status && after.dolly == before.dolly && after.lift == before.lift,
+                name + "Normal inward ball tracking changed");
+            ++inward;
+            continue;
+        }
+        const auto failure = trace::target_framing(original, source.look_at);
+        require(failure.valid && failure.behind && rp::select(r) == fg::AuthoredScope::outward_outfield,
+            name + "Expected a recorded outfield crossing");
+        require(after.status == cg::Status::authored_window && after.repair_reason == rp::Reason::outward_outfield_focus &&
+            after.dolly < before.dolly && after.lift <= before.lift &&
+            rp::window_contains(actual, source, after.dolly, after.lift, margin),
+            name + "The recovered view did not keep the focus, stereo window and outfield floor");
+        helpers::verify_projection(actual, source, {after.repair_reason, after.dolly, after.lift, true}, margin,
+            [&](bool passed, const char* message) { require(passed, name + message); });
+        for (int invalid = 0; invalid < 5; ++invalid) {
+            auto s = packet; auto live = owner; auto native = source; auto optics = stereo;
+            switch (invalid) {
+            case 0: ++live.view_target.serial; break;
+            case 1: native.time_ns = now - 50'000'001; break;
+            case 2: optics = {}; break;
+            case 3: s.framing_repair.manual_controls = true; break;
+            case 4: s.framing_repair.allow_outward_outfield = false; break;
+            }
+            const auto d = cg::repair_current(s, input, now, live, native, margin, before, continuity, optics);
+            require(d.status == before.status && d.dolly == before.dolly && d.lift == before.lift,
+                name + "An unverified, disabled or overridden view was moved");
+        }
+        ++crossed;
+    }
+    require(crossed == 18 && inward == 4, "Skipped a recorded stereo view or control");
+
+    // The newer 72 m report has only a normal log, not a recorded native target.
+    // Check admission on its rounded pose, then exercise witness cases synthetically.
+    auto r = helpers::request();
+    r.camera.camera = {{-1500,-6500,1500},{-5,-55,0},5.75f,0,0,true};
+    r.camera.zone = 4; r.camera.dolly = 7218.6f; r.camera.floor = r.legacy_floor = 175;
+    r.camera.forward_offset = -13.264f; r.camera.up_offset = 5.569f;
+    r.ball_follow = r.allow_outward_outfield = true; r.stereo_window = stereo;
+    require(rp::select(r) == fg::AuthoredScope::outward_outfield && !rp::evaluate(r, {}, margin).applied,
+        "A large outfield dolly may request proof, not authorize its own correction");
+    rp::Continuity continuity;
+    const auto corrected = continuity.update(r, helpers::source(r, 1500), owner, margin);
+    require(corrected.applied && corrected.dolly < 1500 && corrected.lift == 0,
+        "A long outward dolly with a verified crossing was not capped");
+    r.camera.now_ns += 33'333'333;
+    r.camera.lift = 400;
+    const auto in_front = continuity.update(r, helpers::source(r, 7300), owner, margin);
+    require(in_front.reason == rp::Reason::unchanged && in_front.dolly == r.camera.dolly && in_front.lift == r.camera.lift,
+        "A focus still in front must keep normal framing, even if low in the view after a repaired frame");
+    r.camera.lift = 0;
+    for (float yaw : {95.0f, 175.0f, 0.0f}) {
+        auto other = r; other.camera.camera.rotation[1] = yaw;
+        require(!rp::candidate(other) && !rp::evaluate(other, helpers::source(other, 1500), margin).applied,
+            "An inward or sideline view was allowed to use the outward repair");
+    }
+    auto blocked = r;
+    blocked.camera.zone = 1; blocked.allow_automatic_window = true;
+    require(!rp::candidate(blocked), "Ball follow fell through to the ordinary ground guard");
+    blocked = r; blocked.camera.mode = 2;
+    require(!rp::candidate(blocked), "The outfield repair escaped Mode 3");
+    blocked = r; blocked.camera.camera.location[2] = 170;
+    require(!rp::evaluate(blocked, helpers::source(blocked, 1500), margin).applied,
+        "An unreachable outfield floor must not authorize a move or new lift");
+    std::cout << "Outfield: crossed=" << crossed << " inward controls unchanged=" << inward << '\n';
+}
+
 void crossing_focus_guards() {
     namespace cg = uevr::prospi::cut_guard;
     // Synthetic validated targets exercise the missing presentation envelopes;
@@ -1444,6 +1543,7 @@ int main(int argc, char** argv) {
         recorded_pan_repairs(read_json(std::filesystem::path{argv[1]}.parent_path() / "prospi-20261123-first-base-pans.json"),
             {22, 0, 0, 0, 0, 0, 8, 24});
         automatic_window_repairs(read_json(std::filesystem::path{argv[1]}.parent_path() / "prospi-20261123-automatic-framing.json"));
+        outward_outfield_repairs(read_json(std::filesystem::path{argv[1]}.parent_path() / "prospi-outward-outfield-crossing.json"));
         std::cout << "Authored framing: 5000 geometry trials, per-eye margin and shot-identity preservation passed\n";
         baseline_pan_fixtures(read_json(std::filesystem::path{argv[1]}.parent_path() / "prospi-20261010-baseline-pan.json"));
         std::cout << "ProSpi calibrated-framing guards passed\n";

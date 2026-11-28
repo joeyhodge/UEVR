@@ -13141,7 +13141,11 @@ void VR::update_game_fov() {
                     }
                     // A saved automatic match is not a manual camera override.
                     // The pose only admits observation. Current view geometry must prove the miss.
-                    if (is_ebaseball_pro_spirit && m_match_game_fov_prospi_camera_safety_field_rule->value()) {
+                    const bool field_rule = m_match_game_fov_prospi_camera_safety_field_rule->value();
+                    const bool outward_outfield_window = is_ebaseball_pro_spirit && play_mode == ProSpiPlayCameraMode::BallFollow &&
+                        safety_zone == ProSpiCameraSafetyZone::OutfieldLow && m_match_game_fov_prospi_camera_safety_outfield_rule->value() &&
+                        request.automatic_source && !prospi_calibration_applied && supports_prospi_automatic_window(*this);
+                    if (is_ebaseball_pro_spirit && (field_rule || outward_outfield_window)) {
                         // A soft Pitch/Batter label can also describe a player
                         // pan. Fixed gameplay presets remain protected; the new
                         // scope still needs a fresh, proved framing failure.
@@ -13186,25 +13190,27 @@ void VR::update_game_fov() {
                                 m_match_game_fov_prospi_actual_clamp->value() || is_decoupled_pitch_enabled() ||
                                 m_match_game_fov_prospi_cinematic_camera_assist->value() || m_prospi_cutscene_segment_active,
                             .protected_camera = (home_plate_pitch_view && !home_pan_presentation) || third_base_outfield_line_replay_camera ||
-                                play_mode == ProSpiPlayCameraMode::BallFollow || play_mode == ProSpiPlayCameraMode::AerialEstablishing ||
+                                play_mode == ProSpiPlayCameraMode::AerialEstablishing ||
                                 framing_status == uevr::prospi::framing::Status::accepted ||
                                 (recorded && !recorded_first_base &&
                                     (dugout_celebration_tracking_camera || pre_celebration_line_camera)),
                             .home_pan = home_pan_presentation,
                             .recorded_pan = recorded_pan,
-                            .allow_automatic_window = (presentation || play_mode == ProSpiPlayCameraMode::PitchBatterView) &&
+                            .allow_automatic_window = field_rule && (presentation || play_mode == ProSpiPlayCameraMode::PitchBatterView) &&
                                 request.automatic_source && !prospi_calibration_applied && !home_plate_pitch_view &&
                                 prospi_preset != ProSpiCameraPreset::GameplayBehindPlate &&
                                 prospi_preset != ProSpiCameraPreset::HomePlateWaistHigh &&
                                 prospi_preset != ProSpiCameraPreset::HomePlateWaistHighReverse &&
                                 prospi_preset != ProSpiCameraPreset::TVBroadcast && supports_prospi_automatic_window(*this),
+                            .ball_follow = play_mode == ProSpiPlayCameraMode::BallFollow,
+                            .allow_outward_outfield = outward_outfield_window,
                         };
                         if (const auto selected = uevr::prospi::repair::select(prospi_framing_repair)) {
                             prospi_native_layout = m_prospi_native_focus_probe.validated_native_layout().value_or(
                                 uevr::prospi::trace::native::Layout{});
                             prospi_framing_repair.ebaseball = uevr::prospi::trace::native::ebaseball_layout(prospi_native_layout);
                             prospi_framing_identity_only = !prospi_identity_allowed && prospi_framing_repair.ebaseball &&
-                                *selected == uevr::prospi::focus_guard::AuthoredScope::automatic_window;
+                                uevr::prospi::focus_guard::live_stereo_window_scope(*selected);
                             prospi_identity_allowed = prospi_identity_allowed || prospi_framing_repair.ebaseball;
                         } else {
                             prospi_framing_repair.ebaseball = false;
@@ -13303,11 +13309,13 @@ VR::CameraViewOffsets VR::get_camera_view_offsets(const uevr::prospi::trace::Pos
         uevr::prospi::cut_guard::Decision{uevr::prospi::cut_guard::Status::unavailable};
     const auto base_forward = m_camera_forward_offset->value(), base_up = m_camera_up_offset->value();
     const auto repair_scope = snapshot ? uevr::prospi::repair::select(snapshot->framing_repair) : std::nullopt;
-    const bool automatic_window = repair_scope == uevr::prospi::focus_guard::AuthoredScope::automatic_window;
-    const bool repair_enabled = repair_scope && (!automatic_window || supports_prospi_automatic_window(*this)) &&
+    const bool live_stereo_window = repair_scope && uevr::prospi::focus_guard::live_stereo_window_scope(*repair_scope);
+    const bool outward_outfield = repair_scope == uevr::prospi::focus_guard::AuthoredScope::outward_outfield;
+    const bool repair_enabled = repair_scope && (!live_stereo_window || supports_prospi_automatic_window(*this)) &&
         snapshot->framing_repair.rendering_method == m_rendering_method->value() &&
         uevr::prospi::repair::matches_offsets(snapshot->framing_repair, base_forward, legacy.right, base_up) &&
-        m_match_game_fov_prospi_camera_safety_guard->value() && m_match_game_fov_prospi_camera_safety_field_rule->value() &&
+        m_match_game_fov_prospi_camera_safety_guard->value() &&
+        (outward_outfield ? m_match_game_fov_prospi_camera_safety_outfield_rule->value() : m_match_game_fov_prospi_camera_safety_field_rule->value()) &&
         m_match_game_fov_prospi_camera_safety_dolly_cap_strength->value() == 1 &&
         !is_decoupled_pitch_enabled() && !m_match_game_fov_prospi_actual_clamp->value() &&
         !m_match_game_fov_prospi_cinematic_camera_assist->value();
@@ -13326,7 +13334,7 @@ VR::CameraViewOffsets VR::get_camera_view_offsets(const uevr::prospi::trace::Pos
                 glm::length(glm::vec3{get_eye_offset(VRRuntime::Eye::RIGHT)}));
             return radius * get_world_to_meters() * (scaled ? get_world_scale() : 1.0f);
         };
-        const auto cache_margin = repair_enabled && !automatic_window ? current_eye_margin(true) : 0.0f;
+        const auto cache_margin = repair_enabled && !live_stereo_window ? current_eye_margin(true) : 0.0f;
         if (const auto cached = m_prospi_camera_view_cache.read(snapshot->epoch, frame, input, now, repair_enabled, cache_margin)) {
             decision = *cached;
         } else {
@@ -13345,7 +13353,7 @@ VR::CameraViewOffsets VR::get_camera_view_offsets(const uevr::prospi::trace::Pos
             const auto sampled_at = uevr::prospi::trace::Recorder::clock_ns();
             uevr::prospi::focus_guard::StereoWindow stereo{};
             std::optional<float> unscaled_margin;
-            if (repair_enabled && automatic_window && uevr::prospi::trace::valid_source(native)) {
+            if (repair_enabled && live_stereo_window && uevr::prospi::trace::valid_source(native)) {
                 // Pin optics and separation together on the first matching eye; never wait for a new packet.
                 if (const auto runtime = get_runtime(); runtime && runtime->is_openxr()) {
                     std::shared_lock lock{runtime->eyes_mtx, std::try_to_lock};
@@ -13371,12 +13379,12 @@ VR::CameraViewOffsets VR::get_camera_view_offsets(const uevr::prospi::trace::Pos
                 }
             }
             auto legacy_margin = cache_margin;
-            if (!snapshot->framing_identity_only && (!repair_enabled || automatic_window)) {
+            if (!snapshot->framing_identity_only && (!repair_enabled || live_stereo_window)) {
                 legacy_margin = unscaled_margin ? *unscaled_margin : current_eye_margin(false);
             }
             decision = uevr::prospi::cut_guard::evaluate_current(*snapshot, input, sampled_at, current, native, legacy_margin);
             if (repair_enabled) {
-                const auto eye_margin = automatic_window ? unscaled_margin.value_or(0.0f) * get_world_scale() : legacy_margin;
+                const auto eye_margin = live_stereo_window ? unscaled_margin.value_or(0.0f) * get_world_scale() : legacy_margin;
                 decision = uevr::prospi::cut_guard::repair_current(*snapshot, input, sampled_at, current, native,
                     eye_margin, decision, m_prospi_framing_repair, stereo);
             } else {

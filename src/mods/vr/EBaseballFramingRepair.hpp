@@ -13,7 +13,7 @@ enum class Reason : uint8_t {
     off, unchanged, protected_controls, unsupported_rig, source_unavailable,
     source_mismatch, no_safe_endpoint, interview_focus, dugout_focus, dugout_height, release_hold,
     home_pan_focus, home_pan_height, dugout_entry, upward_home, podium_closeup, low_infield_closeup,
-    first_base_corner, first_base_dugout, automatic_focus
+    first_base_corner, first_base_dugout, automatic_focus, outward_outfield_focus
 };
 inline const char* reason_name(Reason reason) noexcept {
     switch (reason) {
@@ -36,6 +36,7 @@ inline const char* reason_name(Reason reason) noexcept {
     case Reason::first_base_corner: return "First-base corner framing recovered";
     case Reason::first_base_dugout: return "First-base dugout pan framing recovered";
     case Reason::automatic_focus: return "Current authored framing recovered automatically";
+    case Reason::outward_outfield_focus: return "Outward outfield overshoot corrected";
     default: return "Off / unsupported build";
     }
 }
@@ -48,6 +49,7 @@ struct Request {
     focus_guard::AuthoredScope recorded_pan{};
     bool allow_automatic_window{};
     focus_guard::StereoWindow stereo_window{};
+    bool ball_follow{}, allow_outward_outfield{};
 };
 struct Decision {
     Reason reason{};
@@ -100,14 +102,18 @@ inline focus_guard::Request geometry(const Request& r, const trace::Pose& input,
     float dolly, float lift, focus_guard::AuthoredScope selected) noexcept {
     auto c = r.camera;
     c.camera = input; c.now_ns = now; c.dolly = dolly; c.lift = lift;
-    c.floor = selected == focus_guard::AuthoredScope::automatic_window ? (std::max)(r.field_floor, r.legacy_floor) : r.field_floor;
-    c.zone = 1;
+    if (selected == focus_guard::AuthoredScope::outward_outfield) {
+        c.floor = r.legacy_floor;
+    } else {
+        c.floor = selected == focus_guard::AuthoredScope::automatic_window ? (std::max)(r.field_floor, r.legacy_floor) : r.field_floor;
+        c.zone = 1;
+    }
     return c;
 }
 
 inline bool valid_request(const Request& r) noexcept {
     if (!r.ebaseball || r.manual_controls || r.protected_camera ||
-        !std::isfinite(r.field_floor) || r.field_floor < -50 || r.field_floor > 350 ||
+        (!r.ball_follow && (!std::isfinite(r.field_floor) || r.field_floor < -50 || r.field_floor > 350)) ||
         !std::isfinite(r.legacy_floor) || !std::isfinite(r.smoothing)) { return false; }
     return true;
 }
@@ -145,6 +151,13 @@ inline bool automatic_window_candidate(const Request& r) noexcept {
 
 inline std::optional<focus_guard::AuthoredScope> select(const Request& r) noexcept {
     if (!valid_request(r)) { return {}; }
+    if (r.ball_follow) {
+        // Keep ball-follow out of every legacy and ground-level repair scope.
+        constexpr auto outward = focus_guard::AuthoredScope::outward_outfield;
+        if (!r.allow_outward_outfield) { return {}; }
+        const auto c = geometry(r, r.camera.camera, r.camera.now_ns, r.camera.dolly, r.camera.lift, outward);
+        return focus_guard::crossing_candidate(c, true, outward) ? std::optional{outward} : std::nullopt;
+    }
     const auto selected = legacy_scope(r);
     if (legacy_candidate(r, selected)) { return selected; }
     if (automatic_window_candidate(r)) { return focus_guard::AuthoredScope::automatic_window; }
@@ -173,8 +186,9 @@ inline bool window_contains(const Request& r, const trace::NativeSource& native,
     if (!selected) { return false; }
     const auto c = geometry(r, r.camera.camera, r.camera.now_ns, r.camera.dolly, r.camera.lift, *selected);
     const auto projection = focus_guard::project_authored_target(c, native, *selected, r.stereo_window);
-    if (*selected == focus_guard::AuthoredScope::automatic_window && projection &&
+    if (focus_guard::live_stereo_window_scope(*selected) && projection &&
         projection->end_z(dolly, lift) + 0.001 < double(c.floor) + 2.0) { return false; }
+    if (*selected == focus_guard::AuthoredScope::outward_outfield && lift > c.lift) { return false; }
     return projection && window_contains(c, *projection, dolly, lift, eye_margin);
 }
 
@@ -183,9 +197,9 @@ inline Decision evaluate(const Request& r, const trace::NativeSource& native, fl
     if (!r.ebaseball || !r.camera.enabled) { return out; }
     if (r.manual_controls || r.protected_camera) { out.reason = Reason::protected_controls; return out; }
     const auto selected = select(r);
-    if (!selected) { out.reason = Reason::unsupported_rig; return out; }
+    if (!selected) { out.reason = r.ball_follow ? Reason::protected_controls : Reason::unsupported_rig; return out; }
     if (!trace::valid_source(native)) { out.reason = Reason::source_unavailable; return out; }
-    if (*selected == focus_guard::AuthoredScope::automatic_window && !r.stereo_window.valid()) {
+    if (focus_guard::live_stereo_window_scope(*selected) && !r.stereo_window.valid()) {
         out.reason = Reason::no_safe_endpoint; return out;
     }
     const auto c = geometry(r, r.camera.camera, r.camera.now_ns, out.dolly, out.lift, *selected);
@@ -206,6 +220,7 @@ inline Decision evaluate(const Request& r, const trace::NativeSource& native, fl
     case focus_guard::AuthoredScope::first_base_corner_repair: out.reason = Reason::first_base_corner; return out;
     case focus_guard::AuthoredScope::first_base_dugout_repair: out.reason = Reason::first_base_dugout; return out;
     case focus_guard::AuthoredScope::automatic_window: out.reason = Reason::automatic_focus; return out;
+    case focus_guard::AuthoredScope::outward_outfield: out.reason = Reason::outward_outfield_focus; return out;
     default: break;
     }
     out.reason = *selected == focus_guard::AuthoredScope::home_pan_repair ?
@@ -226,9 +241,11 @@ public:
         const auto now = r.camera.now_ns;
         const auto change = shot::compare(m_identity, identity);
         const auto selected = select(r);
-        const Context context{r.rendering_method, r.field_floor, r.camera.max_lift, r.camera.base_fov, r.smoothing, r.home_pan,
+        const auto live_scope = selected && focus_guard::live_stereo_window_scope(*selected) ? *selected : focus_guard::AuthoredScope::presentation;
+        const bool outward = live_scope == focus_guard::AuthoredScope::outward_outfield;
+        const Context context{r.rendering_method, outward ? r.legacy_floor : r.field_floor, r.camera.max_lift, r.camera.base_fov, r.smoothing, r.home_pan,
             r.recorded_pan, r.camera.forward_offset, r.camera.right_offset, r.camera.up_offset,
-            selected == focus_guard::AuthoredScope::automatic_window};
+            live_scope};
         const bool continuous = m_valid && identity.valid && change == shot::Change::unchanged &&
             context == m_context &&
             now > m_time && now - m_time <= 250'000'000 &&
@@ -261,7 +278,8 @@ public:
             const auto c = geometry(r, r.camera.camera, now, r.camera.dolly, r.camera.lift, *selected);
             if (const auto p = focus_guard::project_authored_target(c, native, *selected, r.stereo_window); p && p->up_z > 0) {
                 const auto lift = float((std::max)(0.0, (double(c.floor) + 2 - p->dolly_z(allowed)) / p->up_z));
-                if ((selected != focus_guard::AuthoredScope::low_infield_closeup_repair || lift <= c.lift) &&
+                const bool lift_allowed = (!outward && selected != focus_guard::AuthoredScope::low_infield_closeup_repair) || lift <= c.lift;
+                if (lift_allowed &&
                     window_contains(c, *p, allowed, lift, eye_margin)) {
                     result.dolly = allowed; result.lift = lift;
                     result.applied = true; result.reason = Reason::release_hold;
@@ -282,7 +300,7 @@ private:
         bool home_pan{};
         focus_guard::AuthoredScope recorded_pan{};
         float forward_offset{}, right_offset{}, up_offset{};
-        bool automatic_window{};
+        focus_guard::AuthoredScope live_scope{};
         bool operator==(const Context&) const = default;
     };
     bool m_valid{};

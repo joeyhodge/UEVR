@@ -440,3 +440,19 @@ including a frame where the authored focus is below the view before the
 crossing. It does not identify those pans as the post-game podium. Nearby
 in-frame samples must remain unchanged. This fallback bounds framing; it does
 not identify the subject, measure stadium collision, or alter render pacing.
+
+### Outward outfield crossings
+
+The same verified eBaseball Native Stereo path can also protect an Outfield Low
+shot that the sequencer labels Ball Follow. It requires Mode 3, Authored Focus,
+the existing outfield safety rule, a long automatic dolly, and a camera pointed
+farther down the outfield axis. Inward ball tracking, sideline views, overrides,
+and outward shots whose focus stays in front retain their original offsets.
+
+The guard only shortens a dolly that passes a fresh, matched authored focus.
+It retains the configured outfield floor and the authored window in both eyes
+without adding safety lift. This is not a stadium-boundary test and does not
+change crowd culling, player preservation, or the earlier presentation repairs.
+The replay fixture covers an archived outward pan in both eyes and inward
+tracking controls from the same session. The newer 72 m log entry establishes
+the candidate shape, not a measured focus or collision for that event.

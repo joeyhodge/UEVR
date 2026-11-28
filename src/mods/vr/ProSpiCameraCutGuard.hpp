@@ -126,7 +126,7 @@ inline Decision repair_current(const Snapshot& s, const trace::Pose& input, uint
     request.camera.now_ns = now;
     request.camera.dolly = baseline.dolly; request.camera.lift = baseline.lift;
     request.stereo_window = stereo;
-    if (*selected == focus_guard::AuthoredScope::automatic_window && repair::select(request) != selected) {
+    if (focus_guard::live_stereo_window_scope(*selected) && repair::select(request) != selected) {
         continuity.reset(); return baseline;
     }
     const auto correction = continuity.update(request, native, current, eye_margin);

@@ -7,8 +7,12 @@ namespace uevr::prospi::focus_guard {
 enum class AuthoredScope : uint8_t {
     presentation, near_home_crossing, interview_repair, dugout_repair, home_pan_repair,
     dugout_entry_repair, upward_home_repair, podium_closeup_repair, low_infield_closeup_repair,
-    first_base_corner_repair, first_base_dugout_repair, automatic_window
+    first_base_corner_repair, first_base_dugout_repair, automatic_window, outward_outfield
 };
+
+inline bool live_stereo_window_scope(AuthoredScope scope) noexcept {
+    return scope == AuthoredScope::automatic_window || scope == AuthoredScope::outward_outfield;
+}
 
 inline bool recorded_first_base_scope(AuthoredScope scope) noexcept {
     return scope == AuthoredScope::first_base_corner_repair || scope == AuthoredScope::first_base_dugout_repair;
@@ -22,7 +26,7 @@ inline bool recorded_pan_scope(AuthoredScope scope) noexcept {
 
 inline bool repair_scope(AuthoredScope scope) noexcept {
     return scope == AuthoredScope::interview_repair || scope == AuthoredScope::dugout_repair ||
-        scope == AuthoredScope::home_pan_repair || scope == AuthoredScope::automatic_window || recorded_pan_scope(scope);
+        scope == AuthoredScope::home_pan_repair || live_stereo_window_scope(scope) || recorded_pan_scope(scope);
 }
 
 inline bool dugout_scope(AuthoredScope scope) noexcept {
@@ -124,26 +128,38 @@ inline bool recorded_pan_target(const Request& r, const trace::NativeSource& sou
 }
 
 inline bool authored_offsets_supported(const Request& r, AuthoredScope scope) noexcept {
-    if (!recorded_pan_scope(scope) && scope != AuthoredScope::automatic_window) {
+    if (!recorded_pan_scope(scope) && !live_stereo_window_scope(scope)) {
         return r.forward_offset == 0.0f && r.right_offset == 0.0f && r.up_offset == 0.0f;
     }
     return r.forward_offset * r.forward_offset + r.right_offset * r.right_offset +
         r.up_offset * r.up_offset <= 30.0f * 30.0f;
 }
 
+inline bool outward_outfield_rig(const trace::Pose& p) noexcept {
+    // In this field coordinate system home is toward +Y from the outfield.
+    // Use the direction along the field, not a radial stadium boundary: an
+    // oblique pan can turn toward center field while still moving deeper out.
+    return trace::valid_pose(p) && p.location[1] <= -4500 && p.location[1] >= -13000 &&
+        std::abs(p.location[0]) <= 10000 && p.location[2] >= -100 && p.location[2] <= 4200 &&
+        trace::angle_delta(p.rotation[0], 0) <= 35 && std::sin(p.rotation[1] * 0.017453292519943295f) <= -0.35f;
+}
+
 inline bool crossing_candidate(const Request& r, bool presentation_camera,
     AuthoredScope scope = AuthoredScope::presentation) noexcept {
+    const bool outward = scope == AuthoredScope::outward_outfield;
     return presentation_camera && r.enabled && r.prospi && r.mode == 3 && r.dolly_enabled &&
         r.sequencer_enabled && r.safety_enabled && r.automatic_source && !r.protected_camera &&
-        (r.zone == 1 || r.zone == 2) && trace::valid_pose(r.camera) && r.camera.fov >= 0.5f &&
+        (outward ? r.zone == 4 : (r.zone == 1 || r.zone == 2)) && trace::valid_pose(r.camera) && r.camera.fov >= 0.5f &&
         r.camera.fov <= (scope == AuthoredScope::near_home_crossing || scope == AuthoredScope::interview_repair ||
-            scope == AuthoredScope::home_pan_repair || scope == AuthoredScope::automatic_window ? 60.0f : 40.0f) &&
+            scope == AuthoredScope::home_pan_repair || live_stereo_window_scope(scope) ? 60.0f : 40.0f) &&
+        (!outward || (r.dolly >= 2000 && outward_outfield_rig(r.camera))) &&
         ((scope != AuthoredScope::near_home_crossing && scope != AuthoredScope::interview_repair) || near_home_crossing_rig(r.camera)) &&
         (!dugout_scope(scope) || dugout_repair_rig(r.camera)) &&
         (scope != AuthoredScope::home_pan_repair || home_pan_repair_rig(r.camera)) &&
         (!recorded_pan_scope(scope) || recorded_pan_rig(r.camera, scope)) &&
         std::abs(std::remainder(r.camera.rotation[2], 360.0f)) <= (repair_scope(scope) ? 25.0f : 0.01f) &&
-        std::isfinite(r.dolly) && (scope == AuthoredScope::automatic_window ? r.dolly >= 0.0f : r.dolly > 0.0f) && r.dolly <= 8000.0f &&
+        std::isfinite(r.dolly) && (scope == AuthoredScope::automatic_window ? r.dolly >= 0.0f : r.dolly > 0.0f) &&
+        r.dolly <= (outward ? 10000.0f : 8000.0f) &&
         std::isfinite(r.lift) && r.lift >= 0.0f && r.lift <= 600.0f &&
         std::isfinite(r.max_lift) && r.max_lift >= r.lift && r.max_lift <= 600.0f &&
         std::isfinite(r.floor) && r.floor >= -50.0f && r.floor <= 350.0f &&
@@ -190,13 +206,16 @@ inline StereoWindow common_openxr_window(const std::array<std::array<float, 4>, 
 // Called only after crossing_candidate validates the request geometry.
 inline std::optional<AuthoredProjection> project_authored_target(const Request& r,
     const trace::NativeSource& source, AuthoredScope scope, StereoWindow stereo = {}) noexcept {
-    const bool automatic = scope == AuthoredScope::automatic_window;
+    const bool live_stereo = live_stereo_window_scope(scope);
+    const bool outward = scope == AuthoredScope::outward_outfield;
     if (!trace::valid_source(source) || !source.object || !source.camera_actor || !r.camera_manager ||
-        (automatic && (!stereo.valid() || source.focus_distance < 150.0f || source.focus_distance > 4500.0f)) ||
+        (live_stereo && (!stereo.valid() || source.focus_distance < 150.0f)) ||
+        (scope == AuthoredScope::automatic_window && source.focus_distance > 4500.0f) ||
         !source.pose.aspect_valid || !std::isfinite(source.pose.aspect) || source.pose.aspect < 0.5f || source.pose.aspect > 3.0f ||
         source.focus_distance < 100.0f || source.focus_distance >
             (dugout_scope(scope) ? 1250.0f : scope == AuthoredScope::home_pan_repair ? 6000.0f :
-                scope == AuthoredScope::near_home_crossing || scope == AuthoredScope::interview_repair ? 1000.0f : 8000.0f) ||
+                scope == AuthoredScope::near_home_crossing || scope == AuthoredScope::interview_repair ? 1000.0f :
+                outward ? 10000.0f : 8000.0f) ||
         !trace::source_matches_input(source, r.camera, r.camera_manager, r.now_ns) ||
         r.now_ns < source.time_ns || r.now_ns - source.time_ns > 50'000'000 ||
         trace::distance(source.pose.location, r.camera.location) > 1.0f ||
@@ -234,8 +253,8 @@ inline std::optional<AuthoredProjection> project_authored_target(const Request& 
     return AuthoredProjection{
         depth - r.forward_offset, lateral - r.right_offset, vertical - r.up_offset,
         r.camera.location[2] + s * r.forward_offset + right[2] * r.right_offset + up[2] * r.up_offset,
-        s, up[2], c, automatic ? (std::min)(half_width, double(stereo.half_width)) : half_width,
-        automatic ? (std::min)(half_height, double(stereo.half_height)) : half_height, width, width / source.pose.aspect};
+        s, up[2], c, live_stereo ? (std::min)(half_width, double(stereo.half_width)) : half_width,
+        live_stereo ? (std::min)(half_height, double(stereo.half_height)) : half_height, width, width / source.pose.aspect};
 }
 
 inline bool authored_window_contains(const AuthoredProjection& p, float dolly, float lift,
@@ -327,24 +346,32 @@ inline Decision bound_authored_window(const Request& r, const trace::NativeSourc
     const bool clipped = clipped_below || (remaining > 0.0 &&
         (std::abs(p.x) > remaining * p.half_width * 1.05 || std::abs(p.y - r.lift) > remaining * p.half_height * 1.05));
     const bool automatic = scope == AuthoredScope::automatic_window;
-    if (automatic) {
+    const bool outward = scope == AuthoredScope::outward_outfield;
+    if (live_stereo_window_scope(scope)) {
         // Ignore tight but still visible cuts and misses already present in the saved offsets alone.
         const bool saved_view_visible = p.depth > eye_margin + 2.0 &&
             std::abs(p.x) + eye_margin <= (p.depth - eye_margin) * p.half_width &&
             std::abs(p.y) + eye_margin <= (p.depth - eye_margin) * p.half_height;
-        // A wide headset can still display a subject that the broadcast framing has lost below its center window.
-        const double y = p.y - r.lift, bottom = (std::max)(p.half_height * 1.05, 0.57735);
-        const double slack = eye_margin + stereo.rotation_slack * std::hypot(p.x, y, remaining);
-        const bool lost_below = y + (std::max)(remaining, 2.0) * bottom + slack * std::hypot(1.0, bottom) < 0.0;
-        if (!saved_view_visible || (remaining > -2.0 && !lost_below)) { return out; }
+        if (!saved_view_visible) { return out; }
+        if (outward) {
+            // The ball-follow label alone does not identify the subject. Only a
+            // proven crossing permits a change; a low but in-front focus does not.
+            if (remaining > -double(eye_margin) - 2.0) { return out; }
+        } else {
+            // A wide headset can still display a subject below the broadcast framing window.
+            const double y = p.y - r.lift, bottom = (std::max)(p.half_height * 1.05, 0.57735);
+            const double slack = eye_margin + stereo.rotation_slack * std::hypot(p.x, y, remaining);
+            const bool lost_below = y + (std::max)(remaining, 2.0) * bottom + slack * std::hypot(1.0, bottom) < 0.0;
+            if (remaining > -2.0 && !lost_below) { return out; }
+        }
     } else if (!crossed && !clipped) { return out; }
     const double old_z = p.end_z(r.dolly, r.lift);
     // A level first-base shot can cross its target without excessive lift.
     if (recorded_pan_scope(scope) && !recorded_first_base_scope(scope) && old_z <= double(r.floor) + 2.0) { return out; }
-    const double required_z = automatic ? double(r.floor) + 2.0 :
+    const double required_z = live_stereo_window_scope(scope) ? double(r.floor) + 2.0 :
         (std::min)((std::max)(double(r.floor), old_z), double(r.floor) + 2.0);
     const double a = (required_z - p.camera_z) / p.up_z, b = -p.forward_z / p.up_z;
-    const auto lift_limit = low_infield ? r.lift : r.max_lift;
+    const auto lift_limit = low_infield || outward ? r.lift : r.max_lift;
     const double width = p.half_width * 0.95, height = p.half_height * 0.95;
     struct Endpoint { float dolly{}, lift{}; };
     const auto endpoint = [&](double dolly) {
