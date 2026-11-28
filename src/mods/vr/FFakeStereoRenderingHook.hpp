@@ -329,6 +329,11 @@ public:
     void set_dedicated_ui_target(FRHITexture2D* rt, uint32_t width = 0, uint32_t height = 0);
     bool prepare_sw_zero_company_dedicated_ui_target(FRHITexture2D* rt, uint32_t width, uint32_t height);
     bool is_sw_zero_company_dedicated_ui_target_prepared(FRHITexture2D* rt) const;
+    struct MibHudTarget {
+        uintptr_t render_target{};
+        std::shared_ptr<const void> owner;
+    };
+    std::optional<MibHudTarget> try_retain_mib_hud_target(uint32_t width, uint32_t height, const char*& reason);
     bool try_get_pre57_slate_ui_native(FRHITexture2D* texture, Microsoft::WRL::ComPtr<ID3D12Resource>& native);
     bool try_get_sw_zero_company_pinned_ui_resource(FRHITexture2D* rt, ID3D12Resource*& native) const;
     void inherit_dedicated_ui_state_from(VRRenderTargetManager_Base& source, const char* reason);
@@ -1366,6 +1371,9 @@ private:
 
     // UGameViewportClient
     static void game_viewport_client_draw_hook(sdk::UGameViewportClient*, sdk::FViewport*, sdk::FCanvas*, void*);
+    bool attempt_hook_mib_chase_hud();
+    static void mib_chase_draw_hud_hook(void* hud);
+    static void mib_chase_draw_tile_hook(void* item, sdk::FCanvas* canvas);
 
     // FSceneViewport
     static void update_viewport_rhi_hook(void* viewport, size_t destroyed, size_t new_size_x, size_t new_size_y, size_t new_window_mode, size_t preferred_pixel_format);
@@ -1728,6 +1736,9 @@ private:
     std::unique_ptr<PointerHook> m_update_viewport_rhi_hook{};
     std::unique_ptr<PointerHook> m_viewport_get_render_target_texture_hook{};
     std::unique_ptr<PointerHook> m_viewport_destructor_hook{};
+    std::unique_ptr<PointerHook> m_mib_chase_draw_tile_hook{};
+    std::unique_ptr<PointerHook> m_mib_chase_draw_hud_hook{};
+    bool m_mib_chase_hud_attempted{};
 
     std::unique_ptr<IXRTrackingSystemHook> m_tracking_system_hook{};
 
