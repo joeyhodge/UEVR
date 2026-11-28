@@ -2567,6 +2567,7 @@ void test_ktjl_hook_contracts() {
 #include "GalacticRacerRHICommandTests.hpp"
 #include "GalacticRacerPaniniTests.hpp"
 #include "GalacticRacerOwnedTextureTests.hpp"
+#include "GalacticRacerHdrTests.hpp"
 #include "GalacticRacerNativeFixTests.hpp"
 #include "GalacticRacerBinkTests.hpp"
 #include "GalacticRacerBinkSeekTests.hpp"
@@ -2627,6 +2628,7 @@ int main(int argc, char** argv) {
     test_swgr_panini();
     if (argc == 3 && std::string_view{argv[1]} == "--swgr-panini-image") { test_swgr_panini_image(argv[2]); }
     test_swgr_owned_texture();
+    test_swgr_hdr_policy();
     test_swgr_native_fix();
     test_swgr_bink();
     test_swgr_bink_seek();
