@@ -42,6 +42,7 @@
 #include "UE426RendererExtentTests.hpp"
 #include "UE521ViewExtensionTests.hpp"
 #include "UE59RenderTests.hpp"
+#include "MibChaseHudTests.hpp"
 
 namespace {
 
@@ -2592,6 +2593,7 @@ void test_ktjl_hook_contracts() {
 #include "SceneStateWindowsTests.hpp"
 
 int main(int argc, char** argv) {
+    mib_chase_hud_tests::run(expect);
     abzu_tests::run(expect);
     if (argc == 3 && std::string_view{argv[1]} == "--abzu-image") { abzu_tests::shipping_image(argv[2],expect); }
     ue59_render_tests::run(expect);
